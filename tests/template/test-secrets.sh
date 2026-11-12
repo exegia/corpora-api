@@ -10,7 +10,7 @@ printf 'API_KEY=REPLACE_ME\nTOKEN=REPLACE_ME\n' > .env.example
 assert_fail "check fails without .env" "$X" check
 
 assert_ok "init creates .env" "$X" init
-assert_eq "600" "$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)" ".env is mode 600"
+assert_eq "600" "$(stat -c '%a' .env 2>/dev/null || stat -f '%Lp' .env)" ".env is mode 600"
 assert_ok "check passes for a fresh copy" "$X" check
 
 printf 'API_KEY=hunter2\n' > .env

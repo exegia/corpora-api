@@ -5,9 +5,12 @@ import hashlib
 import os
 from pathlib import Path
 
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.utilities.asgi_transport import StreamingASGITransport, run_asgi_lifespan
 
 from corpora_api.app import app, bridge, mcp
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreUnavailable
@@ -59,6 +62,30 @@ def test_mcp_has_curated_core_tool_names() -> None:
         "detect_text_language",
         "check_text_spelling",
     }
+
+
+def test_mounted_mcp_serves_core_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(request: dict[str, object], *, needs_dictionaries: bool = False) -> dict:
+        assert request["operation"] == "structure"
+        return {"source_id": request["source_id"], "diagnostics": []}
+
+    monkeypatch.setattr(bridge, "run", fake_run)
+
+    def http_client_factory(**kwargs: object) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(transport=StreamingASGITransport(app), **kwargs)
+
+    async def call_tool() -> dict:
+        transport = StreamableHttpTransport(
+            url="http://testserver/mcp/", httpx_client_factory=http_client_factory
+        )
+        async with run_asgi_lifespan(app):
+            async with Client(transport) as client:
+                result = await client.call_tool(
+                    "check_xml_structure", {"text": "<root/>", "source_id": "book.xml"}
+                )
+                return result.data
+
+    assert asyncio.run(call_tool()) == {"source_id": "book.xml", "diagnostics": []}
 
 
 def test_real_core_structure_and_language() -> None:
