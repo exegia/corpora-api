@@ -6,8 +6,10 @@ import { Redis } from "@upstash/redis";
 import { Ratelimit } from "@upstash/ratelimit";
 import { createOpenAPI } from "fumadocs-openapi/server";
 import openapiPlugin from "fumadocs-openapi/press";
+import type { Document } from "fumadocs-openapi";
+import apiSpec from "./openapi.json";
 
-const openapi = createOpenAPI({ input: ["./openapi.json"] });
+const openapi = createOpenAPI({ input: { corpora: apiSpec as Document } });
 
 async function guardChat(request: Request): Promise<Response | undefined> {
   if (
