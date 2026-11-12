@@ -1,0 +1,17 @@
+---
+title: MCP Tools
+description: Use Corpora checks in an MCP client and search this documentation
+---
+
+The FastMCP server exposes four core-backed tools at the API process's `/mcp/` endpoint:
+
+| Tool | Result |
+| --- | --- |
+| `check_xml_structure` | Source-hashed XML diagnostics |
+| `check_tei_purpose` | TEI date and identifier policy report |
+| `detect_text_language` | Language and dictionary selection evidence |
+| `check_text_spelling` | Dictionary-backed spelling findings |
+
+The API MCP endpoint is available when the FastAPI server runs. If `CORPORA_API_TOKEN` is configured, clients must send `Authorization: Bearer <token>`.
+
+The separate documentation MCP endpoint at `https://docs.exegia.co/mcp` exposes `search`, `get_page`, and `list_pages`. It reads these docs and does not run core checks.

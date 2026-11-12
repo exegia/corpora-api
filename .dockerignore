@@ -1,0 +1,8 @@
+.git
+.venv
+docs/node_modules
+docs/dist
+docs/.vercel
+docs/.astro
+target
+**/__pycache__

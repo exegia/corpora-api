@@ -1,7 +1,13 @@
 # Operating the pipeline
 
-How to set up a repository generated from this template and run the release flow. Rules live in
+How to operate Corpora API's inherited template release flow. Rules live in
 [`BRANCH-AND-RELEASE-POLICY.md`](./BRANCH-AND-RELEASE-POLICY.md), stages in [`LIFECYCLE.md`](./LIFECYCLE.md).
+
+The root stack is Python; the Astro/Fumapress site is nested in `docs/`. The setup
+action installs Node 24 for that nested package. `make install` also runs
+`npm ci --prefix docs`, and `make ci` type-checks and builds the site.
+After an endpoint or response-model change, run `uv run python scripts/export_openapi.py`
+and commit the generated `docs/openapi.json` with the code.
 
 ## 1. Bootstrap a new repository
 

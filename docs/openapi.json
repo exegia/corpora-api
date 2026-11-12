@@ -1,0 +1,1035 @@
+{
+  "components": {
+    "schemas": {
+      "Diagnostic": {
+        "additionalProperties": true,
+        "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "category": {
+            "enum": [
+              "structural",
+              "spelling"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "certainty": {
+            "enum": [
+              "certain",
+              "possible"
+            ],
+            "title": "Certainty",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRange"
+            },
+            "title": "Locations",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "severity": {
+            "enum": [
+              "warning",
+              "error"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/Suggestion"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "category",
+          "severity",
+          "blocking",
+          "score",
+          "certainty",
+          "message",
+          "locations",
+          "suggestions"
+        ],
+        "title": "Diagnostic",
+        "type": "object"
+      },
+      "DiagnosticReport": {
+        "additionalProperties": true,
+        "properties": {
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            },
+            "title": "Diagnostics",
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version 1 of the shared diagnostic contract.",
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_sha256": {
+            "description": "SHA-256 of the exact input UTF-8 bytes.",
+            "title": "Source Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "source_id",
+          "source_sha256",
+          "diagnostics"
+        ],
+        "title": "DiagnosticReport",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "LanguageDetection": {
+        "additionalProperties": true,
+        "properties": {
+          "alternatives": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Alternatives",
+            "type": "array"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Statistical confidence; null for a hint.",
+            "title": "Confidence"
+          },
+          "dictionary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dictionary"
+          },
+          "locale": {
+            "title": "Locale",
+            "type": "string"
+          },
+          "locale_is_default": {
+            "title": "Locale Is Default",
+            "type": "boolean"
+          },
+          "method": {
+            "enum": [
+              "hint",
+              "statistical",
+              "undetermined"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "locale",
+          "confidence",
+          "method",
+          "dictionary",
+          "alternatives",
+          "locale_is_default",
+          "note"
+        ],
+        "title": "LanguageDetection",
+        "type": "object"
+      },
+      "LanguageRequest": {
+        "examples": [
+          {
+            "locale": "en-US",
+            "text": "A short English sentence."
+          }
+        ],
+        "properties": {
+          "locale": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locale"
+          },
+          "text": {
+            "description": "Exact decoded UTF-8 text to check.",
+            "maxLength": 1000000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "LanguageRequest",
+        "type": "object"
+      },
+      "PurposeField": {
+        "additionalProperties": true,
+        "properties": {
+          "diagnostic_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnostic Index"
+          },
+          "element_path": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Element Path",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "title": "Namespace",
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "date",
+              "identifier"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "range": {
+            "$ref": "#/components/schemas/SourceRange"
+          },
+          "status": {
+            "enum": [
+              "validated",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "value_ranges": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRange"
+            },
+            "title": "Value Ranges",
+            "type": "array"
+          }
+        },
+        "required": [
+          "element_path",
+          "namespace",
+          "name",
+          "purpose",
+          "value",
+          "range",
+          "value_ranges",
+          "status",
+          "diagnostic_index"
+        ],
+        "title": "PurposeField",
+        "type": "object"
+      },
+      "PurposeReport": {
+        "additionalProperties": true,
+        "properties": {
+          "allow_no_namespace": {
+            "title": "Allow No Namespace",
+            "type": "boolean"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            },
+            "title": "Diagnostics",
+            "type": "array"
+          },
+          "expected_document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Document Id"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/PurposeField"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version 1 of the shared diagnostic contract.",
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_sha256": {
+            "description": "SHA-256 of the exact input UTF-8 bytes.",
+            "title": "Source Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "source_id",
+          "source_sha256",
+          "diagnostics",
+          "fields",
+          "policy_version",
+          "expected_document_id",
+          "allow_no_namespace"
+        ],
+        "title": "PurposeReport",
+        "type": "object"
+      },
+      "PurposeRequest": {
+        "examples": [
+          {
+            "allow_no_namespace": false,
+            "source_id": "book.xml",
+            "text": "<TEI xmlns=\"http://www.tei-c.org/ns/1.0\"/>"
+          }
+        ],
+        "properties": {
+          "allow_no_namespace": {
+            "default": false,
+            "title": "Allow No Namespace",
+            "type": "boolean"
+          },
+          "expected_document_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Document Id"
+          },
+          "source_id": {
+            "default": "<input>",
+            "maxLength": 256,
+            "title": "Source Id",
+            "type": "string"
+          },
+          "text": {
+            "description": "Exact decoded UTF-8 text to check.",
+            "maxLength": 1000000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "PurposeRequest",
+        "type": "object"
+      },
+      "SourcePosition": {
+        "additionalProperties": true,
+        "properties": {
+          "byte": {
+            "description": "Zero-based UTF-8 byte offset.",
+            "title": "Byte",
+            "type": "integer"
+          },
+          "column": {
+            "description": "One-based Unicode scalar column.",
+            "title": "Column",
+            "type": "integer"
+          },
+          "line": {
+            "description": "One-based line number.",
+            "title": "Line",
+            "type": "integer"
+          },
+          "scalar": {
+            "description": "Zero-based Unicode scalar offset.",
+            "title": "Scalar",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "byte",
+          "scalar",
+          "line",
+          "column"
+        ],
+        "title": "SourcePosition",
+        "type": "object"
+      },
+      "SourceRange": {
+        "additionalProperties": true,
+        "properties": {
+          "end": {
+            "$ref": "#/components/schemas/SourcePosition"
+          },
+          "start": {
+            "$ref": "#/components/schemas/SourcePosition"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "SourceRange",
+        "type": "object"
+      },
+      "SpellDiagnostic": {
+        "additionalProperties": true,
+        "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "end": {
+            "description": "Exclusive Unicode scalar offset.",
+            "title": "End",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement"
+          },
+          "review_optional": {
+            "title": "Review Optional",
+            "type": "boolean"
+          },
+          "score": {
+            "description": "Policy severity, not a confidence percentage.",
+            "title": "Score",
+            "type": "integer"
+          },
+          "start": {
+            "description": "Inclusive Unicode scalar offset.",
+            "title": "Start",
+            "type": "integer"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "text",
+          "start",
+          "end",
+          "score",
+          "blocking",
+          "review_optional",
+          "suggestions",
+          "replacement",
+          "reason"
+        ],
+        "title": "SpellDiagnostic",
+        "type": "object"
+      },
+      "SpellReport": {
+        "additionalProperties": true,
+        "properties": {
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/SpellDiagnostic"
+            },
+            "title": "Diagnostics",
+            "type": "array"
+          },
+          "language": {
+            "$ref": "#/components/schemas/LanguageDetection"
+          },
+          "passed": {
+            "title": "Passed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "language",
+          "passed",
+          "diagnostics"
+        ],
+        "title": "SpellReport",
+        "type": "object"
+      },
+      "SpellingRequest": {
+        "examples": [
+          {
+            "locale": "en-US",
+            "text": "A short English sentence."
+          }
+        ],
+        "properties": {
+          "locale": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locale"
+          },
+          "role": {
+            "default": "corpus",
+            "enum": [
+              "corpus",
+              "metadata",
+              "frontmatter",
+              "footnote",
+              "additional",
+              "heading"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "supplements": {
+            "items": {
+              "enum": [
+                "en_shared",
+                "public-licenses"
+              ],
+              "type": "string"
+            },
+            "title": "Supplements",
+            "type": "array"
+          },
+          "text": {
+            "description": "Exact decoded UTF-8 text to check.",
+            "maxLength": 1000000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SpellingRequest",
+        "type": "object"
+      },
+      "StructureRequest": {
+        "examples": [
+          {
+            "source_id": "book.xml",
+            "text": "<root/>"
+          }
+        ],
+        "properties": {
+          "source_id": {
+            "default": "<input>",
+            "maxLength": 256,
+            "title": "Source Id",
+            "type": "string"
+          },
+          "text": {
+            "description": "Exact decoded UTF-8 text to check.",
+            "maxLength": 1000000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "StructureRequest",
+        "type": "object"
+      },
+      "Suggestion": {
+        "additionalProperties": true,
+        "properties": {
+          "applicability": {
+            "enum": [
+              "automatic",
+              "review"
+            ],
+            "title": "Applicability",
+            "type": "string"
+          },
+          "edits": {
+            "items": {
+              "$ref": "#/components/schemas/TextEdit"
+            },
+            "title": "Edits",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "applicability",
+          "edits"
+        ],
+        "title": "Suggestion",
+        "type": "object"
+      },
+      "TextEdit": {
+        "additionalProperties": true,
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "title": "Before",
+            "type": "string"
+          },
+          "range": {
+            "$ref": "#/components/schemas/SourceRange"
+          }
+        },
+        "required": [
+          "range",
+          "before",
+          "after"
+        ],
+        "title": "TextEdit",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Checks decoded text without changing it. Structural and metadata reports are bound to the exact input by SHA-256. Spelling requires installed dictionary data. The same operations are available as tools at `/mcp/`.",
+    "summary": "Source-bound text checks from corpora-core",
+    "title": "Corpora API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Service health",
+        "tags": [
+          "service"
+        ]
+      }
+    },
+    "/v1/checks/spelling": {
+      "post": {
+        "description": "Dictionary-backed findings for a decoded text segment. Suggestions never change source text.",
+        "operationId": "check_spelling_v1_checks_spelling_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpellingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "diagnostics": [],
+                  "language": {
+                    "alternatives": [
+                      "en_GB",
+                      "en_CA"
+                    ],
+                    "dictionary": "en_US",
+                    "locale": "en-US",
+                    "locale_is_default": false,
+                    "method": "hint"
+                  },
+                  "passed": true
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/SpellReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Check spelling",
+        "tags": [
+          "checks"
+        ]
+      }
+    },
+    "/v1/checks/structure": {
+      "post": {
+        "description": "Strict, namespace-aware XML check. Reports source-bound diagnostics; no edits are applied.",
+        "operationId": "check_structure_v1_checks_structure_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StructureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "diagnostics": [],
+                  "schema_version": 1,
+                  "source_id": "book.xml",
+                  "source_sha256": "6238462c4873df4c50bc1a901ece576b2d166b0156802c88a05a85b1f5d511c7"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Check XML structure",
+        "tags": [
+          "checks"
+        ]
+      }
+    },
+    "/v1/checks/tei-metadata": {
+      "post": {
+        "description": "Validate bounded TEI date and primary identifier policy against an exact source.",
+        "operationId": "check_tei_metadata_v1_checks_tei_metadata_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "allow_no_namespace": false,
+                  "diagnostics": [],
+                  "fields": [],
+                  "policy_version": 1,
+                  "schema_version": 1,
+                  "source_id": "sample.xml",
+                  "source_sha256": "59c5e2b0f1f5b2b6deb60d825a57f1b6c6ad9bd8c085ddd6c2a8435476ca3924"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Check TEI metadata",
+        "tags": [
+          "checks"
+        ]
+      }
+    },
+    "/v1/language/detect": {
+      "post": {
+        "description": "A locale hint takes precedence over statistical detection. No dictionary data is needed.",
+        "operationId": "detect_language_v1_language_detect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LanguageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "alternatives": [
+                    "en_GB",
+                    "en_CA"
+                  ],
+                  "dictionary": "en_US",
+                  "locale": "en-US",
+                  "locale_is_default": false,
+                  "method": "hint"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/LanguageDetection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Detect or select language",
+        "tags": [
+          "language"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Local API",
+      "url": "http://localhost:8000"
+    }
+  ]
+}

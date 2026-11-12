@@ -1,159 +1,72 @@
-# `corpora-template`
+# Corpora API
 
-<!-- Replace this title and paragraph with your project. Keep the sections below that still apply. -->
+FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corpora-core). The Python service sends JSON Lines requests to the Rust project's supported `corpora-text-check` executable. It does not reimplement parsing, language selection, metadata policy, or spelling.
 
-A GitHub template with the boring-but-essential parts already wired: SemVer releases driven by Conventional
-Commits, CI that adapts to your stack, secrets handling, end-to-end test hooks, and guidance for AI coding agents.
-It works the same for **Rust + GPUI, Python, TypeScript, React, Expo, SwiftUI** and projects that **build AI
-agents**, and it stays green before you have written any product code.
+## What is exposed
 
-## What you get
+| REST operation | MCP tool | Core operation |
+| --- | --- | --- |
+| `POST /v1/checks/structure` | `check_xml_structure` | Strict XML check and source-bound diagnostics |
+| `POST /v1/checks/tei-metadata` | `check_tei_purpose` | TEI date and primary identifier policy |
+| `POST /v1/language/detect` | `detect_text_language` | Language evidence and dictionary selection |
+| `POST /v1/checks/spelling` | `check_text_spelling` | Optional installed-dictionary spelling report |
 
-| Area         | What is included                                                                                            |
-| ------------ | ----------------------------------------------------------------------------------------------------------- |
-| Dev cycle    | One `make` entry point; stack auto-detection; `make doctor`, `setup`, `dev`, `fmt`, `ci`                    |
-| CI           | PR gate (`guard`, `check`, `e2e`, `package`), nightly matrix, CodeQL, dependency review                     |
-| Releases     | `dev -> next -> release/vX.Y.Z -> main`, SemVer from commits, generated changelog, tags, GitHub Releases    |
-| Publishing   | Opt-in PyPI (OIDC), npm (provenance), crates.io, EAS, custom deploy; artifacts attached to releases         |
-| Secrets      | gitleaks hook and CI gate, `.env` workflow, push to GitHub secrets, push protection on                      |
-| Repo as code | `.github/settings.yml`, branch/tag rulesets, labels, generated Dependabot config                            |
-| AI agents    | `AGENTS.md`, `CLAUDE.md`, Copilot instructions, ten skills in `.github/skills/`, validator                  |
-| Community    | Issue forms, PR template, `CODEOWNERS`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, MIT license |
-| Self-tests   | `make selftest` tests the automation scripts themselves                                                     |
+`GET /health` reports API process health. `GET /openapi.json` is the exact schema used by the [Fumapress docs](docs/README.md); the API tools are mounted at `/mcp/`.
 
-## Quick start
+The CLI's structural operation uses the core default XML options. TEI-specific `StructuralOptions` from the Rust library are not available through that CLI, so this API does not claim to perform a full TEI structural validation. A nonblocking report does not establish schema validity or conversion success. The service never applies suggestions to source text.
 
-```bash
-make doctor     # which tools are missing for the stacks detected here
-make setup      # deps, git hooks, .env, commit template, agent skill links
-make ci         # exactly what CI runs on a pull request
+## Local development
+
+Requirements: Python 3.12+, uv, Rust 1.91+ to build the core executable, Node.js 22.23.4+ for docs.
+
+1. Build the executable in a `corpora-core` checkout:
+
+   ```sh
+   cargo build --locked -p corpora-core --features spellcheck --bin corpora-text-check
+   ```
+
+2. Install and run this service:
+
+   ```sh
+   make doctor
+   make setup
+   export CORPORA_TEXT_CHECK_BIN=/absolute/path/to/corpora-core/target/debug/corpora-text-check
+   uv run uvicorn corpora_api.app:app --reload
+   ```
+
+3. Open `http://localhost:8000/docs` or call an endpoint:
+
+   ```sh
+   curl -s http://localhost:8000/v1/checks/structure \
+     -H 'Content-Type: application/json' \
+     -d '{"source_id":"book.xml","text":"<root/>"}'
+   ```
+
+Set `CORPORA_DICTIONARIES_DIR` to a directory installed by [the core dictionary installer](https://github.com/exegia/corpora-core/tree/main/crates/corpora-core/tools) to enable spelling. Without it, the spelling endpoint returns 503; the other checks remain available. For a public API host, set `CORPORA_API_TOKEN`; requests to `/v1/` and `/mcp/` then require `Authorization: Bearer <token>`.
+
+The service limits text to one million characters. Each core request has a 10-second deadline (30 seconds for spelling). It rejects CLI errors, invalid JSON, unsupported diagnostic schema versions, and stale source hashes.
+
+## Docs and OpenAPI
+
+The Astro/Fumapress site lives in `docs/`. It generates `/api` operation pages from the checked-in `docs/openapi.json` file. The pages include request bodies, response schemas, errors, examples, and the OpenAPI playground. `/mcp` on the docs host is a separate documentation-search MCP server, not the core-checking API MCP server.
+
+After changing Python routes or models:
+
+```sh
+uv run python scripts/export_openapi.py
+make ci
 ```
 
-With no manifest present every task is a no-op, so this passes on a fresh copy. Add `pyproject.toml`,
-`package.json`, `Cargo.toml` or `Package.swift` and the same commands start running your tools.
+`make ci` installs both Python and docs dependencies, runs template checks and Python tests, type-checks docs, and builds the Vercel output. The optional real-core integration test runs when `CORPORA_TEXT_CHECK_BIN` points to a built executable. The docs site can be built directly with `npm ci --prefix docs && npm run build --prefix docs`.
 
-### Use it for a new project
+Fumapress AI chat is included with a request-size cap, an eight-message cap, and a five-request-per-hour Upstash limit per client. It returns 503 until `AI_GATEWAY_API_KEY`, `UPSTASH_REDIS_REST_URL`, and `UPSTASH_REDIS_REST_TOKEN` are set in the Vercel docs project. Fumapress also publishes `/llms.txt` and `/llms-full.txt`.
 
-1. Click **Use this template** and clone the new repository.
-2. Replace this README, `LICENSE` (holder), `SECURITY.md` and `CODE_OF_CONDUCT.md` contacts
-   (`REPLACE_ME@example.com`), and `.github/CODEOWNERS`.
-3. Create the automation GitHub App and set `AUTOMATION_APP_ID` / `AUTOMATION_APP_PRIVATE_KEY`
-   ([details](.github/WORKFLOW.md#2-secrets-and-variables)).
-4. `make repo-bootstrap` creates `dev` and `next`, makes `dev` the default branch, and applies settings,
-   labels, rulesets and security features.
-5. `make setup`, add your first stack manifest, then `make dependabot`.
-6. Delete the skills and `.env.example` sections for stacks you do not use. [`TODO.md`](TODO.md) has the full checklist.
+## Deploying
 
-## Commands
+The `Dockerfile` builds a pinned commit of `corpora-core` and packages its executable with the Python API. Deploy that image to a container host, configure `CORPORA_API_TOKEN`, and optionally mount installed dictionaries. The docs site is a separate Vercel project with root directory `docs` and Astro preset. Its target domain is `docs.exegia.co`, with the generated API reference at `/api`.
 
-Every dev and CI step is a target; run `make help` for the full list.
+The checked-in OpenAPI spec targets `http://localhost:8000`. Set a real API origin and regenerate the spec before enabling a hosted playground. Do not point the site at a nonexistent production API. The docs and API deployments can be released independently, but the OpenAPI export must stay in sync with the Python app.
 
-| Task                           | Command                                                                        |
-| ------------------------------ | ------------------------------------------------------------------------------ |
-| Check tools / first-time setup | `make doctor` / `make setup`                                                   |
-| Run the app                    | `make dev`                                                                     |
-| Format and autofix / verify    | `make fmt` / `make lint-check`                                                 |
-| Types, unit tests, build       | `make typecheck`, `make test`, `make build`                                    |
-| End-to-end tests, agent evals  | `make e2e`, `make eval`                                                        |
-| Everything CI runs on a PR     | `make ci`                                                                      |
-| Release artifacts              | `make pack`                                                                    |
-| Test the repo's own automation | `make selftest`                                                                |
-| Validate skills / instructions | `make agents-check`                                                            |
-| Secrets                        | `make env-init`, `env-check`, `secrets-scan`, `secrets-push`, `secrets-doctor` |
-| Versions and releases          | `make bump-info`, `next-version`, `changelog`, `cut-release`                   |
-| Repo settings                  | `make settings-apply`, `labels`, `rulesets-apply`, `dependabot`                |
+## Repository conventions
 
-Override any task for any stack: `make test TEST_CMD="pytest -x"`. Force the stack list with
-`STACKS="python node"`. Monorepos: only root manifests are detected, so set the overrides.
-
-### Stack detection
-
-| Stack            | Detected by                    | `lint` / `typecheck`                | `test` / `e2e`                                     |
-| ---------------- | ------------------------------ | ----------------------------------- | -------------------------------------------------- |
-| Python (uv)      | `pyproject.toml`               | ruff; mypy, pyright or ty           | pytest; `tests/e2e/`, evals in `tests/evals/`      |
-| TypeScript/React | `package.json`                 | package scripts `lint`, `typecheck` | `test`; `test:e2e` or Playwright                   |
-| Expo             | `expo` dependency              | as above                            | Maestro flows in `.maestro/`                       |
-| Rust + GPUI      | `Cargo.toml`                   | `cargo fmt`, `clippy -D warnings`   | `cargo test`/nextest; `tests/e2e.rs`               |
-| SwiftUI          | `Package.swift` / `.xcodeproj` | SwiftLint, swift-format             | `swift test` / `xcodebuild`; `XCODE_UITEST_TARGET` |
-
-The package manager comes from the lockfile (bun, pnpm, yarn, npm). Swift and GPUI run on macOS runners; set the
-`CI_RUNNERS` variable to change that.
-
-## Branching and releases
-
-```text
-<type>/<slug> --squash--> dev --promote--> next --cut--> release/vX.Y.Z --draft PR--> main --> vX.Y.Z
-```
-
-- Branch from `dev` as `<type>/<slug>` (`feat/123-add-parser`); types: `feat fix chore docs ci refactor test perf build style revert ai`.
-- The **PR title** must be a Conventional Commit (`feat(scope)!: summary`). It becomes the squash commit and sets
-  the bump: `!` or `BREAKING CHANGE` major, `feat` minor, anything else patch.
-- `dev` is promoted to `next` nightly or on demand; a push to `next` cuts `release/vX.Y.Z` with version files and
-  a changelog section and opens a draft PR into `main`; merging it tags and publishes the release.
-
-Details: [policy](.github/BRANCH-AND-RELEASE-POLICY.md), [stages](.github/LIFECYCLE.md),
-[operations and troubleshooting](.github/WORKFLOW.md).
-
-## Secrets
-
-Credentials must never reach a commit. Three layers:
-
-1. **`.env` is gitignored**; commit `.env.example` with `REPLACE_ME` placeholders. `make env-init` creates `.env`
-   with mode 600 and `make env-check` diffs the keys.
-2. **gitleaks pre-commit hook** (`make setup` installs it). It is advisory: `--no-verify` skips it, so never use it.
-3. **`Secret Scan` workflow** is the real gate. `Detect hardcoded secrets` is a required check on `dev`, `next`
-   and `main`; GitHub push protection and secret scanning are switched on by `make settings-apply`.
-
-If a secret leaks: rotate it first, then remove it. To load values into CI use
-`make secrets-push ENV_FILE=.env.ci ENVIRONMENT=preview` (names are shown for confirmation, values never printed).
-`.gitleaks.toml` allowlists only template placeholders; keep it narrow.
-
-## Testing
-
-- `make test` runs fast unit and integration tests. End-to-end suites (`make e2e`) and agent evals (`make eval`)
-  are separate on purpose.
-- CI runs e2e on PRs into `next` or `main`, on PRs labelled `run-e2e`, on pushes to `next`, and nightly.
-- `make selftest` covers this repository's own scripts (`tests/template/`); it runs inside `make ci`.
-
-## AI agents
-
-| File                              | Role                                                                              |
-| --------------------------------- | --------------------------------------------------------------------------------- |
-| `AGENTS.md`                       | Canonical rules for every agent; edit this first                                  |
-| `CLAUDE.md`                       | Imports `AGENTS.md`, adds Claude Code specifics                                   |
-| `.github/copilot-instructions.md` | Short form for GitHub Copilot                                                     |
-| `.github/skills/*/SKILL.md`       | Task skills: dev cycle, release flow, secrets, e2e, one per stack, agent building |
-
-`make agents-link` symlinks `.claude/skills` and `.agents/skills` to `.github/skills` (local only);
-`make agents-check` validates skills and keeps `CLAUDE.md` importing `AGENTS.md`. Keep these files aligned with
-the automation: change them in the same PR.
-
-## Repository layout
-
-```text
-.
-├── makefile                  one entry point for dev and CI
-├── scripts/                  stack runner, versioning, release, secrets, agent assets
-├── tests/template/           tests for scripts/ (make selftest)
-├── .github/
-│   ├── workflows/            pr, secret-scan, security, promote, next, release, publish, matrix, ...
-│   ├── actions/setup/        detects stacks, installs only their toolchains
-│   ├── rulesets/ settings.yml  branch protection and repo settings as code
-│   ├── scripts/              bootstrap-repo, apply-settings, apply-rulesets
-│   ├── skills/               agent skills
-│   ├── ISSUE_TEMPLATE/ PULL_REQUEST_TEMPLATE.md CODEOWNERS
-│   └── WORKFLOW.md LIFECYCLE.md BRANCH-AND-RELEASE-POLICY.md
-├── .devcontainer/            Codespaces and dev containers
-├── AGENTS.md CLAUDE.md
-├── CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md LICENSE TODO.md CHANGELOG.md VERSION
-└── .env.example .gitmessage .pre-commit-config.yaml .gitleaks.toml
-```
-
-`VERSION` is the fallback version file while no stack manifest declares one; delete it once `pyproject.toml`,
-`Cargo.toml`, `package.json` or an Xcode project carries the version.
-
-## Contributing and security
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Report vulnerabilities privately as described in
-[SECURITY.md](SECURITY.md). Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
-Licensed under the [MIT License](LICENSE).
+This repository was created from `exegia/corpora-template`. Work on `<type>/<slug>` branches and use Conventional Commit PR titles. The template release workflow and its branch policy remain in [AGENTS.md](AGENTS.md) and [`.github/WORKFLOW.md`](.github/WORKFLOW.md). Keep credentials out of Git and use `.env.example` only for placeholder configuration.
