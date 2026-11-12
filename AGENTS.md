@@ -4,9 +4,10 @@ This is the canonical guide for every coding agent (Claude, Copilot, Codex, Zed,
 repository. `CLAUDE.md` imports it and `.github/copilot-instructions.md` mirrors the essentials, so edit
 **this** file first.
 
-This repository is a **generic template** for projects built with Rust + GPUI, Python, TypeScript, React,
-Expo, SwiftUI, and AI-agent projects. In a generated repository, replace the placeholders marked
-`REPLACE_ME` and trim this file to the stacks the project really uses.
+This repository is **Corpora API**, a Python FastAPI and FastMCP adapter for the
+`corpora-text-check` executable from `exegia/corpora-core`. `docs/` is an Astro/Fumapress
+site on Vercel. The shared template automation remains, but only Python at the root and
+Astro in `docs/` are application stacks here.
 
 ## Do this first
 
@@ -14,6 +15,11 @@ Expo, SwiftUI, and AI-agent projects. In a generated repository, replace the pla
 2. `make setup` - installs dependencies, git hooks, `.env`, the commit template and agent skill links.
 3. Read the skill that matches your task in `.github/skills/` (index below).
 4. Before finishing: `make fmt` then `make ci`. Report what you actually ran.
+
+After changing an endpoint or response model, run `uv run python scripts/export_openapi.py`
+and commit the updated `docs/openapi.json`. `make ci` installs and builds the docs site too.
+Set `CORPORA_TEXT_CHECK_BIN` for real-core integration tests; spelling requires
+`CORPORA_DICTIONARIES_DIR`. Never edit core reports or simulate core checks in production.
 
 ## Commands
 
@@ -63,8 +69,8 @@ runners. Each stack has a skill with the conventions and pitfalls.
 5. **Do not hand-edit** version numbers, `CHANGELOG.md` sections or tags: the release pipeline writes them.
 6. **Change automation and docs together.** If you touch workflows, scripts, the makefile or conventions,
    update this file, `README.md`, `.github/copilot-instructions.md` and `.github/WORKFLOW.md` in the same PR.
-7. **Keep it generic.** Do not bake a product, framework or package manager into template files that
-   downstream repos inherit; put stack specifics behind `scripts/stack.sh` or a skill.
+7. **Keep shared automation reusable.** Product-specific API and docs code belongs in `src/`,
+   `docs/`, and the product guide; avoid unnecessary changes to the inherited release scripts.
 8. **No local agent state in git**: `.claude/`, `.agents/`, `.codex/`, `.worktrees/`, `.env`.
 
 ## Branches, PRs and releases
