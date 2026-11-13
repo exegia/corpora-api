@@ -9,7 +9,7 @@ action installs Node 24 for that nested package. `make install` also runs
 After an endpoint or response-model change, run `uv run python scripts/export_openapi.py`
 and commit the generated `docs/openapi.json` with the code.
 
-The root `Dockerfile` and `vercel.json` build the pinned core checks, TEI/EPUB/PDF
+The root `Dockerfile.vercel` builds the pinned core checks, TEI/EPUB/PDF
 converters, OCR tools, and dictionaries on Vercel's container runtime. The API
 project serves `/v1/*` at its own Vercel origin. A project route on the existing
 `corpora-py` project forwards only `api.exegia.co/v1/*`; do not move the whole
