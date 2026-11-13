@@ -19,6 +19,8 @@ remains, but only Python at the root and Astro in `docs/` are application stacks
 
 After changing an endpoint or response model, run `uv run python scripts/export_openapi.py`
 and commit the updated `docs/openapi.json`. `make ci` installs and builds the docs site too.
+The docs install applies `docs/scripts/patch-openapi-example.mjs` to pinned
+`fumadocs-openapi` 12.6.2; review the patch when upgrading that dependency.
 Set `CORPORA_TEXT_CHECK_BIN` for real-core integration tests; spelling requires
 `CORPORA_DICTIONARIES_DIR`. Never edit core reports or simulate core checks in production.
 The converter executables are `CORPORA_TEI_TO_TF_BIN`, `CORPORA_EPUB_TO_TF_BIN`,

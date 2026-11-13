@@ -17,6 +17,10 @@ Astro project from `exegia/corpora-api` with Root Directory `docs` and attach
 `docs.exegia.co`. The Vercel adapter serves documentation search at `/mcp`
 and AI chat; OpenAPI pages are prerendered.
 
+`npm install` applies the version-checked `fumadocs-openapi` 12.6.2 example
+patch. It unwraps sampled JSON examples before the playground clones them.
+Remove the patch after upgrading to a version that fixes this upstream.
+
 AI chat uses Vercel's deployment OIDC token for AI Gateway authentication, or
 `AI_GATEWAY_API_KEY` outside Vercel. It returns 503 until
 `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set in the Vercel project. The request guard
