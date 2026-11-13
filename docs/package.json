@@ -4,6 +4,7 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
+    "postinstall": "node scripts/patch-openapi-example.mjs",
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
@@ -19,7 +20,7 @@
     "@upstash/redis": "^1.41.0",
     "astro": "^7.4.7",
     "fumadocs-core": "16.18.3",
-    "fumadocs-openapi": "^12.6.2",
+    "fumadocs-openapi": "12.6.2",
     "fumadocs-ui": "npm:@fumadocs/base-ui@16.18.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

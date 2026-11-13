@@ -21,6 +21,8 @@ the Astro/Fumapress documentation site is a separate project rooted in `docs/`.
 Root targets detect Python from `pyproject.toml`; `make ci` also installs, type-checks, and
 builds the nested `docs/` site. After changing routes or models, run
 `uv run python scripts/export_openapi.py` and commit `docs/openapi.json`.
+The docs install patches `fumadocs-openapi` 12.6.2 request examples; review
+`docs/scripts/patch-openapi-example.mjs` before upgrading that dependency.
 The hosted API owns `api.exegia.co/v1/*` through a narrow route on the existing
 `corpora-py` project. Preserve all other routes on that domain.
 Override a task with `<TASK>_CMD`, e.g. `make test TEST_CMD="..."`.

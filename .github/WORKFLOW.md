@@ -88,6 +88,9 @@ gh pr create --draft --base dev --title "feat: add parser"
 gh pr ready                                # starts hygiene, test, check
 ```
 
+The docs package runs `docs/scripts/patch-openapi-example.mjs` after install.
+Keep its version guard aligned with the pinned `fumadocs-openapi` dependency.
+
 Squash-merge into `dev`. Everything after that is automatic until the release PR: review the draft PR into
 `main`, mark it ready, merge it with a merge commit.
 
