@@ -1,9 +1,9 @@
 ---
 title: Corpora API
-description: Source-bound text checks over HTTP and MCP
+description: Source-bound text checks and conversion over HTTP and MCP
 ---
 
-The Corpora API exposes `corpora-core` checks for decoded text. It reports findings and candidate edits without changing the input.
+The Corpora API exposes `corpora-core` text checks and source-preserving TEI, EPUB, and PDF conversion. It reports findings without changing the input.
 
 ## Start locally
 
@@ -11,18 +11,18 @@ The Corpora API exposes `corpora-core` checks for decoded text. It reports findi
 2. Set `CORPORA_TEXT_CHECK_BIN` to its path and run `uv run uvicorn corpora_api.app:app --reload`.
 3. Open the [API reference](/api) for every request and response schema.
 
-The OpenAPI playground targets `http://localhost:8000` until a hosted API endpoint is configured. The documentation site and the API process are separate deployments.
+The OpenAPI playground targets `https://api.exegia.co/v1/`. Protected operations require a bearer token; enter it in the playground's authorization control.
 
 ## Interfaces
 
 | Interface | Local URL | Purpose |
 | --- | --- | --- |
-| REST | `http://localhost:8000/v1/` | Typed request and response payloads |
-| OpenAPI | `http://localhost:8000/openapi.json` | Machine-readable contract |
-| API MCP | `http://localhost:8000/mcp/` | Tools that execute core checks |
+| REST | `https://api.exegia.co/v1/` | Typed checks and conversion uploads |
+| OpenAPI | `https://api.exegia.co/v1/openapi.json` | Machine-readable contract |
+| API MCP | `https://api.exegia.co/v1/mcp/` | Tools that execute core checks |
 | Docs MCP | `https://docs.exegia.co/mcp` | Search and read documentation |
 
-The API's spelling operation requires separately installed dictionaries. Structural, metadata, and language checks do not.
+The hosted image includes pinned spelling dictionaries and the converter executables. Conversion uploads return ZIP bundles; PDF bundles can contain a review report without TF when the score gate stops export.
 
 ## A check
 

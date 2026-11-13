@@ -1,8 +1,9 @@
 # Copilot instructions
 
 Full rules are in [`AGENTS.md`](../AGENTS.md); this is the short form. This repository is
-Corpora API: FastAPI and FastMCP over the `corpora-core` JSON-lines executable, plus an
-Astro/Fumapress documentation site in `docs/`.
+Corpora API: FastAPI and FastMCP over the `corpora-core` JSON-lines executable, plus
+bounded TEI, EPUB, and PDF conversion uploads. The API uses Vercel's container runtime;
+the Astro/Fumapress documentation site is a separate project rooted in `docs/`.
 
 ## Commands (run from the repository root)
 
@@ -20,6 +21,8 @@ Astro/Fumapress documentation site in `docs/`.
 Root targets detect Python from `pyproject.toml`; `make ci` also installs, type-checks, and
 builds the nested `docs/` site. After changing routes or models, run
 `uv run python scripts/export_openapi.py` and commit `docs/openapi.json`.
+The hosted API owns `api.exegia.co/v1/*` through a narrow route on the existing
+`corpora-py` project. Preserve all other routes on that domain.
 Override a task with `<TASK>_CMD`, e.g. `make test TEST_CMD="..."`.
 `copilot-setup-steps.yml` prepares the same toolchains for the coding agent.
 

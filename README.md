@@ -1,6 +1,6 @@
 # Corpora API
 
-FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corpora-core). The Python service sends JSON Lines requests to the Rust project's supported `corpora-text-check` executable. It does not reimplement parsing, language selection, metadata policy, or spelling.
+FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corpora-core). Text checks call the Rust project's supported `corpora-text-check` executable. Conversion requests call the core project's TEI, EPUB, and PDF converter packages and return their source-preserving bundles.
 
 ## What is exposed
 
@@ -11,13 +11,19 @@ FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corp
 | `POST /v1/language/detect` | `detect_text_language` | Language evidence and dictionary selection |
 | `POST /v1/checks/spelling` | `check_text_spelling` | Optional installed-dictionary spelling report |
 
-`GET /health` reports API process health. `GET /openapi.json` is the exact schema used by the [Fumapress docs](docs/README.md); the API tools are mounted at `/mcp/`.
+| Conversion endpoint | Result |
+| --- | --- |
+| `POST /v1/conversions/tei-to-tf` | TEI source, Text-Fabric features, manifest and checksums |
+| `POST /v1/conversions/epub-to-tf` | EPUB source, assets, Text-Fabric features and manifest |
+| `POST /v1/conversions/pdf-to-tf` | Score-gated PDF extraction, TEI, Text-Fabric and review report |
+
+`GET /v1/health` reports API process health. `GET /v1/openapi.json` is the exact schema used by the [Fumapress docs](docs/README.md); the API tools are mounted at `/v1/mcp/`. The existing `api.exegia.co` service keeps its routes outside `/v1/*`.
 
 The CLI's structural operation uses the core default XML options. TEI-specific `StructuralOptions` from the Rust library are not available through that CLI, so this API does not claim to perform a full TEI structural validation. A nonblocking report does not establish schema validity or conversion success. The service never applies suggestions to source text.
 
 ## Local development
 
-Requirements: Python 3.12+, uv, Rust 1.91+ to build the core executable, Node.js 22.23.4+ for docs.
+Requirements: Python 3.13+, uv, Rust 1.91+ to build the core executables, Node.js 22.23.4+ for docs. PDF conversion also needs Poppler and Tesseract.
 
 1. Build the executable in a `corpora-core` checkout:
 
@@ -42,9 +48,11 @@ Requirements: Python 3.12+, uv, Rust 1.91+ to build the core executable, Node.js
      -d '{"source_id":"book.xml","text":"<root/>"}'
    ```
 
-Set `CORPORA_DICTIONARIES_DIR` to a directory installed by [the core dictionary installer](https://github.com/exegia/corpora-core/tree/main/crates/corpora-core/tools) to enable spelling. Without it, the spelling endpoint returns 503; the other checks remain available. For a public API host, set `CORPORA_API_TOKEN`; requests to `/v1/` and `/mcp/` then require `Authorization: Bearer <token>`.
+Set `CORPORA_DICTIONARIES_DIR` to a directory installed by [the core dictionary installer](https://github.com/exegia/corpora-core/tree/main/crates/corpora-core/tools) to enable spelling. Without it, the spelling endpoint returns 503; the other checks remain available. For a public API host, set `CORPORA_API_TOKEN`; check, conversion, and MCP requests then require `Authorization: Bearer <token>`. Health, OpenAPI, and the Swagger UI stay public.
 
 The service limits text to one million characters. Each core request has a 10-second deadline (30 seconds for spelling). It rejects CLI errors, invalid JSON, unsupported diagnostic schema versions, and stale source hashes.
+
+Conversion endpoints accept one multipart upload. The TEI route exposes choice, apparatus, witness, notes, and namespace policy as query parameters; EPUB offers audited `repair`; PDF offers installed OCR languages. Uploads are capped at 3 MB, TEI/EPUB at 200,000 slots, PDF at 10 pages, and returned ZIPs at 4 MB. The ZIP contains the converter's original report and bundle, including the uploaded source. PDF results with `X-Conversion-Status: gated` contain a report but no TF. These synchronous limits fit [Vercel's function payload limit](https://vercel.com/docs/functions/limitations); larger conversions need a storage-backed job API.
 
 ## Docs and OpenAPI
 
@@ -63,9 +71,9 @@ Fumapress AI chat is included with a request-size cap, an eight-message cap, and
 
 ## Deploying
 
-The `Dockerfile` builds a pinned commit of `corpora-core` and packages its executable with the Python API. Deploy that image to a container host, configure `CORPORA_API_TOKEN`, and optionally mount installed dictionaries. The docs site is a separate Vercel project with root directory `docs` and Astro preset. Its target domain is `docs.exegia.co`, with the generated API reference at `/api`.
+The root `Dockerfile.vercel` builds a pinned commit of `corpora-core`, its three Rust executables, the converter packages, OCR system tools, and pinned dictionaries. Vercel selects its container runtime from this file. Set `CORPORA_API_TOKEN` on the API project before public deployment. The docs site is a separate Vercel project with root directory `docs` and Astro preset. Its domain is `docs.exegia.co`, with the generated API reference at `/api`.
 
-The checked-in OpenAPI spec targets `http://localhost:8000`. Set a real API origin and regenerate the spec before enabling a hosted playground. Do not point the site at a nonexistent production API. The docs and API deployments can be released independently, but the OpenAPI export must stay in sync with the Python app.
+The checked-in OpenAPI spec targets `https://api.exegia.co`; every operation path begins with `/v1/`. Vercel routes only that prefix from the existing `corpora-py` project to the new container service, preserving the older API's other endpoints. The docs and API deployments can be released independently, but the OpenAPI export must stay in sync with the Python app.
 
 ## Repository conventions
 

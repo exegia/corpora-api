@@ -12,7 +12,8 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.utilities.asgi_transport import StreamingASGITransport, run_asgi_lifespan
 
-from corpora_api.app import app, bridge, mcp
+from corpora_api.app import app, bridge, converter, mcp
+from corpora_api.conversions import ConversionResult, ConversionUnavailable
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreUnavailable
 
 
@@ -34,13 +35,15 @@ def test_structure_uses_core_and_documents_response(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(bridge, "run", fake_run)
     with TestClient(app) as client:
         response = client.post("/v1/checks/structure", json={"source_id": "book.xml", "text": text})
-        schema = client.get("/openapi.json").json()
+        schema = client.get("/v1/openapi.json").json()
 
     assert response.status_code == 200
     assert response.json() == expected
     assert requests == [{"operation": "structure", "source_id": "book.xml", "text": text}]
     assert "/v1/checks/structure" in schema["paths"]
     assert "DiagnosticReport" in schema["components"]["schemas"]
+    assert schema["servers"][0]["url"] == "https://api.exegia.co"
+    assert schema["paths"]["/v1/checks/structure"]["post"]["security"] == [{"BearerAuth": []}]
 
 
 def test_missing_dictionary_is_service_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,7 +79,7 @@ def test_mounted_mcp_serves_core_tool(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def call_tool() -> dict:
         transport = StreamableHttpTransport(
-            url="http://testserver/mcp/", httpx_client_factory=http_client_factory
+            url="http://testserver/v1/mcp/", httpx_client_factory=http_client_factory
         )
         async with run_asgi_lifespan(app):
             async with Client(transport) as client:
@@ -139,3 +142,53 @@ def test_core_bridge_rejects_stale_source_hash(tmp_path: Path) -> None:
     runner = CoreBridge(executable=str(executable))
     with pytest.raises(CoreProtocolError, match="stale"):
         runner.run({"operation": "structure", "text": "<root/>"})
+
+
+def test_conversion_upload_returns_bounded_zip(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, bytes]] = []
+
+    def fake_convert(
+        kind: str, filename: str, source: bytes, **_options: object
+    ) -> ConversionResult:
+        calls.append((kind, filename, source))
+        return ConversionResult(b"zip", "converted", "source-hash", "artifact-hash")
+
+    monkeypatch.setattr(converter, "convert", fake_convert)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/conversions/tei-to-tf",
+            files={"file": ("sample.xml", b"<TEI/>", "application/xml")},
+        )
+        schema = client.get("/v1/openapi.json").json()
+    assert response.status_code == 200
+    assert response.content == b"zip"
+    assert response.headers["x-conversion-status"] == "converted"
+    assert calls == [("tei", "sample.xml", b"<TEI/>")]
+    assert "/v1/conversions/tei-to-tf" in schema["paths"]
+    assert "/v1/conversions/epub-to-tf" in schema["paths"]
+    assert "/v1/conversions/pdf-to-tf" in schema["paths"]
+
+
+def test_conversion_limit_and_bearer_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CORPORA_API_TOKEN", "test-token")
+    with TestClient(app) as client:
+        assert client.get("/v1/health").status_code == 200
+        assert client.get("/v1/openapi.json").status_code == 200
+        unauthorized = client.post(
+            "/v1/conversions/epub-to-tf",
+            files={"file": ("book.epub", b"data", "application/epub+zip")},
+        )
+        assert unauthorized.status_code == 401
+        oversized = client.post(
+            "/v1/conversions/epub-to-tf",
+            headers={"Authorization": "Bearer test-token"},
+            files={"file": ("book.epub", b"x" * 3_000_001, "application/epub+zip")},
+        )
+        assert oversized.status_code == 413
+        assert "3 MB" in oversized.json()["detail"]
+
+
+def test_conversion_bridge_rejects_missing_converter() -> None:
+    runner = type(converter)(tei_bin="/missing/tei-to-tf")
+    with pytest.raises(ConversionUnavailable, match="TEI converter"):
+        runner.convert("tei", "book.xml", b"<TEI/>")

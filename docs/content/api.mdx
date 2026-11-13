@@ -11,11 +11,17 @@ The pages below are generated from the FastAPI OpenAPI schema checked into this 
 - [Check TEI metadata](/api/check_tei_metadata_v1_checks_tei_metadata_post)
 - [Check spelling](/api/check_spelling_v1_checks_spelling_post)
 
+## Conversion
+
+- [Convert TEI to Text-Fabric](/api/convert_tei_v1_conversions_tei_to_tf_post)
+- [Convert EPUB to Text-Fabric](/api/convert_epub_v1_conversions_epub_to_tf_post)
+- [Convert PDF to TEI and Text-Fabric](/api/convert_pdf_v1_conversions_pdf_to_tf_post)
+
 ## Language and service
 
 - [Detect or select language](/api/detect_language_v1_language_detect_post)
-- [Service health](/api/health_health_get)
+- [Service health](/api/health_v1_health_get)
 
-Each operation page shows the JSON request body, response fields, status codes, and an interactive request playground. The checked-in spec uses a local API URL; hosted playground requests need a separately deployed API origin.
+Each operation page shows the request, response fields, status codes, and an interactive request playground. Conversion pages document multipart uploads and ZIP responses. The spec targets `https://api.exegia.co`; enter a bearer token to call protected endpoints.
 
 For agent tools, use the [MCP guide](/mcp-tools).
