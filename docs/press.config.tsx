@@ -13,7 +13,7 @@ const openapi = createOpenAPI({ input: { corpora: apiSpec as Document } });
 
 async function guardChat(request: Request): Promise<Response | undefined> {
   if (
-    !process.env.AI_GATEWAY_API_KEY ||
+    (!process.env.AI_GATEWAY_API_KEY && !process.env.VERCEL_OIDC_TOKEN) ||
     !process.env.UPSTASH_REDIS_REST_URL ||
     !process.env.UPSTASH_REDIS_REST_TOKEN
   ) {
