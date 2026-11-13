@@ -1,6 +1,21 @@
 {
   "components": {
     "schemas": {
+      "Body_check_text_fabric_v1_checks_text_fabric_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "ZIP containing one Text-Fabric .tf directory",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_check_text_fabric_v1_checks_text_fabric_post",
+        "type": "object"
+      },
       "Body_convert_epub_v1_conversions_epub_to_tf_post": {
         "properties": {
           "file": {
@@ -725,6 +740,123 @@
         "title": "Suggestion",
         "type": "object"
       },
+      "TFCheckIssue": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "severity": {
+            "const": "error",
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "file",
+          "line",
+          "message"
+        ],
+        "title": "TFCheckIssue",
+        "type": "object"
+      },
+      "TFCheckReport": {
+        "examples": [
+          {
+            "check_scope": "static-warp-preflight",
+            "issue_count": 0,
+            "issues": [],
+            "max_node": 3,
+            "max_slot": 2,
+            "slot_type": "word",
+            "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "status": "passed",
+            "tf_root": "corpus/tf"
+          }
+        ],
+        "properties": {
+          "check_scope": {
+            "const": "static-warp-preflight",
+            "description": "Checks core TF node and containment invariants; not a loader or source-fidelity test.",
+            "title": "Check Scope",
+            "type": "string"
+          },
+          "issue_count": {
+            "title": "Issue Count",
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/TFCheckIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "max_node": {
+            "title": "Max Node",
+            "type": "integer"
+          },
+          "max_slot": {
+            "title": "Max Slot",
+            "type": "integer"
+          },
+          "slot_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Type"
+          },
+          "source_sha256": {
+            "description": "SHA-256 of the exact uploaded ZIP bytes.",
+            "title": "Source Sha256",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tf_root": {
+            "title": "Tf Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "check_scope",
+          "source_sha256",
+          "tf_root",
+          "slot_type",
+          "max_slot",
+          "max_node",
+          "issues",
+          "issue_count"
+        ],
+        "title": "TFCheckReport",
+        "type": "object"
+      },
       "TextEdit": {
         "additionalProperties": true,
         "properties": {
@@ -757,7 +889,7 @@
     }
   },
   "info": {
-    "description": "Checks decoded text without changing it. Structural and metadata reports are bound to the exact input by SHA-256. Spelling requires installed dictionary data. The same text checks are available as tools at `/v1/mcp/`. TEI, EPUB, and PDF conversion endpoints return bounded ZIP bundles.",
+    "description": "Checks decoded text without changing it. Structural and metadata reports are bound to the exact input by SHA-256. Spelling requires installed dictionary data. Text checks and a bounded Text-Fabric static checker are available at `/v1/mcp/`. TEI, EPUB, and PDF conversion endpoints return bounded ZIP bundles.",
     "summary": "Source-bound text checks from corpora-core",
     "title": "Corpora API",
     "version": "0.1.0"
@@ -998,6 +1130,49 @@
           }
         ],
         "summary": "Check TEI metadata",
+        "tags": [
+          "checks"
+        ]
+      }
+    },
+    "/v1/checks/text-fabric": {
+      "post": {
+        "description": "Upload a ZIP containing one TF root with otype.tf. Checks core WARP node typing, slot containment, required files, and archive safety. This static preflight does not run Text-Fabric or Context-Fabric and does not prove source fidelity. Maximum upload: 3 MB; maximum unpacked size: 64 MB.",
+        "operationId": "check_text_fabric_v1_checks_text_fabric_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_check_text_fabric_v1_checks_text_fabric_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TFCheckReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "description": "Unsafe, oversized, or malformed Text-Fabric ZIP"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Check a Text-Fabric ZIP bundle",
         "tags": [
           "checks"
         ]

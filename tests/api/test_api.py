@@ -64,6 +64,7 @@ def test_mcp_has_curated_core_tool_names() -> None:
         "check_tei_purpose",
         "detect_text_language",
         "check_text_spelling",
+        "check_text_fabric_archive",
     }
 
 

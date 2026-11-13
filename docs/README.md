@@ -5,6 +5,10 @@ Astro/Fumapress site for `docs.exegia.co`. Its `/api` pages are generated from
 `uv run python scripts/export_openapi.py` at the repository root.
 The playground calls `https://api.exegia.co/v1/*` and documents bearer auth,
 multipart conversion uploads, ZIP responses, and PDF score-gated reports.
+The `/api` reference also documents `POST /v1/checks/text-fabric` for a
+bounded static TF ZIP preflight. The API MCP server at `api.exegia.co/v1/mcp/`
+exposes the matching `check_text_fabric_archive` tool and `text_fabric_checker`
+host prompt; the docs site's `/mcp` remains documentation search.
 
 ## Development
 

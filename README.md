@@ -10,6 +10,7 @@ FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corp
 | `POST /v1/checks/tei-metadata` | `check_tei_purpose` | TEI date and primary identifier policy |
 | `POST /v1/language/detect` | `detect_text_language` | Language evidence and dictionary selection |
 | `POST /v1/checks/spelling` | `check_text_spelling` | Optional installed-dictionary spelling report |
+| `POST /v1/checks/text-fabric` | `check_text_fabric_archive` | Bounded static WARP preflight for a TF ZIP |
 
 | Conversion endpoint | Result |
 | --- | --- |
@@ -18,6 +19,8 @@ FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corp
 | `POST /v1/conversions/pdf-to-tf` | Score-gated PDF extraction, TEI, Text-Fabric and review report |
 
 `GET /v1/health` reports API process health. `GET /v1/openapi.json` is the exact schema used by the [Fumapress docs](docs/README.md); the API tools are mounted at `/v1/mcp/`. The existing `api.exegia.co` service keeps its routes outside `/v1/*`.
+
+The MCP server also advertises a `text_fabric_checker` prompt for a host agent. Upload a ZIP containing one `.tf` root to the REST route, or pass its base64 bytes to the MCP tool. The checker reports an archive SHA-256, slot/node counts and located errors in `otype.tf`, `oslots.tf` and `otext.tf`. It rejects unsafe paths, links, duplicate names, archives above 3 MB, over 3,000 files or over 64 MB unpacked. A `passed` result is a **static WARP preflight only**; use a real Text-Fabric/Context-Fabric load and source comparison for full validation. The local `text-fabric-validator` skill is not bundled in this service because its redistribution license is unspecified.
 
 The CLI's structural operation uses the core default XML options. TEI-specific `StructuralOptions` from the Rust library are not available through that CLI, so this API does not claim to perform a full TEI structural validation. A nonblocking report does not establish schema validity or conversion success. The service never applies suggestions to source text.
 

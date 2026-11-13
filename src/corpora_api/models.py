@@ -9,6 +9,47 @@ class CoreModel(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class TFCheckIssue(BaseModel):
+    code: str
+    severity: Literal["error"]
+    file: str
+    line: int
+    message: str
+
+
+class TFCheckReport(BaseModel):
+    status: Literal["passed", "failed"]
+    check_scope: Literal["static-warp-preflight"] = Field(
+        description="Checks core TF node and containment invariants; "
+        "not a loader or source-fidelity test."
+    )
+    source_sha256: str = Field(description="SHA-256 of the exact uploaded ZIP bytes.")
+    tf_root: str
+    slot_type: str | None
+    max_slot: int
+    max_node: int
+    issues: list[TFCheckIssue]
+    issue_count: int
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "status": "passed",
+                    "check_scope": "static-warp-preflight",
+                    "source_sha256": "0" * 64,
+                    "tf_root": "corpus/tf",
+                    "slot_type": "word",
+                    "max_slot": 2,
+                    "max_node": 3,
+                    "issues": [],
+                    "issue_count": 0,
+                }
+            ]
+        }
+    )
+
+
 class TextInput(BaseModel):
     text: str = Field(max_length=1_000_000, description="Exact decoded UTF-8 text to check.")
 
