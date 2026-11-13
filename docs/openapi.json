@@ -1,6 +1,51 @@
 {
   "components": {
     "schemas": {
+      "Body_convert_epub_v1_conversions_epub_to_tf_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "EPUB source",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_convert_epub_v1_conversions_epub_to_tf_post",
+        "type": "object"
+      },
+      "Body_convert_pdf_v1_conversions_pdf_to_tf_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "PDF source",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_convert_pdf_v1_conversions_pdf_to_tf_post",
+        "type": "object"
+      },
+      "Body_convert_tei_v1_conversions_tei_to_tf_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "TEI XML or .tei source",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_convert_tei_v1_conversions_tei_to_tf_post",
+        "type": "object"
+      },
       "Diagnostic": {
         "additionalProperties": true,
         "properties": {
@@ -703,41 +748,22 @@
         "title": "TextEdit",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
-    "description": "Checks decoded text without changing it. Structural and metadata reports are bound to the exact input by SHA-256. Spelling requires installed dictionary data. The same operations are available as tools at `/mcp/`.",
+    "description": "Checks decoded text without changing it. Structural and metadata reports are bound to the exact input by SHA-256. Spelling requires installed dictionary data. The same text checks are available as tools at `/v1/mcp/`. TEI, EPUB, and PDF conversion endpoints return bounded ZIP bundles.",
     "summary": "Source-bound text checks from corpora-core",
     "title": "Corpora API",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
-    "/health": {
-      "get": {
-        "operationId": "health_health_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Health Health Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Service health",
-        "tags": [
-          "service"
-        ]
-      }
-    },
     "/v1/checks/spelling": {
       "post": {
         "description": "Dictionary-backed findings for a decoded text segment. Suggestions never change source text.",
@@ -777,6 +803,9 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -785,7 +814,7 @@
                 }
               }
             },
-            "description": "Unprocessable Entity"
+            "description": "Unprocessable Content"
           },
           "502": {
             "content": {
@@ -808,6 +837,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
         "summary": "Check spelling",
         "tags": [
           "checks"
@@ -845,6 +879,9 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -853,7 +890,7 @@
                 }
               }
             },
-            "description": "Unprocessable Entity"
+            "description": "Unprocessable Content"
           },
           "502": {
             "content": {
@@ -876,6 +913,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
         "summary": "Check XML structure",
         "tags": [
           "checks"
@@ -916,6 +958,9 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -924,7 +969,7 @@
                 }
               }
             },
-            "description": "Unprocessable Entity"
+            "description": "Unprocessable Content"
           },
           "502": {
             "content": {
@@ -947,9 +992,440 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
         "summary": "Check TEI metadata",
         "tags": [
           "checks"
+        ]
+      }
+    },
+    "/v1/conversions/epub-to-tf": {
+      "post": {
+        "description": "Upload one unencrypted, reflowable EPUB. An optional audited repair pass revalidates the source before export. Maximum upload: 3 MB; maximum ZIP: 4 MB.",
+        "operationId": "convert_epub_v1_conversions_epub_to_tf_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "repair",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Repair",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_convert_epub_v1_conversions_epub_to_tf_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "ZIP bundle with manifest, original source, and verified Text-Fabric files. A score-gated PDF contains its report but no TF output.",
+            "headers": {
+              "X-Artifact-SHA256": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Conversion-Status": {
+                "description": "converted, converted_with_issues, or gated",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Source-SHA256": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Convert EPUB to Text-Fabric",
+        "tags": [
+          "conversions"
+        ]
+      }
+    },
+    "/v1/conversions/pdf-to-tf": {
+      "post": {
+        "description": "Upload a PDF of at most 10 pages. OCR and source comparison gate TF export at a score above 95%. A gated result is still a ZIP containing the report. The score is OCR evidence, not transcription accuracy. Maximum upload: 3 MB; maximum ZIP: 4 MB.",
+        "operationId": "convert_pdf_v1_conversions_pdf_to_tf_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "languages",
+            "required": false,
+            "schema": {
+              "default": "eng",
+              "enum": [
+                "eng",
+                "fra",
+                "heb",
+                "eng+fra",
+                "eng+heb"
+              ],
+              "title": "Languages",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_convert_pdf_v1_conversions_pdf_to_tf_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "ZIP bundle with manifest, original source, and verified Text-Fabric files. A score-gated PDF contains its report but no TF output.",
+            "headers": {
+              "X-Artifact-SHA256": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Conversion-Status": {
+                "description": "converted, converted_with_issues, or gated",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Source-SHA256": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Convert PDF to TEI and Text-Fabric",
+        "tags": [
+          "conversions"
+        ]
+      }
+    },
+    "/v1/conversions/tei-to-tf": {
+      "post": {
+        "description": "Upload one TEI XML file. The ZIP retains the source bytes, TF features, manifest and checksums. Maximum upload: 3 MB; maximum ZIP: 4 MB.",
+        "operationId": "convert_tei_v1_conversions_tei_to_tf_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "choice",
+            "required": false,
+            "schema": {
+              "default": "reject",
+              "enum": [
+                "reject",
+                "original",
+                "edited"
+              ],
+              "title": "Choice",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "apparatus",
+            "required": false,
+            "schema": {
+              "default": "reject",
+              "enum": [
+                "reject",
+                "lemma",
+                "witness"
+              ],
+              "title": "Apparatus",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "witness",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Witness"
+            }
+          },
+          {
+            "in": "query",
+            "name": "notes",
+            "required": false,
+            "schema": {
+              "default": "separate",
+              "enum": [
+                "separate",
+                "include"
+              ],
+              "title": "Notes",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "allow_no_namespace",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Allow No Namespace",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_convert_tei_v1_conversions_tei_to_tf_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "ZIP bundle with manifest, original source, and verified Text-Fabric files. A score-gated PDF contains its report but no TF output.",
+            "headers": {
+              "X-Artifact-SHA256": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Conversion-Status": {
+                "description": "converted, converted_with_issues, or gated",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Source-SHA256": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Convert TEI to Text-Fabric",
+        "tags": [
+          "conversions"
+        ]
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "operationId": "health_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health V1 Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Service health",
+        "tags": [
+          "service"
         ]
       }
     },
@@ -988,6 +1464,9 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -996,7 +1475,7 @@
                 }
               }
             },
-            "description": "Unprocessable Entity"
+            "description": "Unprocessable Content"
           },
           "502": {
             "content": {
@@ -1019,6 +1498,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
         "summary": "Detect or select language",
         "tags": [
           "language"
@@ -1027,6 +1511,10 @@
     }
   },
   "servers": [
+    {
+      "description": "Hosted API",
+      "url": "https://api.exegia.co"
+    },
     {
       "description": "Local API",
       "url": "http://localhost:8000"

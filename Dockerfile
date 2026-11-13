@@ -4,14 +4,45 @@ ARG CORPORA_CORE_REF=2291a4a6706bc488ee3acd709a128759c363dd2b
 RUN git clone https://github.com/exegia/corpora-core.git /core
 WORKDIR /core
 RUN git checkout "$CORPORA_CORE_REF" && \
-    cargo build --locked --release -p corpora-core --features spellcheck --bin corpora-text-check
+    cargo build --locked --release -p corpora-core --features spellcheck --bin corpora-text-check && \
+    cargo build --locked --release -p corpora-convert --bin corpora-epub-check && \
+    cargo build --locked --release -p corpora-pdf --bin corpora-pdf-extract
 
-FROM python:3.12-slim-bookworm
+FROM python:3.13-slim-bookworm
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates poppler-utils tesseract-ocr \
+      tesseract-ocr-eng tesseract-ocr-fra tesseract-ocr-heb && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=core-builder /core/target/release/corpora-text-check /usr/local/bin/corpora-text-check
+COPY --from=core-builder /core/target/release/corpora-epub-check /usr/local/bin/corpora-epub-check
+COPY --from=core-builder /core/target/release/corpora-pdf-extract /usr/local/bin/corpora-pdf-extract
+COPY --from=core-builder /core/packages/tei-to-tf /tmp/core-packages/tei-to-tf
+COPY --from=core-builder /core/packages/epub-to-tf /tmp/core-packages/epub-to-tf
+COPY --from=core-builder /core/packages/pdf-to-tf /tmp/core-packages/pdf-to-tf
+COPY --from=core-builder /core/crates/corpora-core/tools/install_dictionaries.py /tmp/dictionaries/install_dictionaries.py
+COPY --from=core-builder /core/crates/corpora-core/tools/dictionaries.lock.json /tmp/dictionaries/dictionaries.lock.json
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir uv && uv sync --locked --no-dev --no-editable
+RUN pip install --no-cache-dir uv && \
+    uv sync --locked --no-dev --no-editable && \
+    uv pip install --python /app/.venv/bin/python \
+      /tmp/core-packages/tei-to-tf \
+      /tmp/core-packages/epub-to-tf \
+      /tmp/core-packages/pdf-to-tf && \
+    python /tmp/dictionaries/install_dictionaries.py \
+      --output /usr/local/share/corpora-dictionaries && \
+    rm -rf /tmp/core-packages /tmp/dictionaries
 ENV CORPORA_TEXT_CHECK_BIN=/usr/local/bin/corpora-text-check
-EXPOSE 8000
-CMD ["uv", "run", "--no-sync", "uvicorn", "corpora_api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV CORPORA_TEI_TO_TF_BIN=/app/.venv/bin/tei-to-tf
+ENV CORPORA_EPUB_TO_TF_BIN=/app/.venv/bin/epub-to-tf
+ENV CORPORA_PDF_TO_TF_BIN=/app/.venv/bin/pdf-to-tf
+ENV CORPORA_EPUB_CHECK_BIN=/usr/local/bin/corpora-epub-check
+ENV CORPORA_PDF_EXTRACT_BIN=/usr/local/bin/corpora-pdf-extract
+ENV CORPORA_DICTIONARIES_DIR=/usr/local/share/corpora-dictionaries
+ENV PATH="/app/.venv/bin:${PATH}"
+ENV HOME=/tmp
+ENV XDG_CACHE_HOME=/tmp/.cache
+EXPOSE 80
+CMD ["sh", "-c", "exec /app/.venv/bin/uvicorn corpora_api.app:app --host 0.0.0.0 --port ${PORT:-80}"]

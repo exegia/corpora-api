@@ -3,6 +3,8 @@
 Astro/Fumapress site for `docs.exegia.co`. Its `/api` pages are generated from
 `openapi.json`, exported from the FastAPI app with
 `uv run python scripts/export_openapi.py` at the repository root.
+The playground calls `https://api.exegia.co/v1/*` and documents bearer auth,
+multipart conversion uploads, ZIP responses, and PDF score-gated reports.
 
 ## Development
 

@@ -5,9 +5,10 @@ repository. `CLAUDE.md` imports it and `.github/copilot-instructions.md` mirrors
 **this** file first.
 
 This repository is **Corpora API**, a Python FastAPI and FastMCP adapter for the
-`corpora-text-check` executable from `exegia/corpora-core`. `docs/` is an Astro/Fumapress
-site on Vercel. The shared template automation remains, but only Python at the root and
-Astro in `docs/` are application stacks here.
+`corpora-text-check` executable and TEI, EPUB, and PDF converter packages from
+`exegia/corpora-core`. The root Vercel project runs the pinned core in a container;
+`docs/` is a separate Astro/Fumapress site on Vercel. The shared template automation
+remains, but only Python at the root and Astro in `docs/` are application stacks here.
 
 ## Do this first
 
@@ -20,6 +21,11 @@ After changing an endpoint or response model, run `uv run python scripts/export_
 and commit the updated `docs/openapi.json`. `make ci` installs and builds the docs site too.
 Set `CORPORA_TEXT_CHECK_BIN` for real-core integration tests; spelling requires
 `CORPORA_DICTIONARIES_DIR`. Never edit core reports or simulate core checks in production.
+The converter executables are `CORPORA_TEI_TO_TF_BIN`, `CORPORA_EPUB_TO_TF_BIN`,
+`CORPORA_PDF_TO_TF_BIN`, `CORPORA_EPUB_CHECK_BIN`, and `CORPORA_PDF_EXTRACT_BIN`.
+Conversion uploads are bounded to 3 MB and responses to 4 MB; never claim a
+score-gated PDF has Text-Fabric output. The hosted API owns only `api.exegia.co/v1/*`;
+the existing `corpora-py` project retains all other `api.exegia.co` paths.
 
 ## Commands
 

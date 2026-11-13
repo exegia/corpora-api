@@ -1,12 +1,13 @@
 [project]
 name = "corpora-api"
 version = "0.1.0"
-description = "HTTP and MCP interfaces to corpora-core text checks"
+description = "HTTP and MCP interfaces to corpora-core checks and converters"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
   "fastapi>=0.115,<1",
   "fastmcp>=4,<5",
+  "python-multipart>=0.0.20,<1",
   "uvicorn[standard]>=0.34,<1",
 ]
 

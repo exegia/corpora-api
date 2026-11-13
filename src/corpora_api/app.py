@@ -1,14 +1,23 @@
 """FastAPI and FastMCP frontends for the same corpora-core calls."""
 
 import os
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse, Response
 from fastmcp import FastMCP
 
+from corpora_api.conversions import (
+    MAX_UPLOAD_BYTES,
+    ConversionBridge,
+    ConversionRejected,
+    ConversionTimedOut,
+    ConversionTooLarge,
+    ConversionUnavailable,
+)
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreRejected, CoreUnavailable
 from corpora_api.models import (
     DiagnosticReport,
@@ -23,24 +32,32 @@ from corpora_api.models import (
 )
 
 bridge = CoreBridge()
+converter = ConversionBridge()
 mcp = FastMCP("Corpora text checks")
-mcp_app = mcp.http_app(path="/")
+mcp_app = mcp.http_app(path="/", stateless_http=True)
 app = FastAPI(
     title="Corpora API",
     summary="Source-bound text checks from corpora-core",
     description=(
         "Checks decoded text without changing it. Structural and metadata reports are bound "
         "to the exact input by SHA-256. Spelling requires installed dictionary data. "
-        "The same operations are available as tools at `/mcp/`."
+        "The same text checks are available as tools at `/v1/mcp/`. "
+        "TEI, EPUB, and PDF conversion endpoints return bounded ZIP bundles."
     ),
     version="0.1.0",
     lifespan=mcp_app.lifespan,
-    servers=[{"url": "http://localhost:8000", "description": "Local API"}],
+    openapi_url="/v1/openapi.json",
+    docs_url="/v1/docs",
+    redoc_url=None,
+    servers=[
+        {"url": "https://api.exegia.co", "description": "Hosted API"},
+        {"url": "http://localhost:8000", "description": "Local API"},
+    ],
 )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
-    allow_methods=["POST"],
+    allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -49,7 +66,9 @@ app.add_middleware(
 async def bearer_auth(request: Request, call_next: Any) -> Any:
     """Allow local use without a token; require it when configured for a public host."""
     token = os.getenv("CORPORA_API_TOKEN")
-    if token and request.url.path.startswith(("/v1/", "/mcp")):
+    public_paths = {"/v1/health", "/v1/openapi.json", "/v1/docs"}
+    protected = request.url.path.startswith("/v1/") and request.url.path not in public_paths
+    if token and protected and request.method != "OPTIONS":
         if request.headers.get("Authorization") != f"Bearer {token}":
             return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
     return await call_next(request)
@@ -70,6 +89,26 @@ async def protocol_error(_request: Request, _error: CoreProtocolError) -> JSONRe
     return JSONResponse(status_code=502, content={"detail": "Core response contract failed"})
 
 
+@app.exception_handler(ConversionRejected)
+async def conversion_rejected(_request: Request, error: ConversionRejected) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionUnavailable)
+async def conversion_unavailable(_request: Request, error: ConversionUnavailable) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionTooLarge)
+async def conversion_too_large(_request: Request, error: ConversionTooLarge) -> JSONResponse:
+    return JSONResponse(status_code=413, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionTimedOut)
+async def conversion_timed_out(_request: Request, error: ConversionTimedOut) -> JSONResponse:
+    return JSONResponse(status_code=504, content={"detail": str(error)})
+
+
 def structure(request: StructureRequest) -> dict[str, Any]:
     return bridge.run({"operation": "structure", **request.model_dump()})
 
@@ -86,7 +125,8 @@ def spelling(request: SpellingRequest) -> dict[str, Any]:
     return bridge.run(request.model_dump(), needs_dictionaries=True)
 
 
-@app.get("/health", tags=["service"], summary="Service health")
+@app.get("/v1/health", tags=["service"], summary="Service health")
+@app.get("/health", include_in_schema=False)
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -187,6 +227,118 @@ async def check_spelling(request: SpellingRequest) -> dict[str, Any]:
     return await run_in_threadpool(spelling, request)
 
 
+CONVERSION_RESPONSES = {
+    200: {
+        "description": (
+            "ZIP bundle with manifest, original source, and verified Text-Fabric files. "
+            "A score-gated PDF contains its report but no TF output."
+        ),
+        "content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}},
+        "headers": {
+            "X-Conversion-Status": {
+                "description": "converted, converted_with_issues, or gated",
+                "schema": {"type": "string"},
+            },
+            "X-Source-SHA256": {"schema": {"type": "string"}},
+            "X-Artifact-SHA256": {"schema": {"type": "string"}},
+        },
+    },
+    401: {"model": ErrorResponse},
+    413: {"model": ErrorResponse},
+    422: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+    504: {"model": ErrorResponse},
+}
+
+
+async def convert_upload(
+    kind: Literal["tei", "epub", "pdf"],
+    file: UploadFile,
+    **options: Any,
+) -> Response:
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    await file.close()
+    result = await run_in_threadpool(converter.convert, kind, file.filename or "", data, **options)
+    return Response(
+        content=result.archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{kind}-to-tf.zip"',
+            "X-Conversion-Status": result.status,
+            "X-Source-SHA256": result.source_sha256,
+            "X-Artifact-SHA256": result.archive_sha256,
+        },
+    )
+
+
+@app.post(
+    "/v1/conversions/tei-to-tf",
+    tags=["conversions"],
+    summary="Convert TEI to Text-Fabric",
+    description=(
+        "Upload one TEI XML file. The ZIP retains the source bytes, TF features, "
+        "manifest and checksums. Maximum upload: 3 MB; maximum ZIP: 4 MB."
+    ),
+    response_class=Response,
+    responses=CONVERSION_RESPONSES,
+)
+async def convert_tei(
+    file: Annotated[UploadFile, File(description="TEI XML or .tei source")],
+    choice: Literal["reject", "original", "edited"] = Query("reject"),
+    apparatus: Literal["reject", "lemma", "witness"] = Query("reject"),
+    witness: str | None = Query(None, max_length=128),
+    notes: Literal["separate", "include"] = Query("separate"),
+    allow_no_namespace: bool = Query(False),
+) -> Response:
+    return await convert_upload(
+        "tei",
+        file,
+        choice=choice,
+        apparatus=apparatus,
+        witness=witness,
+        notes=notes,
+        allow_no_namespace=allow_no_namespace,
+    )
+
+
+@app.post(
+    "/v1/conversions/epub-to-tf",
+    tags=["conversions"],
+    summary="Convert EPUB to Text-Fabric",
+    description=(
+        "Upload one unencrypted, reflowable EPUB. An optional audited repair pass "
+        "revalidates the source before export. Maximum upload: 3 MB; maximum ZIP: 4 MB."
+    ),
+    response_class=Response,
+    responses=CONVERSION_RESPONSES,
+)
+async def convert_epub(
+    file: Annotated[UploadFile, File(description="EPUB source")],
+    repair: bool = Query(False),
+) -> Response:
+    return await convert_upload("epub", file, repair=repair)
+
+
+@app.post(
+    "/v1/conversions/pdf-to-tf",
+    tags=["conversions"],
+    summary="Convert PDF to TEI and Text-Fabric",
+    description=(
+        "Upload a PDF of at most 10 pages. OCR and source comparison gate TF export "
+        "at a score above 95%. A gated result is still a ZIP containing the report. "
+        "The score is OCR evidence, not transcription accuracy. "
+        "Maximum upload: 3 MB; maximum ZIP: 4 MB."
+    ),
+    response_class=Response,
+    responses=CONVERSION_RESPONSES,
+)
+async def convert_pdf(
+    file: Annotated[UploadFile, File(description="PDF source")],
+    languages: Literal["eng", "fra", "heb", "eng+fra", "eng+heb"] = Query("eng"),
+) -> Response:
+    return await convert_upload("pdf", file, languages=languages)
+
+
 @mcp.tool
 def check_xml_structure(text: str, source_id: str = "<input>") -> dict[str, Any]:
     """Check strict XML and return exact, source-hashed diagnostic locations."""
@@ -227,4 +379,31 @@ def check_text_spelling(
     return spelling(SpellingRequest(text=text, locale=locale, role=role))
 
 
-app.mount("/mcp", mcp_app)
+app.mount("/v1/mcp", mcp_app)
+
+
+def public_openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            summary=app.summary,
+            description=app.description,
+            routes=app.routes,
+            servers=app.servers,
+        )
+        schema["components"]["securitySchemes"] = {
+            "BearerAuth": {"type": "http", "scheme": "bearer"}
+        }
+        for path, methods in schema["paths"].items():
+            if path.startswith("/v1/") and path != "/v1/health":
+                for operation in methods.values():
+                    operation["security"] = [{"BearerAuth": []}]
+                    operation.setdefault("responses", {})["401"] = {
+                        "description": "Missing or invalid bearer token"
+                    }
+        app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = public_openapi

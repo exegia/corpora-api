@@ -1,8 +1,12 @@
 .git
 .venv
-docs/node_modules
-docs/dist
-docs/.vercel
-docs/.astro
+.vercel
+.env
+.env.*
+docs
+tests
+dist
+build
 target
 **/__pycache__
+*.pyc
