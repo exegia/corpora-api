@@ -18,22 +18,23 @@ WORKDIR /app
 COPY --from=core-builder /core/target/release/corpora-text-check /usr/local/bin/corpora-text-check
 COPY --from=core-builder /core/target/release/corpora-epub-check /usr/local/bin/corpora-epub-check
 COPY --from=core-builder /core/target/release/corpora-pdf-extract /usr/local/bin/corpora-pdf-extract
-COPY --from=core-builder /core/packages/tei-to-tf /tmp/core-packages/tei-to-tf
-COPY --from=core-builder /core/packages/epub-to-tf /tmp/core-packages/epub-to-tf
-COPY --from=core-builder /core/packages/pdf-to-tf /tmp/core-packages/pdf-to-tf
+COPY --from=core-builder /core/packages/tei-to-tf /opt/core-packages/tei-to-tf
+COPY --from=core-builder /core/packages/epub-to-tf /opt/core-packages/epub-to-tf
+COPY --from=core-builder /core/packages/pdf-to-tf /opt/core-packages/pdf-to-tf
 COPY --from=core-builder /core/crates/corpora-core/tools/install_dictionaries.py /tmp/dictionaries/install_dictionaries.py
 COPY --from=core-builder /core/crates/corpora-core/tools/dictionaries.lock.json /tmp/dictionaries/dictionaries.lock.json
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir uv && \
     uv sync --locked --no-dev --no-editable && \
-    uv pip install --python /app/.venv/bin/python \
-      /tmp/core-packages/tei-to-tf \
-      /tmp/core-packages/epub-to-tf \
-      /tmp/core-packages/pdf-to-tf && \
+    uv pip install --no-editable --python /app/.venv/bin/python \
+      /opt/core-packages/tei-to-tf \
+      /opt/core-packages/epub-to-tf \
+      /opt/core-packages/pdf-to-tf && \
     python /tmp/dictionaries/install_dictionaries.py \
       --output /usr/local/share/corpora-dictionaries && \
-    rm -rf /tmp/core-packages /tmp/dictionaries
+    rm -rf /tmp/dictionaries && \
+    /app/.venv/bin/python -c "import tei_to_tf, epub_to_tf, pdf_to_tf"
 ENV CORPORA_TEXT_CHECK_BIN=/usr/local/bin/corpora-text-check
 ENV CORPORA_TEI_TO_TF_BIN=/app/.venv/bin/tei-to-tf
 ENV CORPORA_EPUB_TO_TF_BIN=/app/.venv/bin/epub-to-tf
