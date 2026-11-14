@@ -34,21 +34,18 @@ runs:
           if [ -f "$f" ]; then node_file="$f"; break; fi
         done
 
-        pm=''; cache=''
-        if [ "$(flag node)" = true ]; then
-          pm="$(. scripts/lib.sh && node_pm)"
-          case "$pm" in
-            npm)  [ -f package-lock.json ] && cache=npm ;;
-            pnpm) [ -f pnpm-lock.yaml ]    && cache=pnpm ;;
-            yarn) [ -f yarn.lock ]         && cache=yarn ;;
-          esac
+        pm=''; cache=''; node="$(flag node)"
+        if [ -f docs/package.json ]; then
+          node=true
+          pm=npm
+          [ -f docs/package-lock.json ] && cache=npm
         fi
 
         {
           echo "stacks=$stacks"
           echo "tags=$tags"
           echo "python=$(flag python)"
-          echo "node=$(flag node)"
+          echo "node=$node"
           echo "rust=$(flag rust)"
           echo "gpui=$(flag gpui)"
           echo "node_file=$node_file"
@@ -64,11 +61,7 @@ runs:
       with:
         enable-cache: true
 
-    # ── Node (TypeScript, React, Expo) ──
-    - name: Set up pnpm
-      if: steps.detect.outputs.pm == 'pnpm'
-      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-
+    # ── Node (Astro docs) ──
     - name: Set up Node
       if: steps.detect.outputs.node == 'true'
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -76,10 +69,7 @@ runs:
         node-version: ${{ steps.detect.outputs.node_file == '' && 'lts/*' || '' }}
         node-version-file: ${{ steps.detect.outputs.node_file }}
         cache: ${{ steps.detect.outputs.cache }}
-
-    - name: Set up Bun
-      if: steps.detect.outputs.pm == 'bun'
-      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        cache-dependency-path: docs/package-lock.json
 
     # ── Rust (GPUI) ──
     - name: Set up Rust toolchain

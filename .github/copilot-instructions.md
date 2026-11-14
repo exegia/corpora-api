@@ -1,7 +1,9 @@
 # Copilot instructions
 
-Full rules are in [`AGENTS.md`](../AGENTS.md); this is the short form. This repository is a **generic
-template** for Rust + GPUI, Python, TypeScript, React, Expo, SwiftUI and AI-agent projects.
+Full rules are in [`AGENTS.md`](../AGENTS.md); this is the short form. This repository is
+Corpora API: FastAPI and FastMCP over the `corpora-core` JSON-lines executable, plus
+bounded TEI, EPUB, and PDF conversion uploads. The API uses Vercel's container runtime;
+the Astro/Fumapress documentation site is a separate project rooted in `docs/`.
 
 ## Commands (run from the repository root)
 
@@ -16,8 +18,14 @@ template** for Rust + GPUI, Python, TypeScript, React, Expo, SwiftUI and AI-agen
 | Validate skills / instructions | `make agents-check`                                            |
 | Scan for secrets               | `make secrets-scan`                                            |
 
-Targets detect the stack from `pyproject.toml`, `package.json`, `Cargo.toml` or `Package.swift` /
-`.xcodeproj` (`scripts/stack.sh`). Override any task with `<TASK>_CMD`, e.g. `make test TEST_CMD="..."`.
+Root targets detect Python from `pyproject.toml`; `make ci` also installs, type-checks, and
+builds the nested `docs/` site. After changing routes or models, run
+`uv run python scripts/export_openapi.py` and commit `docs/openapi.json`.
+The docs install patches `fumadocs-openapi` 12.6.2 request examples; review
+`docs/scripts/patch-openapi-example.mjs` before upgrading that dependency.
+The hosted API owns `api.exegia.co/v1/*` through a narrow route on the existing
+`corpora-py` project. Preserve all other routes on that domain.
+Override a task with `<TASK>_CMD`, e.g. `make test TEST_CMD="..."`.
 `copilot-setup-steps.yml` prepares the same toolchains for the coding agent.
 
 ## Conventions
@@ -26,10 +34,11 @@ Targets detect the stack from `pyproject.toml`, `package.json`, `Cargo.toml` or 
   opened as PRs into `dev` (the default branch). Promotion: `dev` -> `next` -> `release/vX.Y.Z` -> `main`.
 - **PR titles:** Conventional Commits, `feat(scope)!: summary`. They set the SemVer bump (`!` major,
   `feat` minor, else patch). Do not edit versions, tags or `CHANGELOG.md` by hand.
+- **Release changelog:** the generator must leave no trailing blank line; run `make selftest` after edits.
 - **Workflows:** `.github/workflows/*.yml` are plain workflows; steps call `make` targets. Pin third-party
   actions to a commit SHA with a version comment. Keep jobs least-privilege.
 - **Docs move with automation:** update `AGENTS.md`, `README.md`, and `.github/WORKFLOW.md` in the same PR.
-- **Template stays generic:** stack specifics go behind `scripts/stack.sh` or `.github/skills/`.
+- **Shared automation stays reusable:** keep API and docs specifics in product code and guidance.
 - **Skills:** `.github/skills/<name>/SKILL.md`, frontmatter `name` equal to the directory and a one-line
   `description`. `make agents-check` enforces it.
 

@@ -1,0 +1,12 @@
+.git
+.venv
+.vercel
+.env
+.env.*
+docs
+tests
+dist
+build
+target
+**/__pycache__
+*.pyc

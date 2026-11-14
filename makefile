@@ -46,6 +46,7 @@ setup: install hooks env-init agents-link ## First-time setup: deps, git hooks, 
 .PHONY: install
 install: ## Install dependencies for every detected stack.
 	@$(STACK) run install
+	@npm ci --prefix docs
 
 .PHONY: hooks
 hooks: ## Install pre-commit, commit-msg and pre-push git hooks.
@@ -99,7 +100,16 @@ selftest: ## Test this repo's own automation scripts (tests/template).
 	@bash tests/template/run.sh
 
 .PHONY: ci
-ci: install selftest agents-check lint-check typecheck test build ## Everything CI runs on a pull request.
+ci: install selftest agents-check lint-check typecheck test build openapi-check docs-check ## Everything CI runs on a pull request.
+
+.PHONY: openapi-check
+openapi-check: ## Verify that the checked-in OpenAPI spec matches FastAPI.
+	@uv run python scripts/export_openapi.py --check
+
+.PHONY: docs-check
+docs-check: ## Type-check and build the Fumapress documentation site.
+	@npm run types:check --prefix docs
+	@npm run build --prefix docs
 
 .PHONY: clean
 clean: ## Remove caches and build artifacts (keeps dependencies and lockfiles).
