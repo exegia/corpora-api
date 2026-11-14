@@ -13,6 +13,7 @@ FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corp
 | `POST /v1/checks/text-fabric` | `check_text_fabric_archive` | Bounded static WARP preflight for a TF ZIP |
 | `POST /v1/validate` | — | User-authenticated archive validation with real loaders or CTEI/C-USX profile checks |
 | `POST /v1/ingest` | — | User-authenticated document ingestion to a schema-validated Context Fabric v1 graph |
+| `GET /v1/storage`, `GET /v1/storage/{filename}`, `GET /v1/storage/{filename}/download` | — | User-authenticated archive reads from the configured legacy Hub or Supabase library |
 
 | Conversion endpoint | Result |
 | --- | --- |
@@ -33,6 +34,8 @@ The spelling response keeps its existing flat `start` and `end` fields. The API 
 `POST /v1/ingest` accepts one multipart `file` plus optional `name`, `language` (BCP 47, default `und`), and `corpus_id` (UUID). UTF-8 `.txt` is the first hosted format: its exact decoded text is preserved in one fragment under a document root and block node. PDF, DOCX, PPTX, HTML, and Markdown require an optional Docling Python worker; without it, those uploads return 503. Unsupported formats return 415, invalid inputs 422, and uploads over 3 MB return 413. Ingestion finishes and its graph is stored before the 202 response; `GET /v1/ingest/{job_id}` polls the saved job and `GET /v1/ingest/{job_id}/download` returns `graph.json`. The result is capped at 4 MB. All three routes require a verified Supabase user token; another user's job returns 404.
 
 Ingestion uses the existing private `conversion_jobs` PostgREST table and result bucket from `corpora-py` (see its `packages/admin/sql/conversion_jobs.sql`). Set `SUPABASE_URL` or `PROJECT_REF`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_JOBS_BUCKET` (or `SUPABASE_STORAGE_BUCKET`) in the API project. A completed graph is saved at `conversion-jobs/{job_id}.graph.json`; the job row records its verified owner and result key. The service role key stays server-side. The optional Docling worker runs in a separate Python environment with this API package and `corpora-admin[docling]` installed; point `CORPORA_INGEST_WORKER_PYTHON` to that interpreter. Worker output is revalidated against the pinned Context Fabric v1 JSON Schemas from `corpora-schema-types` before storage.
+
+Storage reads use `STORAGE_BACKEND=huggingface` by default, matching the current legacy `/storage` deployment. Set `HF_STORAGE_REPO`, `HF_STORAGE_REPO_TYPE` (`bucket`, `model`, `dataset`, or `space`), and `HF_TOKEN` if the location is private. `STORAGE_BACKEND=supabase` instead reads the existing private `SUPABASE_STORAGE_BUCKET` using `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` or `PROJECT_REF`. A verified Supabase user JWT is required on every new route. Hub archives are shared; Supabase objects are addressed only at `{verified-user-id}/{filename}`. Callers cannot select an owner or a server path. List and inspect return the legacy `filename`, `size_bytes`, `repo_id`, and `url` fields, and download streams bytes without staging on the API server. Missing configuration returns 503, a missing or foreign archive returns 404, and an upstream storage failure returns 502.
 
 ## Local development
 

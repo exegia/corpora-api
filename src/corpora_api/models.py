@@ -65,6 +65,15 @@ class ValidationResponse(BaseModel):
     )
 
 
+class StoredCorpusResponse(BaseModel):
+    """Legacy-compatible metadata for an owned corpus archive."""
+
+    filename: str
+    size_bytes: int | None
+    repo_id: str
+    url: str
+
+
 class IngestCreated(BaseModel):
     job_id: str
     status_url: str
