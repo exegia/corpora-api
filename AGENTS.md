@@ -75,6 +75,7 @@ runners. Each stack has a skill with the conventions and pitfalls.
 4. **PR titles are Conventional Commits** (`feat(scope)!: summary`). The title becomes the squash commit
    and drives the SemVer bump: `!` / `BREAKING CHANGE` major, `feat` minor, everything else patch.
 5. **Do not hand-edit** version numbers, `CHANGELOG.md` sections or tags: the release pipeline writes them.
+   Generated `CHANGELOG.md` must end after its last entry with one newline; `make selftest` checks this.
 6. **Change automation and docs together.** If you touch workflows, scripts, the makefile or conventions,
    update this file, `README.md`, `.github/copilot-instructions.md` and `.github/WORKFLOW.md` in the same PR.
 7. **Keep shared automation reusable.** Product-specific API and docs code belongs in `src/`,
