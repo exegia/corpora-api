@@ -116,6 +116,14 @@ def test_unconfigured_jwks_and_missing_user_are_rejected(monkeypatch: pytest.Mon
     assert unverified.status_code == 401
 
 
+def test_custom_jwks_requires_an_expected_issuer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PROJECT_REF", raising=False)
+    monkeypatch.delenv("SUPABASE_JWT_ISSUER", raising=False)
+    monkeypatch.setenv("SUPABASE_JWKS_URL", "https://auth.example.test/jwks.json")
+    with pytest.raises(auth.UserAuthError, match="issuer is not configured"):
+        auth.verify_user_token("unverified")
+
+
 def test_wrong_signature_and_missing_expiry_are_rejected(
     monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
 ) -> None:
@@ -127,8 +135,14 @@ def test_wrong_signature_and_missing_expiry_are_rejected(
         algorithm="RS256",
         headers={"kid": "test-key"},
     )
+    no_issuer = jwt.encode(
+        {"sub": USER_ID, "aud": "authenticated", "exp": datetime.now(UTC) + timedelta(hours=1)},
+        signing_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
     with TestClient(app) as client:
-        for credential in (user_token(other_key), no_expiry):
+        for credential in (user_token(other_key), no_expiry, no_issuer):
             response = client.get(
                 "/v1/auth/me",
                 headers={"Authorization": f"Bearer {credential}"},

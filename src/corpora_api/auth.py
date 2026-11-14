@@ -36,6 +36,8 @@ def verify_user_token(token: str) -> dict[str, Any]:
     issuer = os.getenv("SUPABASE_JWT_ISSUER") or (
         f"https://{project_ref}.supabase.co/auth/v1" if project_ref else None
     )
+    if not issuer:
+        raise UserAuthError("Supabase JWT issuer is not configured")
     try:
         key = _jwks_client(jwks_url).get_signing_key_from_jwt(token)
         claims = jwt.decode(
@@ -44,7 +46,7 @@ def verify_user_token(token: str) -> dict[str, Any]:
             algorithms=["RS256", "ES256"],
             audience=os.getenv("SUPABASE_JWT_AUDIENCE", "authenticated"),
             issuer=issuer,
-            options={"require": ["aud", "exp", "sub"]},
+            options={"require": ["aud", "exp", "iss", "sub"]},
         )
     except (jwt.PyJWTError, OSError, URLError, TimeoutError) as error:
         raise UserAuthError("Invalid or expired user token") from error
