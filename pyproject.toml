@@ -1,12 +1,14 @@
 [project]
 name = "corpora-api"
-version = "0.1.1"
+version = "0.2.0"
 description = "HTTP and MCP interfaces to corpora-core checks and converters"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+  "corpora-schema-types @ git+https://github.com/exegia/corpora-core.git@b7e8ebdaec119b2532004d193bc333fa2df7e563#subdirectory=generated/python",
   "fastapi>=0.115,<1",
   "fastmcp>=4,<5",
+  "pyjwt[crypto]>=2.10,<3",
   "python-multipart>=0.0.20,<1",
   "uvicorn[standard]>=0.34,<1",
 ]
@@ -17,6 +19,9 @@ dev = ["httpx>=0.28,<1", "httpx2>=2.16,<3", "pytest>=8,<10", "ruff>=0.11,<1"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/corpora_api"]
