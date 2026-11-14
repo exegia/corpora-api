@@ -83,7 +83,11 @@ cmd_update() {
     { print }
     END { if (!done) dump() }
   ' "$CHANGELOG" > "$tmp"
-  cat "$tmp" > "$CHANGELOG"
+  # Keep internal spacing, but leave no blank lines after the final entry.
+  awk '
+    /^[[:space:]]*$/ { blank++; next }
+    { while (blank > 0) { print ""; blank-- } print }
+  ' "$tmp" > "$CHANGELOG"
   rm -f "$sec" "$tmp"
   ok "$CHANGELOG has a section for $ver"
 }
