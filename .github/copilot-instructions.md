@@ -4,6 +4,9 @@ Full rules are in [`AGENTS.md`](../AGENTS.md); this is the short form. This repo
 Corpora API: FastAPI and FastMCP over the `corpora-core` JSON-lines executable, plus
 bounded TEI, EPUB, and PDF conversion uploads. The API uses Vercel's container runtime;
 the Astro/Fumapress documentation site is a separate project rooted in `docs/`.
+`POST /v1/validate` accepts bounded archive uploads with verified user JWT auth.
+It invokes `CORPORA_VALIDATE_BIN`; client paths and legacy job IDs are not valid
+hosted targets.
 
 ## Commands (run from the repository root)
 

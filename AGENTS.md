@@ -25,6 +25,8 @@ Set `CORPORA_TEXT_CHECK_BIN` for real-core integration tests; spelling requires
 `CORPORA_DICTIONARIES_DIR`. Never edit core reports or simulate core checks in production.
 The converter executables are `CORPORA_TEI_TO_TF_BIN`, `CORPORA_EPUB_TO_TF_BIN`,
 `CORPORA_PDF_TO_TF_BIN`, `CORPORA_EPUB_CHECK_BIN`, and `CORPORA_PDF_EXTRACT_BIN`.
+`CORPORA_VALIDATE_BIN` runs bounded user-authenticated archive validation.
+Never forward a client-supplied server path or legacy conversion job ID to it.
 Conversion uploads are bounded to 3 MB and responses to 4 MB; never claim a
 score-gated PDF has Text-Fabric output. The hosted API owns only `api.exegia.co/v1/*`;
 the existing `corpora-py` project retains all other `api.exegia.co` paths.

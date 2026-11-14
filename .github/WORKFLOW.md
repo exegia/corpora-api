@@ -94,6 +94,11 @@ Keep its version guard aligned with the pinned `fumadocs-openapi` dependency.
 Squash-merge into `dev`. Everything after that is automatic until the release PR: review the draft PR into
 `main`, mark it ready, merge it with a merge commit.
 
+The API container pins one `corpora-core` commit for its Rust binaries,
+converter packages, and `corpora-validate` CLI. Update that pin only after the
+core PR is merged. `/v1/validate` accepts bounded user-authenticated uploads;
+the legacy sidecar retains server-path and conversion-job resolution.
+
 ## 4. Manual operations
 
 ```bash
