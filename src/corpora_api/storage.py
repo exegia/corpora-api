@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import tempfile
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -17,6 +20,7 @@ from huggingface_hub.errors import (
 )
 
 HUB_ACCESS_ERROR = "HF_TOKEN cannot access the configured Hub storage"
+logger = logging.getLogger(__name__)
 
 
 class StorageError(Exception):
@@ -29,6 +33,10 @@ class StorageNotConfigured(StorageError):
 
 class StoredCorpusNotFound(StorageError):
     """The requested archive was not found in the selected storage backend."""
+
+
+class StoredCorpusConflict(StorageError):
+    """An archive with the requested name already exists."""
 
 
 @dataclass(frozen=True)
@@ -174,6 +182,53 @@ class SupabaseCorpusStorage:
             raise StorageError("Could not download corpus archive")
         return response, name
 
+    def upload(self, user_id: str, filename: str, content: bytes) -> StoredCorpus:
+        """Add an archive beneath the verified user's prefix without overwriting."""
+        name = archive_name(filename)
+        url, key, bucket = self._config()
+        owner = self._owner(user_id)
+        try:
+            self.info(user_id, name)
+        except StoredCorpusNotFound:
+            pass
+        else:
+            raise StoredCorpusConflict(f"A corpus named {name!r} already exists")
+        response = self._request(
+            "POST",
+            self._object_url(url, bucket, owner, name),
+            headers={**self._headers(key), "Content-Type": "application/octet-stream"},
+            content=content,
+        )
+        if response.status_code == 409 or (
+            response.status_code == 400 and "already exists" in response.text.lower()
+        ):
+            raise StoredCorpusConflict(f"A corpus named {name!r} already exists")
+        if response.status_code == 404:
+            raise StorageNotConfigured("Supabase corpus storage bucket is unavailable")
+        if response.status_code not in (200, 201):
+            raise StorageError(f"Could not upload corpus archive ({response.status_code})")
+        return StoredCorpus(
+            filename=name,
+            size_bytes=len(content),
+            repo_id=bucket,
+            url=self._object_url(url, bucket, owner, name),
+        )
+
+    def delete(self, user_id: str, filename: str) -> None:
+        """Delete only an archive under the verified user's prefix."""
+        stored = self.info(user_id, filename)
+        url, key, bucket = self._config()
+        owner = self._owner(user_id)
+        response = self._request(
+            "DELETE",
+            self._object_url(url, bucket, owner, stored.filename),
+            headers=self._headers(key),
+        )
+        if response.status_code in (400, 404):
+            raise StoredCorpusNotFound(f"No corpus named {stored.filename!r}")
+        if response.status_code not in (200, 204):
+            raise StorageError(f"Could not delete corpus archive ({response.status_code})")
+
 
 class HubCorpusStorage:
     """Read the shared Hub repository with the same metadata as the legacy API."""
@@ -181,6 +236,9 @@ class HubCorpusStorage:
     def __init__(self, api: HfApi | None = None, client: httpx.Client | None = None) -> None:
         token = os.getenv("HF_TOKEN")
         self.api = api or HfApi(token=token or False)
+        write_token = os.getenv("HF_STORAGE_WRITE_TOKEN")
+        self.write_api = api or HfApi(token=write_token or False)
+        self._writes_configured = api is not None or bool(write_token)
         self.client = client or httpx.Client(timeout=30, follow_redirects=True)
 
     @staticmethod
@@ -284,6 +342,93 @@ class HubCorpusStorage:
             raise StorageError("Could not download corpus archive")
         return response, name
 
+    def _ensure_repo(self, repo_id: str, repo_type: str) -> None:
+        try:
+            if repo_type == "bucket":
+                self.write_api.create_bucket(repo_id, private=True, exist_ok=True)
+            else:
+                self.write_api.create_repo(
+                    repo_id, repo_type=repo_type, private=True, exist_ok=True
+                )
+        except HfHubHTTPError as error:
+            if getattr(error.response, "status_code", None) in (401, 403):
+                raise StorageNotConfigured(
+                    "HF_TOKEN cannot write to the configured Hub storage"
+                ) from error
+            raise StorageError("Could not prepare Hub storage for publishing") from error
+
+    def upload(self, _user_id: str, filename: str, content: bytes) -> StoredCorpus:
+        """Publish an archive to the configured Hub repository without overwriting."""
+        if not self._writes_configured:
+            raise StorageNotConfigured(
+                "HF_STORAGE_WRITE_TOKEN is required to publish or delete Hub archives"
+            )
+        repo_id, repo_type, _token = self._config()
+        name = archive_name(filename)
+        self._ensure_repo(repo_id, repo_type)
+        try:
+            self.info("", name)
+        except StoredCorpusNotFound:
+            pass
+        else:
+            raise StoredCorpusConflict(f"A corpus named {name!r} already exists")
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="corpora-api-storage-") as temporary:
+                local = Path(temporary) / name
+                local.write_bytes(content)
+                if repo_type == "bucket":
+                    self.write_api.batch_bucket_files(repo_id, add=[(str(local), name)])
+                else:
+                    self.write_api.upload_file(
+                        path_or_fileobj=str(local),
+                        path_in_repo=name,
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        commit_message=f"Publish {name}",
+                    )
+        except HfHubHTTPError as error:
+            status = getattr(error.response, "status_code", None)
+            if status in (401, 403):
+                raise StorageNotConfigured(
+                    "HF_TOKEN cannot write to the configured Hub storage"
+                ) from error
+            if status == 409:
+                raise StoredCorpusConflict(f"A corpus named {name!r} already exists") from error
+            raise StorageError(f"Could not upload {name} to Hub storage") from error
+        except OSError as error:
+            raise StorageError("Could not stage corpus archive for Hub upload") from error
+        logger.info("Published corpus %s to Hub repository %s", name, repo_id)
+        return self.info("", name)
+
+    def delete(self, _user_id: str, filename: str) -> None:
+        """Delete a shared Hub archive, failing closed if it is not present."""
+        if not self._writes_configured:
+            raise StorageNotConfigured(
+                "HF_STORAGE_WRITE_TOKEN is required to publish or delete Hub archives"
+            )
+        repo_id, repo_type, _token = self._config()
+        stored = self.info("", filename)
+        try:
+            if repo_type == "bucket":
+                self.write_api.batch_bucket_files(repo_id, delete=[stored.filename])
+            else:
+                self.write_api.delete_file(
+                    stored.filename,
+                    repo_id,
+                    repo_type=repo_type,
+                    commit_message=f"Delete {stored.filename}",
+                )
+        except (EntryNotFoundError, RepositoryNotFoundError, BucketNotFoundError) as error:
+            raise StoredCorpusNotFound(f"No corpus named {stored.filename!r}") from error
+        except HfHubHTTPError as error:
+            if getattr(error.response, "status_code", None) in (401, 403):
+                raise StorageNotConfigured(
+                    "HF_TOKEN cannot write to the configured Hub storage"
+                ) from error
+            raise StorageError(f"Could not delete {stored.filename} from Hub storage") from error
+        logger.info("Deleted corpus %s from Hub repository %s", stored.filename, repo_id)
+
 
 class CorpusStorage:
     """Select the same storage backend that the legacy deployment uses."""
@@ -312,3 +457,9 @@ class CorpusStorage:
 
     def open_download(self, user_id: str, filename: str) -> tuple[httpx.Response, str]:
         return self._backend().open_download(user_id, filename)
+
+    def upload(self, user_id: str, filename: str, content: bytes) -> StoredCorpus:
+        return self._backend().upload(user_id, filename, content)
+
+    def delete(self, user_id: str, filename: str) -> None:
+        self._backend().delete(user_id, filename)
