@@ -3,15 +3,17 @@
 import base64
 import binascii
 import os
+import secrets
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, File, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from fastmcp import FastMCP
 
+from corpora_api.auth import UserAuthError, current_user_id, require_user, verify_user_token
 from corpora_api.conversions import (
     MAX_UPLOAD_BYTES,
     ConversionBridge,
@@ -40,6 +42,7 @@ bridge = CoreBridge()
 converter = ConversionBridge()
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
+USER_AUTH_PATHS = frozenset({"/v1/auth/me"})
 app = FastAPI(
     title="Corpora API",
     summary="Source-bound text checks from corpora-core",
@@ -69,14 +72,38 @@ app.add_middleware(
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next: Any) -> Any:
-    """Allow local use without a token; require it when configured for a public host."""
+    """Keep service routes service-only; verify user identity on explicit user routes."""
     token = os.getenv("CORPORA_API_TOKEN")
-    public_paths = {"/v1/health", "/v1/openapi.json", "/v1/docs"}
+    public_paths = {"/v1/health", "/v1/capabilities", "/v1/openapi.json", "/v1/docs"}
     protected = request.url.path.startswith("/v1/") and request.url.path not in public_paths
-    if token and protected and request.method != "OPTIONS":
-        if request.headers.get("Authorization") != f"Bearer {token}":
+    if not protected or request.method == "OPTIONS":
+        return await call_next(request)
+
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, credential = authorization.partition(" ")
+    has_bearer = scheme.lower() == "bearer" and bool(credential)
+    if request.url.path not in USER_AUTH_PATHS:
+        if token and (
+            not has_bearer or not secrets.compare_digest(credential.encode(), token.encode())
+        ):
             return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
-    return await call_next(request)
+        return await call_next(request)
+
+    if not has_bearer:
+        return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
+
+    try:
+        claims = await run_in_threadpool(verify_user_token, credential)
+    except UserAuthError:
+        return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
+
+    request.state.user_id = claims["sub"]
+    request.state.user_claims = claims
+    context_token = current_user_id.set(claims["sub"])
+    try:
+        return await call_next(request)
+    finally:
+        current_user_id.reset(context_token)
 
 
 @app.exception_handler(CoreUnavailable)
@@ -139,6 +166,18 @@ def spelling(request: SpellingRequest) -> dict[str, Any]:
 @app.get("/health", include_in_schema=False)
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/capabilities", tags=["service"], summary="Deployment capabilities")
+def capabilities() -> dict[str, bool]:
+    """Match the legacy response shape; this API does not publish to the Hub."""
+    return {"auth_required": bool(os.getenv("CORPORA_API_TOKEN")), "hub_writable": False}
+
+
+@app.get("/v1/auth/me", tags=["identity"], summary="Verified user identity")
+def user_identity(user_id: Annotated[str, Depends(require_user)]) -> dict[str, str]:
+    """Return the subject of a verified Supabase user access token."""
+    return {"user_id": user_id}
 
 
 ERRORS = {
@@ -448,12 +487,25 @@ def public_openapi() -> dict[str, Any]:
             servers=app.servers,
         )
         schema["components"]["securitySchemes"] = {
-            "BearerAuth": {"type": "http", "scheme": "bearer"}
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "CORPORA_API_TOKEN for check, conversion, and MCP requests.",
+            },
+            "SupabaseUserJWT": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": (
+                    "Verified Supabase access token. User-owned routes require this scheme."
+                ),
+            },
         }
         for path, methods in schema["paths"].items():
-            if path.startswith("/v1/") and path != "/v1/health":
+            if path.startswith("/v1/") and path not in {"/v1/health", "/v1/capabilities"}:
                 for operation in methods.values():
-                    operation["security"] = [{"BearerAuth": []}]
+                    scheme = "SupabaseUserJWT" if path in USER_AUTH_PATHS else "BearerAuth"
+                    operation["security"] = [{scheme: []}]
                     operation.setdefault("responses", {})["401"] = {
                         "description": "Missing or invalid bearer token"
                     }

@@ -230,8 +230,10 @@ name = "corpora-api"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
+    { name = "corpora-schema-types" },
     { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -246,8 +248,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "corpora-schema-types", git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=b7e8ebdaec119b2532004d193bc333fa2df7e563" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "fastmcp", specifier = ">=4,<5" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
     { name = "python-multipart", specifier = ">=0.0.20,<1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
 ]
@@ -258,6 +262,14 @@ dev = [
     { name = "httpx2", specifier = ">=2.16,<3" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "ruff", specifier = ">=0.11,<1" },
+]
+
+[[package]]
+name = "corpora-schema-types"
+version = "1.0.0"
+source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=b7e8ebdaec119b2532004d193bc333fa2df7e563#b7e8ebdaec119b2532004d193bc333fa2df7e563" }
+dependencies = [
+    { name = "pydantic" },
 ]
 
 [[package]]
