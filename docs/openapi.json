@@ -883,6 +883,13 @@
     },
     "securitySchemes": {
       "BearerAuth": {
+        "description": "CORPORA_API_TOKEN for check, conversion, and MCP requests.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "SupabaseUserJWT": {
+        "bearerFormat": "JWT",
+        "description": "Verified Supabase access token. User-owned routes require this scheme.",
         "scheme": "bearer",
         "type": "http"
       }
@@ -896,6 +903,66 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/auth/me": {
+      "get": {
+        "description": "Return the subject of a verified Supabase user access token.",
+        "operationId": "user_identity_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response User Identity V1 Auth Me Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Verified user identity",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "description": "Match the legacy response shape; this API does not publish to the Hub.",
+        "operationId": "capabilities_v1_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Capabilities V1 Capabilities Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Deployment capabilities",
+        "tags": [
+          "service"
+        ]
+      }
+    },
     "/v1/checks/spelling": {
       "post": {
         "description": "Dictionary-backed findings for a decoded text segment. Suggestions never change source text.",
