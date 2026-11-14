@@ -2,11 +2,15 @@
 
 import base64
 import binascii
+import json
 import os
 import secrets
+import uuid
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, File, Query, Request, UploadFile
+from corpora_schema_types import GraphValidationError
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -23,9 +27,33 @@ from corpora_api.conversions import (
     ConversionUnavailable,
 )
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreRejected, CoreUnavailable
+from corpora_api.ingest import (
+    MAX_GRAPH_BYTES,
+    MAX_INGEST_BYTES,
+    IngestRejected,
+    build_plain_graph,
+    validate_ingest_options,
+)
+from corpora_api.ingest_store import (
+    IngestNotFound,
+    IngestNotReady,
+    IngestStore,
+    IngestStoreCorrupt,
+    IngestStoreError,
+)
+from corpora_api.ingest_worker import (
+    DOCLING_SUFFIXES,
+    IngestWorkerFailed,
+    IngestWorkerProtocolError,
+    IngestWorkerTimedOut,
+    IngestWorkerUnavailable,
+    run_docling_worker,
+)
 from corpora_api.models import (
     DiagnosticReport,
     ErrorResponse,
+    IngestCreated,
+    IngestJobStatus,
     LanguageDetection,
     LanguageRequest,
     PurposeReport,
@@ -51,9 +79,16 @@ from corpora_api.validation import (
 bridge = CoreBridge()
 converter = ConversionBridge()
 validator = ValidationBridge()
+ingest_store = IngestStore()
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 USER_AUTH_PATHS = frozenset({"/v1/auth/me", "/v1/validate"})
+
+
+def user_auth_path(path: str) -> bool:
+    return path in USER_AUTH_PATHS or path == "/v1/ingest" or path.startswith("/v1/ingest/")
+
+
 app = FastAPI(
     title="Corpora API",
     summary="Source-bound text checks from corpora-core",
@@ -93,7 +128,7 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     authorization = request.headers.get("Authorization", "")
     scheme, _, credential = authorization.partition(" ")
     has_bearer = scheme.lower() == "bearer" and bool(credential)
-    if request.url.path not in USER_AUTH_PATHS:
+    if not user_auth_path(request.url.path):
         if token and (
             not has_bearer or not secrets.compare_digest(credential.encode(), token.encode())
         ):
@@ -478,6 +513,136 @@ async def validate_corpus_upload(
     return ValidationResponse.model_validate(result)
 
 
+@app.post(
+    "/v1/ingest",
+    status_code=202,
+    response_model=IngestCreated,
+    tags=["ingestion"],
+    summary="Ingest a document into a canonical graph",
+    description=(
+        "Upload one document (up to 3 MB). UTF-8 .txt runs in the API; PDF, DOCX, PPTX, "
+        "HTML, and Markdown require a separately installed Docling Python worker. The API "
+        "validates a Context Fabric v1 graph and stores the completed job and graph.json in "
+        "the shared Supabase job store. A verified user token is required."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        415: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        504: {"model": ErrorResponse},
+    },
+)
+async def create_ingestion(
+    file: Annotated[UploadFile, File(description="Document to ingest")],
+    _user_id: Annotated[str, Depends(require_user)],
+    name: Annotated[str, Form()] = "",
+    language: Annotated[str, Form()] = "und",
+    corpus_id: Annotated[str, Form()] = "",
+) -> IngestCreated:
+    filename = file.filename or ""
+    suffix = Path(filename).suffix.lower()
+    if suffix not in DOCLING_SUFFIXES | {".txt"}:
+        raise HTTPException(status_code=415, detail="Unsupported ingestion format")
+    try:
+        validate_ingest_options(filename, name, language, corpus_id)
+    except IngestRejected as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    source = await file.read(MAX_INGEST_BYTES + 1)
+    if len(source) > MAX_INGEST_BYTES:
+        raise HTTPException(status_code=413, detail=f"Upload exceeds {MAX_INGEST_BYTES} bytes")
+    try:
+        builder = build_plain_graph if suffix == ".txt" else run_docling_worker
+        graph = await run_in_threadpool(
+            builder, filename, source, name=name, language=language, corpus_id=corpus_id
+        )
+    except IngestRejected as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except IngestWorkerUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except IngestWorkerFailed as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except IngestWorkerProtocolError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except IngestWorkerTimedOut as error:
+        raise HTTPException(status_code=504, detail=str(error)) from error
+    except GraphValidationError as error:
+        raise HTTPException(status_code=502, detail="Generated graph failed validation") from error
+    graph_bytes = json.dumps(graph.to_wire(), ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    if len(graph_bytes) > MAX_GRAPH_BYTES:
+        raise HTTPException(status_code=413, detail="Generated graph exceeds hosted response limit")
+    job_id = str(uuid.uuid4())
+    title = str(graph.work["title"])
+    try:
+        await run_in_threadpool(ingest_store.save, _user_id, job_id, filename, title, graph_bytes)
+    except IngestStoreError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return IngestCreated(
+        job_id=job_id,
+        status_url=f"/v1/ingest/{job_id}",
+        download_url=f"/v1/ingest/{job_id}/download",
+    )
+
+
+@app.get(
+    "/v1/ingest/{job_id}",
+    response_model=IngestJobStatus,
+    tags=["ingestion"],
+    summary="Poll an owned ingestion job",
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def get_ingestion(
+    job_id: str, _user_id: Annotated[str, Depends(require_user)]
+) -> IngestJobStatus:
+    try:
+        row = await run_in_threadpool(ingest_store.status, _user_id, job_id)
+    except IngestNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except IngestStoreError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return IngestJobStatus.model_validate(row)
+
+
+@app.get(
+    "/v1/ingest/{job_id}/download",
+    tags=["ingestion"],
+    summary="Download an owned schema-validated graph",
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def download_ingestion(
+    job_id: str, _user_id: Annotated[str, Depends(require_user)]
+) -> Response:
+    try:
+        graph_bytes, filename = await run_in_threadpool(ingest_store.download, _user_id, job_id)
+    except IngestNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except IngestNotReady as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except IngestStoreCorrupt as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except IngestStoreError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return Response(
+        content=graph_bytes,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @mcp.tool
 def check_xml_structure(text: str, source_id: str = "<input>") -> dict[str, Any]:
     """Check strict XML and return exact, source-hashed diagnostic locations."""
@@ -574,7 +739,7 @@ def public_openapi() -> dict[str, Any]:
         for path, methods in schema["paths"].items():
             if path.startswith("/v1/") and path not in {"/v1/health", "/v1/capabilities"}:
                 for operation in methods.values():
-                    scheme = "SupabaseUserJWT" if path in USER_AUTH_PATHS else "BearerAuth"
+                    scheme = "SupabaseUserJWT" if user_auth_path(path) else "BearerAuth"
                     operation["security"] = [{scheme: []}]
                     operation.setdefault("responses", {})["401"] = {
                         "description": "Missing or invalid bearer token"

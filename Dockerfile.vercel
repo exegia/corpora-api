@@ -1,6 +1,6 @@
 FROM rust:1.91-bookworm AS core-builder
 
-ARG CORPORA_CORE_REF=34a1af489b9cc17f2ccf74025d192fdf7941bda6
+ARG CORPORA_CORE_REF=03cc563c6be1d7f7e9be41093a1a011237c43050
 RUN git clone https://github.com/exegia/corpora-core.git /core
 WORKDIR /core
 RUN git checkout "$CORPORA_CORE_REF" && \
