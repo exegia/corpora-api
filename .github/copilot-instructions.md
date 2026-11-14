@@ -35,6 +35,8 @@ Override a task with `<TASK>_CMD`, e.g. `make test TEST_CMD="..."`.
 - **PR titles:** Conventional Commits, `feat(scope)!: summary`. They set the SemVer bump (`!` major,
   `feat` minor, else patch). Do not edit versions, tags or `CHANGELOG.md` by hand.
 - **Release changelog:** the generator must leave no trailing blank line; run `make selftest` after edits.
+- **Release assets:** build `dist/` before `tag-release`; it attaches assets during release creation.
+  Skip promotion when `dev` and `next` have the same tree.
 - **Workflows:** `.github/workflows/*.yml` are plain workflows; steps call `make` targets. Pin third-party
   actions to a commit SHA with a version comment. Keep jobs least-privilege.
 - **Docs move with automation:** update `AGENTS.md`, `README.md`, and `.github/WORKFLOW.md` in the same PR.
