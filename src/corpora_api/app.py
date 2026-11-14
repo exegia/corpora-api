@@ -8,14 +8,16 @@ import secrets
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 from corpora_schema_types import GraphValidationError
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastmcp import FastMCP
+from starlette.background import BackgroundTask
 
 from corpora_api.auth import UserAuthError, current_user_id, require_user, verify_user_token
 from corpora_api.conversions import (
@@ -60,9 +62,16 @@ from corpora_api.models import (
     PurposeRequest,
     SpellingRequest,
     SpellReport,
+    StoredCorpusResponse,
     StructureRequest,
     TFCheckReport,
     ValidationResponse,
+)
+from corpora_api.storage import (
+    CorpusStorage,
+    StorageError,
+    StorageNotConfigured,
+    StoredCorpusNotFound,
 )
 from corpora_api.tf_check import MAX_ARCHIVE_BYTES as MAX_TF_ARCHIVE_BYTES
 from corpora_api.tf_check import TFArchiveRejected, check_tf_archive
@@ -80,13 +89,19 @@ bridge = CoreBridge()
 converter = ConversionBridge()
 validator = ValidationBridge()
 ingest_store = IngestStore()
+corpus_storage = CorpusStorage()
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
-USER_AUTH_PATHS = frozenset({"/v1/auth/me", "/v1/validate"})
+USER_AUTH_PATHS = frozenset({"/v1/auth/me", "/v1/validate", "/v1/storage"})
 
 
 def user_auth_path(path: str) -> bool:
-    return path in USER_AUTH_PATHS or path == "/v1/ingest" or path.startswith("/v1/ingest/")
+    return (
+        path in USER_AUTH_PATHS
+        or path.startswith("/v1/storage/")
+        or path == "/v1/ingest"
+        or path.startswith("/v1/ingest/")
+    )
 
 
 app = FastAPI(
@@ -217,6 +232,21 @@ async def validation_protocol_error(
     _request: Request, _error: ValidationProtocolError
 ) -> JSONResponse:
     return JSONResponse(status_code=502, content={"detail": "Core validation response failed"})
+
+
+@app.exception_handler(StorageNotConfigured)
+async def storage_not_configured(_request: Request, error: StorageNotConfigured) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
+@app.exception_handler(StoredCorpusNotFound)
+async def stored_corpus_not_found(_request: Request, error: StoredCorpusNotFound) -> JSONResponse:
+    return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(StorageError)
+async def storage_error(_request: Request, error: StorageError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": str(error)})
 
 
 def structure(request: StructureRequest) -> dict[str, Any]:
@@ -640,6 +670,66 @@ async def download_ingestion(
         content=graph_bytes,
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+_STORAGE_RESPONSES = {
+    401: {"model": ErrorResponse},
+    404: {"model": ErrorResponse},
+    502: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+}
+
+
+@app.get(
+    "/v1/storage",
+    tags=["storage"],
+    summary="List owned corpus archives",
+    response_model=list[StoredCorpusResponse],
+    responses=_STORAGE_RESPONSES,
+)
+async def list_stored_corpora(
+    user_id: Annotated[str, Depends(require_user)],
+) -> list[StoredCorpusResponse]:
+    stored = await run_in_threadpool(corpus_storage.list, user_id)
+    return [StoredCorpusResponse(**vars(item)) for item in stored]
+
+
+@app.get(
+    "/v1/storage/{filename}",
+    tags=["storage"],
+    summary="Inspect an owned corpus archive",
+    response_model=StoredCorpusResponse,
+    responses=_STORAGE_RESPONSES,
+)
+async def get_stored_corpus(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> StoredCorpusResponse:
+    stored = await run_in_threadpool(corpus_storage.info, user_id, filename)
+    return StoredCorpusResponse(**vars(stored))
+
+
+@app.get(
+    "/v1/storage/{filename}/download",
+    tags=["storage"],
+    summary="Download an owned corpus archive",
+    responses={200: {"content": {"application/octet-stream": {}}}, **_STORAGE_RESPONSES},
+)
+async def download_stored_corpus(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> StreamingResponse:
+    upstream, name = await run_in_threadpool(corpus_storage.open_download, user_id, filename)
+    quoted_name = quote(name)
+    disposition = (
+        f'attachment; filename="{name}"'
+        if quoted_name == name
+        else f"attachment; filename*=utf-8''{quoted_name}"
+    )
+    return StreamingResponse(
+        upstream.iter_bytes(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": disposition},
+        background=BackgroundTask(upstream.close),
     )
 
 
