@@ -324,6 +324,41 @@ def test_hub_conditional_commit_rejects_a_concurrent_filename_collision(
     assert objects == {"same.corpus": b"first caller's archive"}
 
 
+def test_hub_checks_for_collisions_at_the_commit_parent_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    objects: dict[str, bytes] = {}
+
+    class RacingHubApi:
+        def create_repo(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def get_paths_info(
+            self, _repo_id: str, *, paths: list[str], **_kwargs: object
+        ) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(path=name, size=len(objects[name]))
+                for name in paths
+                if name in objects
+            ]
+
+        def repo_info(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            objects["same.corpus"] = b"published before parent was read"
+            return SimpleNamespace(sha="current-head")
+
+        def create_commit(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("must not commit over the concurrent archive")
+
+    monkeypatch.setenv("HF_STORAGE_REPO", "philagora/corpora-archives")
+    monkeypatch.setenv("HF_STORAGE_REPO_TYPE", "dataset")
+    monkeypatch.setenv("HF_STORAGE_WRITE_TOKEN", "write-token-placeholder")
+    storage = HubCorpusStorage(api=RacingHubApi())
+
+    with pytest.raises(StoredCorpusConflict):
+        storage.upload(ALICE, "same.corpus", ARCHIVE)
+    assert objects == {"same.corpus": b"published before parent was read"}
+
+
 def test_hub_bucket_publish_is_disabled_without_conditional_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

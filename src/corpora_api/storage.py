@@ -385,6 +385,11 @@ class HubCorpusStorage:
                 operation = CommitOperationAdd(path_in_repo=name, path_or_fileobj=local)
                 for attempt in range(3):
                     revision = self.write_api.repo_info(repo_id, repo_type=repo_type).sha
+                    entries = self.write_api.get_paths_info(
+                        repo_id, paths=[name], repo_type=repo_type, revision=revision
+                    )
+                    if entries:
+                        raise StoredCorpusConflict(f"A corpus named {name!r} already exists")
                     try:
                         self.write_api.create_commit(
                             repo_id=repo_id,
