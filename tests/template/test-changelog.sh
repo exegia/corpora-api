@@ -28,11 +28,13 @@ assert_not_contains "$sec" "chore: init" "commits before the tag are excluded"
 "$L" update 0.2.0 HEAD >/dev/null 2>&1
 assert_eq "1" "$(grep -c '^## \[0.2.0\]' CHANGELOG.md)" "re-running replaces the section"
 assert_contains "$(sed -n '1p' CHANGELOG.md)" "# Changelog" "header preserved"
+assert_eq "- tidy things up" "$(tail -n 1 CHANGELOG.md)" "no trailing blank line"
 
 commit "feat: another"
 "$L" update 0.3.0 HEAD >/dev/null 2>&1
 first="$(grep -n '^## \[' CHANGELOG.md | sed -n '1p')"
 assert_contains "$first" "[0.3.0]" "newest section is first"
+assert_eq "- tidy things up" "$(tail -n 1 CHANGELOG.md)" "older section still ends the file"
 
 # ── extract returns just one section ──
 body="$("$L" extract 0.2.0)"
