@@ -5,7 +5,7 @@ description = "HTTP and MCP interfaces to corpora-core checks and converters"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "corpora-schema-types @ git+https://github.com/exegia/corpora-core.git@7dba8dce9a5c1c3d2e472c77361be2dd88e2682b#subdirectory=generated/python",
+  "corpora-schema-types @ git+https://github.com/exegia/corpora-core.git@711a9e6751ff9fbf1e5f3395cae6583a5f9c43b0#subdirectory=generated/python",
   "fastapi>=0.115,<1",
   "fastmcp>=4,<5",
   "httpx>=0.28,<1",

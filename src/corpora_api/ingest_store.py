@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from corpora_schema_types import validate_graph
 
 from corpora_api.ingest import MAX_GRAPH_BYTES, _slug
 
@@ -23,6 +25,10 @@ class IngestNotFound(Exception):
 
 class IngestNotReady(Exception):
     """A visible job has no completed graph yet."""
+
+
+class IngestStoreCorrupt(Exception):
+    """The stored artifact no longer satisfies the shared graph contract."""
 
 
 class IngestStore:
@@ -189,5 +195,9 @@ class IngestStore:
             raise IngestStoreError(f"Ingestion artifact store returned {response.status_code}")
         if len(response.content) > MAX_GRAPH_BYTES:
             raise IngestStoreError("Stored graph exceeds the hosted response limit")
+        try:
+            validate_graph(json.loads(response.content))
+        except ValueError as error:
+            raise IngestStoreCorrupt("Stored graph failed validation") from error
         filename = f"{_slug(row.get('display_name') or row['name'])}.graph.json"
         return response.content, filename

@@ -34,7 +34,13 @@ from corpora_api.ingest import (
     build_plain_graph,
     validate_ingest_options,
 )
-from corpora_api.ingest_store import IngestNotFound, IngestNotReady, IngestStore, IngestStoreError
+from corpora_api.ingest_store import (
+    IngestNotFound,
+    IngestNotReady,
+    IngestStore,
+    IngestStoreCorrupt,
+    IngestStoreError,
+)
 from corpora_api.ingest_worker import (
     DOCLING_SUFFIXES,
     IngestWorkerFailed,
@@ -613,6 +619,7 @@ async def get_ingestion(
         401: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
         409: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
         503: {"model": ErrorResponse},
     },
 )
@@ -625,6 +632,8 @@ async def download_ingestion(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except IngestNotReady as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except IngestStoreCorrupt as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except IngestStoreError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return Response(

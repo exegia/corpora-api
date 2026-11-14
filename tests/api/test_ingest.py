@@ -186,6 +186,25 @@ def test_missing_store_configuration_fails_before_publishing(
     assert not store[1]
 
 
+@pytest.mark.parametrize("bad_graph", [b"not JSON", b'{"schemaVersion":"1.0.0"}'])
+def test_download_rejects_a_corrupted_stored_graph(
+    bad_graph: bytes,
+    store: tuple[dict[str, bytes], dict[str, dict], httpx.MockTransport],
+) -> None:
+    artifacts, _jobs, _transport = store
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/ingest",
+            headers=headers("alice-token"),
+            files={"file": ("document.txt", b"Exact text")},
+        )
+        assert created.status_code == 202
+        job_id = created.json()["job_id"]
+        artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job_id}.graph.json"] = bad_graph
+        download = client.get(f"/v1/ingest/{job_id}/download", headers=headers("alice-token"))
+    assert download.status_code == 502
+
+
 def test_optional_worker_uses_staged_upload_and_validates_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

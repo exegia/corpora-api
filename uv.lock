@@ -248,7 +248,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "corpora-schema-types", git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=7dba8dce9a5c1c3d2e472c77361be2dd88e2682b" },
+    { name = "corpora-schema-types", git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=711a9e6751ff9fbf1e5f3395cae6583a5f9c43b0" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "fastmcp", specifier = ">=4,<5" },
     { name = "httpx", specifier = ">=0.28,<1" },
@@ -267,7 +267,7 @@ dev = [
 [[package]]
 name = "corpora-schema-types"
 version = "1.0.0"
-source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=7dba8dce9a5c1c3d2e472c77361be2dd88e2682b#7dba8dce9a5c1c3d2e472c77361be2dd88e2682b" }
+source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=711a9e6751ff9fbf1e5f3395cae6583a5f9c43b0#711a9e6751ff9fbf1e5f3395cae6583a5f9c43b0" }
 dependencies = [
     { name = "jsonschema" },
     { name = "pydantic" },
