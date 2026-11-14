@@ -65,6 +65,34 @@ class ValidationResponse(BaseModel):
     )
 
 
+class IngestCreated(BaseModel):
+    job_id: str
+    status_url: str
+    download_url: str
+
+
+class IngestJobStatus(BaseModel):
+    """Legacy-compatible polling fields for a durable ingestion job."""
+
+    id: str
+    source_format: str
+    output_format: str
+    name: str
+    display_name: str | None
+    status: Literal["queued", "running", "succeeded", "failed"]
+    created_at: float
+    started_at: float | None
+    finished_at: float | None
+    error: str | None
+    logs: list[str]
+    last_log: str | None
+    events: list[dict[str, object]]
+    steps: list[dict[str, object]]
+    validation: dict[str, object] | None
+    result_filename: str
+    download_ready: bool
+
+
 class TextInput(BaseModel):
     text: str = Field(max_length=1_000_000, description="Exact decoded UTF-8 text to check.")
 
