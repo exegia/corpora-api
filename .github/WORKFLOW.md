@@ -1,7 +1,22 @@
 # Operating the pipeline
 
-How to set up a repository generated from this template and run the release flow. Rules live in
+How to operate Corpora API's inherited template release flow. Rules live in
 [`BRANCH-AND-RELEASE-POLICY.md`](./BRANCH-AND-RELEASE-POLICY.md), stages in [`LIFECYCLE.md`](./LIFECYCLE.md).
+
+The root stack is Python; the Astro/Fumapress site is nested in `docs/`. The setup
+action installs Node 24 for that nested package. `make install` also runs
+`npm ci --prefix docs`, and `make ci` type-checks and builds the site.
+After an endpoint or response-model change, run `uv run python scripts/export_openapi.py`
+and commit the generated `docs/openapi.json` with the code.
+
+The root `Dockerfile.vercel` builds the pinned core checks, TEI/EPUB/PDF
+converters, OCR tools, and dictionaries on Vercel's container runtime. The API
+project serves `/v1/*` at its own Vercel origin. A project route on the existing
+`corpora-py` project forwards only `api.exegia.co/v1/*`; do not move the whole
+domain or alter its older `/convert`, `/ingest`, or `/health` routes. Set
+`CORPORA_API_TOKEN` in the API project before a public production deployment.
+Verify `/v1/health`, `/v1/openapi.json`, an authenticated check, one conversion,
+and the older API health route after publishing the route.
 
 ## 1. Bootstrap a new repository
 
@@ -72,6 +87,9 @@ make fmt && make ci                        # same thing CI runs
 gh pr create --draft --base dev --title "feat: add parser"
 gh pr ready                                # starts hygiene, test, check
 ```
+
+The docs package runs `docs/scripts/patch-openapi-example.mjs` after install.
+Keep its version guard aligned with the pinned `fumadocs-openapi` dependency.
 
 Squash-merge into `dev`. Everything after that is automatic until the release PR: review the draft PR into
 `main`, mark it ready, merge it with a merge commit.
