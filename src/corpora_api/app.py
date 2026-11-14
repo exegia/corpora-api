@@ -34,15 +34,26 @@ from corpora_api.models import (
     SpellReport,
     StructureRequest,
     TFCheckReport,
+    ValidationResponse,
 )
 from corpora_api.tf_check import MAX_ARCHIVE_BYTES as MAX_TF_ARCHIVE_BYTES
 from corpora_api.tf_check import TFArchiveRejected, check_tf_archive
+from corpora_api.validation import (
+    MAX_VALIDATION_ARCHIVE_BYTES,
+    ValidationBridge,
+    ValidationProtocolError,
+    ValidationTimedOut,
+    ValidationTooLarge,
+    ValidationUnavailable,
+    ValidationUnsupported,
+)
 
 bridge = CoreBridge()
 converter = ConversionBridge()
+validator = ValidationBridge()
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
-USER_AUTH_PATHS = frozenset({"/v1/auth/me"})
+USER_AUTH_PATHS = frozenset({"/v1/auth/me", "/v1/validate"})
 app = FastAPI(
     title="Corpora API",
     summary="Source-bound text checks from corpora-core",
@@ -144,6 +155,33 @@ async def conversion_timed_out(_request: Request, error: ConversionTimedOut) -> 
 @app.exception_handler(TFArchiveRejected)
 async def tf_archive_rejected(_request: Request, error: TFArchiveRejected) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": str(error)})
+
+
+@app.exception_handler(ValidationUnavailable)
+async def validation_unavailable(_request: Request, error: ValidationUnavailable) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
+@app.exception_handler(ValidationTimedOut)
+async def validation_timed_out(_request: Request, error: ValidationTimedOut) -> JSONResponse:
+    return JSONResponse(status_code=504, content={"detail": str(error)})
+
+
+@app.exception_handler(ValidationTooLarge)
+async def validation_too_large(_request: Request, error: ValidationTooLarge) -> JSONResponse:
+    return JSONResponse(status_code=413, content={"detail": str(error)})
+
+
+@app.exception_handler(ValidationUnsupported)
+async def validation_unsupported(_request: Request, error: ValidationUnsupported) -> JSONResponse:
+    return JSONResponse(status_code=415, content={"detail": str(error)})
+
+
+@app.exception_handler(ValidationProtocolError)
+async def validation_protocol_error(
+    _request: Request, _error: ValidationProtocolError
+) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": "Core validation response failed"})
 
 
 def structure(request: StructureRequest) -> dict[str, Any]:
@@ -406,6 +444,38 @@ async def check_text_fabric(
 ) -> TFCheckReport:
     archive = await file.read(MAX_TF_ARCHIVE_BYTES + 1)
     return TFCheckReport.model_validate(await run_in_threadpool(check_tf_archive, archive))
+
+
+@app.post(
+    "/v1/validate",
+    response_model=ValidationResponse,
+    tags=["validation"],
+    summary="Validate an uploaded corpus archive",
+    description=(
+        "Upload a .corpus, .zip, .ctei, or .cusx archive of at most 3 MB. "
+        "A verified Supabase user token is required. Text-Fabric archives run real "
+        "Text-Fabric and Context-Fabric load cycles; invalid supported archives "
+        "return 200 with valid=false and reasons. The path field is the uploaded "
+        "filename. Server paths, loaded corpus names, and legacy conversion job IDs "
+        "are not accepted by this hosted endpoint."
+    ),
+    responses={
+        401: {"description": "Missing or invalid user token"},
+        413: {"description": "Archive exceeds the upload or expansion limit"},
+        415: {"description": "Unsupported archive format or filename"},
+        422: {"description": "Missing upload"},
+        502: {"description": "Core validator response failed"},
+        503: {"description": "Core validator unavailable"},
+        504: {"description": "Validation timed out"},
+    },
+)
+async def validate_corpus_upload(
+    file: Annotated[UploadFile, File(description="Corpus archive")],
+    _user_id: Annotated[str, Depends(require_user)],
+) -> ValidationResponse:
+    archive = await file.read(MAX_VALIDATION_ARCHIVE_BYTES + 1)
+    result = await run_in_threadpool(validator.validate, file.filename or "", archive)
+    return ValidationResponse.model_validate(result)
 
 
 @mcp.tool

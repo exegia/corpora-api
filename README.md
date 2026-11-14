@@ -11,6 +11,7 @@ FastAPI and FastMCP interfaces for [corpora-core](https://github.com/exegia/corp
 | `POST /v1/language/detect` | `detect_text_language` | Language evidence and dictionary selection |
 | `POST /v1/checks/spelling` | `check_text_spelling` | Optional installed-dictionary spelling report |
 | `POST /v1/checks/text-fabric` | `check_text_fabric_archive` | Bounded static WARP preflight for a TF ZIP |
+| `POST /v1/validate` | — | User-authenticated archive validation with real loaders or CTEI/C-USX profile checks |
 
 | Conversion endpoint | Result |
 | --- | --- |
@@ -25,6 +26,8 @@ The MCP server also advertises a `text_fabric_checker` prompt for a host agent. 
 The CLI's structural operation uses the core default XML options. TEI-specific `StructuralOptions` from the Rust library are not available through that CLI, so this API does not claim to perform a full TEI structural validation. A nonblocking report does not establish schema validity or conversion success. The service never applies suggestions to source text.
 
 The spelling response keeps its existing flat `start` and `end` fields. The API validates those Unicode scalar offsets with the generated `corpora-schema-types` `TextRange` model from the same pinned core commit used by `Dockerfile.vercel`. Update the Git revision in `pyproject.toml` and `CORPORA_CORE_REF` together when adopting a new core contract.
+
+`POST /v1/validate` accepts a multipart `file` upload named `.corpus`, `.zip`, `.ctei`, or `.cusx` and requires a verified Supabase user access token. The response uses the legacy `corpus`, `path`, `valid`, `stats`, and `reasons` fields; `path` is the uploaded filename, never a server path. `checks` is a named map with `null` for non-applicable shipped-cache checks. CTEI reports `source_verified: false` because archive validation does not prove fidelity to an external source. Invalid supported archives return HTTP 200 with `valid: false`; unsupported formats return 415 and uploads over 3 MB return 413. `.corpus` and raw TF `.zip` data run real Text-Fabric and Context-Fabric loads, including mmap cache reload. CTEI and C-USX use their package profiles. Legacy `path`, loaded `corpus`, and conversion `job_id` targets remain on the local sidecar until owner-scoped storage IDs exist.
 
 ## Local development
 
@@ -58,6 +61,8 @@ Set `CORPORA_DICTIONARIES_DIR` to a directory installed by [the core dictionary 
 The service limits text to one million characters. Each core request has a 10-second deadline (30 seconds for spelling). It rejects CLI errors, invalid JSON, unsupported diagnostic schema versions, and stale source hashes.
 
 Conversion endpoints accept one multipart upload. The TEI route exposes choice, apparatus, witness, notes, and namespace policy as query parameters; EPUB offers audited `repair`; PDF offers installed OCR languages. Uploads are capped at 3 MB, TEI/EPUB at 200,000 slots, PDF at 10 pages, and returned ZIPs at 4 MB. The ZIP contains the converter's original report and bundle, including the uploaded source. PDF results with `X-Conversion-Status: gated` contain a report but no TF. These synchronous limits fit [Vercel's function payload limit](https://vercel.com/docs/functions/limitations); larger conversions need a storage-backed job API.
+
+For local archive validation, install `packages/corpus-validate` from a matching `corpora-core` checkout into this API environment and set `CORPORA_VALIDATE_BIN` to its `corpora-validate` executable. The Vercel image installs it from the same pinned core commit as the Rust binaries.
 
 ## Docs and OpenAPI
 
