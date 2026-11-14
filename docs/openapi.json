@@ -917,6 +917,36 @@
         "title": "SpellingRequest",
         "type": "object"
       },
+      "StoragePublishRequest": {
+        "additionalProperties": false,
+        "description": "Publish a completed legacy conversion by ID, never by server path.",
+        "properties": {
+          "filename": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional flat .corpus or .cusx name for the published archive.",
+            "title": "Filename"
+          },
+          "job_id": {
+            "description": "Succeeded legacy /convert job owned by the caller.",
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "StoragePublishRequest",
+        "type": "object"
+      },
       "StoredCorpusResponse": {
         "description": "Legacy-compatible metadata for an owned corpus archive.",
         "properties": {
@@ -1325,7 +1355,7 @@
     },
     "/v1/capabilities": {
       "get": {
-        "description": "Match the legacy response shape; this API does not publish to the Hub.",
+        "description": "Report whether a dedicated Hub write credential is configured.",
         "operationId": "capabilities_v1_capabilities_get",
         "responses": {
           "200": {
@@ -2456,9 +2486,198 @@
         "tags": [
           "storage"
         ]
+      },
+      "post": {
+        "description": "Publish a succeeded legacy /convert job owned by the caller. The API fetches its private stored artifact by job ID and validates the archive before publishing. Server filesystem paths are not accepted.",
+        "operationId": "publish_stored_corpus_v1_storage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoragePublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredCorpusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Publish a completed conversion archive",
+        "tags": [
+          "storage"
+        ]
       }
     },
     "/v1/storage/{filename}": {
+      "delete": {
+        "operationId": "delete_stored_corpus_v1_storage__filename__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "filename",
+            "required": true,
+            "schema": {
+              "title": "Filename",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Delete a stored corpus archive",
+        "tags": [
+          "storage"
+        ]
+      },
       "get": {
         "operationId": "get_stored_corpus_v1_storage__filename__get",
         "parameters": [

@@ -3,6 +3,7 @@
 import base64
 import binascii
 import json
+import logging
 import os
 import secrets
 import uuid
@@ -20,6 +21,14 @@ from fastmcp import FastMCP
 from starlette.background import BackgroundTask
 
 from corpora_api.auth import UserAuthError, current_user_id, require_user, verify_user_token
+from corpora_api.conversion_artifacts import (
+    ConversionArtifactError,
+    ConversionArtifactInvalid,
+    ConversionArtifactNotFound,
+    ConversionArtifactNotReady,
+    ConversionArtifactStore,
+    ConversionArtifactTooLarge,
+)
 from corpora_api.conversions import (
     MAX_UPLOAD_BYTES,
     ConversionBridge,
@@ -62,6 +71,7 @@ from corpora_api.models import (
     PurposeRequest,
     SpellingRequest,
     SpellReport,
+    StoragePublishRequest,
     StoredCorpusResponse,
     StructureRequest,
     TFCheckReport,
@@ -71,6 +81,7 @@ from corpora_api.storage import (
     CorpusStorage,
     StorageError,
     StorageNotConfigured,
+    StoredCorpusConflict,
     StoredCorpusNotFound,
 )
 from corpora_api.tf_check import MAX_ARCHIVE_BYTES as MAX_TF_ARCHIVE_BYTES
@@ -89,7 +100,9 @@ bridge = CoreBridge()
 converter = ConversionBridge()
 validator = ValidationBridge()
 ingest_store = IngestStore()
+conversion_artifact_store = ConversionArtifactStore()
 corpus_storage = CorpusStorage()
+logger = logging.getLogger(__name__)
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 USER_AUTH_PATHS = frozenset({"/v1/auth/me", "/v1/validate", "/v1/storage"})
@@ -126,7 +139,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -239,6 +252,46 @@ async def storage_not_configured(_request: Request, error: StorageNotConfigured)
     return JSONResponse(status_code=503, content={"detail": str(error)})
 
 
+@app.exception_handler(ConversionArtifactNotFound)
+async def conversion_artifact_not_found(
+    _request: Request, error: ConversionArtifactNotFound
+) -> JSONResponse:
+    return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactNotReady)
+async def conversion_artifact_not_ready(
+    _request: Request, error: ConversionArtifactNotReady
+) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactTooLarge)
+async def conversion_artifact_too_large(
+    _request: Request, error: ConversionArtifactTooLarge
+) -> JSONResponse:
+    return JSONResponse(status_code=413, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactInvalid)
+async def conversion_artifact_invalid(
+    _request: Request, error: ConversionArtifactInvalid
+) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactError)
+async def conversion_artifact_error(
+    _request: Request, error: ConversionArtifactError
+) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
+@app.exception_handler(StoredCorpusConflict)
+async def stored_corpus_conflict(_request: Request, error: StoredCorpusConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(error)})
+
+
 @app.exception_handler(StoredCorpusNotFound)
 async def stored_corpus_not_found(_request: Request, error: StoredCorpusNotFound) -> JSONResponse:
     return JSONResponse(status_code=404, content={"detail": str(error)})
@@ -273,8 +326,13 @@ def health() -> dict[str, str]:
 
 @app.get("/v1/capabilities", tags=["service"], summary="Deployment capabilities")
 def capabilities() -> dict[str, bool]:
-    """Match the legacy response shape; this API does not publish to the Hub."""
-    return {"auth_required": bool(os.getenv("CORPORA_API_TOKEN")), "hub_writable": False}
+    """Report whether a dedicated Hub write credential is configured."""
+    hub_writable = (
+        os.getenv("STORAGE_BACKEND", "huggingface") == "huggingface"
+        and os.getenv("HF_STORAGE_REPO_TYPE", "bucket") != "bucket"
+        and bool(os.getenv("HF_STORAGE_WRITE_TOKEN"))
+    )
+    return {"auth_required": bool(os.getenv("CORPORA_API_TOKEN")), "hub_writable": hub_writable}
 
 
 @app.get("/v1/auth/me", tags=["identity"], summary="Verified user identity")
@@ -707,6 +765,76 @@ async def get_stored_corpus(
 ) -> StoredCorpusResponse:
     stored = await run_in_threadpool(corpus_storage.info, user_id, filename)
     return StoredCorpusResponse(**vars(stored))
+
+
+@app.post(
+    "/v1/storage",
+    status_code=201,
+    response_model=StoredCorpusResponse,
+    tags=["storage"],
+    summary="Publish a completed conversion archive",
+    description=(
+        "Publish a succeeded legacy /convert job owned by the caller. The API fetches its "
+        "private stored artifact by job ID and validates the archive before publishing. "
+        "Server filesystem paths are not accepted."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        415: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        504: {"model": ErrorResponse},
+    },
+)
+async def publish_stored_corpus(
+    payload: StoragePublishRequest,
+    user_id: Annotated[str, Depends(require_user)],
+) -> StoredCorpusResponse:
+    filename, archive = await run_in_threadpool(
+        conversion_artifact_store.fetch, user_id, str(payload.job_id), payload.filename
+    )
+    validation = await run_in_threadpool(validator.validate, filename, archive)
+    if validation.get("valid") is not True:
+        raise HTTPException(status_code=422, detail="Conversion artifact failed corpus validation")
+    stored = await run_in_threadpool(corpus_storage.upload, user_id, filename, archive)
+    logger.info(
+        "Published corpus archive",
+        extra={
+            "event": "storage.publish",
+            "user_id": user_id,
+            "job_id": str(payload.job_id),
+            "archive_name": stored.filename,
+            "repo_id": stored.repo_id,
+        },
+    )
+    return StoredCorpusResponse(**vars(stored))
+
+
+@app.delete(
+    "/v1/storage/{filename}",
+    status_code=204,
+    tags=["storage"],
+    summary="Delete a stored corpus archive",
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def delete_stored_corpus(
+    filename: str,
+    user_id: Annotated[str, Depends(require_user)],
+) -> None:
+    await run_in_threadpool(corpus_storage.delete, user_id, filename)
+    logger.info(
+        "Deleted corpus archive",
+        extra={"event": "storage.delete", "user_id": user_id, "archive_name": filename},
+    )
 
 
 @app.get(

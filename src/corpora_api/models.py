@@ -1,6 +1,9 @@
 """Wire models reflecting the corpora-core JSON response contract."""
 
+from __future__ import annotations
+
 from typing import Literal
+from uuid import UUID
 
 from corpora_schema_types import TextRange
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -72,6 +75,35 @@ class StoredCorpusResponse(BaseModel):
     size_bytes: int | None
     repo_id: str
     url: str
+
+
+class StoragePublishRequest(BaseModel):
+    """Publish a completed legacy conversion by ID, never by server path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: UUID = Field(description="Succeeded legacy /convert job owned by the caller.")
+    filename: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional flat .corpus or .cusx name for the published archive.",
+    )
+
+    @model_validator(mode="after")
+    def validate_filename(self) -> StoragePublishRequest:
+        if self.filename is None:
+            return self
+        if (
+            not self.filename
+            or len(self.filename.encode("utf-8")) > 255
+            or self.filename in {".", ".."}
+            or "/" in self.filename
+            or "\\" in self.filename
+            or any(ord(char) < 32 for char in self.filename)
+            or not self.filename.endswith((".corpus", ".cusx"))
+        ):
+            raise ValueError("Provide a plain .corpus or .cusx filename")
+        return self
 
 
 class IngestCreated(BaseModel):
@@ -236,7 +268,7 @@ class SpellDiagnostic(CoreModel):
         return TextRange(start=self.start, end=self.end)
 
     @model_validator(mode="after")
-    def validate_text_range(self) -> "SpellDiagnostic":
+    def validate_text_range(self) -> SpellDiagnostic:
         self.text_range()
         return self
 
