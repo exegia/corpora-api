@@ -51,6 +51,20 @@ class TFCheckReport(BaseModel):
     )
 
 
+class ValidationResponse(BaseModel):
+    """Legacy-compatible verdict for a caller-owned uploaded corpus archive."""
+
+    corpus: str
+    path: str = Field(description="Uploaded filename, never an internal staging path.")
+    valid: bool
+    stats: dict[str, int] | None
+    reasons: list[str]
+    checks: dict[str, bool | None]
+    source_verified: bool | None = Field(
+        default=None, description="CTEI source fidelity is outside archive validation."
+    )
+
+
 class TextInput(BaseModel):
     text: str = Field(max_length=1_000_000, description="Exact decoded UTF-8 text to check.")
 

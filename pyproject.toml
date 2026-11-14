@@ -1,11 +1,11 @@
 [project]
 name = "corpora-api"
-version = "0.2.0"
+version = "0.3.0"
 description = "HTTP and MCP interfaces to corpora-core checks and converters"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "corpora-schema-types @ git+https://github.com/exegia/corpora-core.git@b7e8ebdaec119b2532004d193bc333fa2df7e563#subdirectory=generated/python",
+  "corpora-schema-types @ git+https://github.com/exegia/corpora-core.git@34a1af489b9cc17f2ccf74025d192fdf7941bda6#subdirectory=generated/python",
   "fastapi>=0.115,<1",
   "fastmcp>=4,<5",
   "pyjwt[crypto]>=2.10,<3",

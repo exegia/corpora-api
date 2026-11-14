@@ -61,6 +61,21 @@
         "title": "Body_convert_tei_v1_conversions_tei_to_tf_post",
         "type": "object"
       },
+      "Body_validate_corpus_upload_v1_validate_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "Corpus archive",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_validate_corpus_upload_v1_validate_post",
+        "type": "object"
+      },
       "Diagnostic": {
         "additionalProperties": true,
         "properties": {
@@ -878,6 +893,81 @@
           "after"
         ],
         "title": "TextEdit",
+        "type": "object"
+      },
+      "ValidationResponse": {
+        "description": "Legacy-compatible verdict for a caller-owned uploaded corpus archive.",
+        "properties": {
+          "checks": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Checks",
+            "type": "object"
+          },
+          "corpus": {
+            "title": "Corpus",
+            "type": "string"
+          },
+          "path": {
+            "description": "Uploaded filename, never an internal staging path.",
+            "title": "Path",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "source_verified": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "CTEI source fidelity is outside archive validation.",
+            "title": "Source Verified"
+          },
+          "stats": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stats"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "corpus",
+          "path",
+          "valid",
+          "stats",
+          "reasons",
+          "checks"
+        ],
+        "title": "ValidationResponse",
         "type": "object"
       }
     },
@@ -1748,6 +1838,64 @@
         "summary": "Detect or select language",
         "tags": [
           "language"
+        ]
+      }
+    },
+    "/v1/validate": {
+      "post": {
+        "description": "Upload a .corpus, .zip, .ctei, or .cusx archive of at most 3 MB. A verified Supabase user token is required. Text-Fabric archives run real Text-Fabric and Context-Fabric load cycles; invalid supported archives return 200 with valid=false and reasons. The path field is the uploaded filename. Server paths, loaded corpus names, and legacy conversion job IDs are not accepted by this hosted endpoint.",
+        "operationId": "validate_corpus_upload_v1_validate_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_validate_corpus_upload_v1_validate_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "413": {
+            "description": "Archive exceeds the upload or expansion limit"
+          },
+          "415": {
+            "description": "Unsupported archive format or filename"
+          },
+          "422": {
+            "description": "Missing upload"
+          },
+          "502": {
+            "description": "Core validator response failed"
+          },
+          "503": {
+            "description": "Core validator unavailable"
+          },
+          "504": {
+            "description": "Validation timed out"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Validate an uploaded corpus archive",
+        "tags": [
+          "validation"
         ]
       }
     }
