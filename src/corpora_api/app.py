@@ -327,8 +327,10 @@ def health() -> dict[str, str]:
 @app.get("/v1/capabilities", tags=["service"], summary="Deployment capabilities")
 def capabilities() -> dict[str, bool]:
     """Report whether a dedicated Hub write credential is configured."""
-    hub_writable = os.getenv("STORAGE_BACKEND", "huggingface") == "huggingface" and bool(
-        os.getenv("HF_STORAGE_WRITE_TOKEN")
+    hub_writable = (
+        os.getenv("STORAGE_BACKEND", "huggingface") == "huggingface"
+        and os.getenv("HF_STORAGE_REPO_TYPE", "bucket") != "bucket"
+        and bool(os.getenv("HF_STORAGE_WRITE_TOKEN"))
     )
     return {"auth_required": bool(os.getenv("CORPORA_API_TOKEN")), "hub_writable": hub_writable}
 

@@ -178,6 +178,7 @@ def test_user_dependency_rejects_service_identity() -> None:
 
 def test_health_and_capabilities_are_public(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CORPORA_API_TOKEN", "service-token")
+    monkeypatch.setenv("HF_STORAGE_REPO_TYPE", "dataset")
     monkeypatch.delenv("HF_STORAGE_WRITE_TOKEN", raising=False)
     with TestClient(app) as client:
         assert client.get("/v1/health").json() == {"status": "ok"}
@@ -187,5 +188,7 @@ def test_health_and_capabilities_are_public(monkeypatch: pytest.MonkeyPatch) -> 
         }
         monkeypatch.setenv("HF_STORAGE_WRITE_TOKEN", "write-token-placeholder")
         assert client.get("/v1/capabilities").json()["hub_writable"] is True
+        monkeypatch.setenv("HF_STORAGE_REPO_TYPE", "bucket")
+        assert client.get("/v1/capabilities").json()["hub_writable"] is False
         monkeypatch.setenv("STORAGE_BACKEND", "supabase")
         assert client.get("/v1/capabilities").json()["hub_writable"] is False

@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from huggingface_hub import HfApi
+from huggingface_hub import CommitOperationAdd, HfApi
 from huggingface_hub.errors import (
     BucketNotFoundError,
     EntryNotFoundError,
@@ -364,6 +364,11 @@ class HubCorpusStorage:
                 "HF_STORAGE_WRITE_TOKEN is required to publish or delete Hub archives"
             )
         repo_id, repo_type, _token = self._config()
+        if repo_type == "bucket":
+            raise StorageNotConfigured(
+                "Hub bucket publishing is unavailable because bucket uploads cannot be guarded "
+                "against concurrent overwrites"
+            )
         name = archive_name(filename)
         self._ensure_repo(repo_id, repo_type)
         try:
@@ -377,24 +382,41 @@ class HubCorpusStorage:
             with tempfile.TemporaryDirectory(prefix="corpora-api-storage-") as temporary:
                 local = Path(temporary) / name
                 local.write_bytes(content)
-                if repo_type == "bucket":
-                    self.write_api.batch_bucket_files(repo_id, add=[(str(local), name)])
-                else:
-                    self.write_api.upload_file(
-                        path_or_fileobj=str(local),
-                        path_in_repo=name,
-                        repo_id=repo_id,
-                        repo_type=repo_type,
-                        commit_message=f"Publish {name}",
-                    )
+                operation = CommitOperationAdd(path_in_repo=name, path_or_fileobj=local)
+                for attempt in range(3):
+                    revision = self.write_api.repo_info(repo_id, repo_type=repo_type).sha
+                    try:
+                        self.write_api.create_commit(
+                            repo_id=repo_id,
+                            repo_type=repo_type,
+                            revision="main",
+                            parent_commit=revision,
+                            operations=[operation],
+                            commit_message=f"Publish {name}",
+                        )
+                        break
+                    except HfHubHTTPError as error:
+                        status = getattr(error.response, "status_code", None)
+                        if status not in (409, 412):
+                            raise
+                        try:
+                            self.info("", name)
+                        except StoredCorpusNotFound:
+                            if attempt < 2:
+                                continue
+                        else:
+                            raise StoredCorpusConflict(
+                                f"A corpus named {name!r} already exists"
+                            ) from error
+                        raise StorageError(
+                            "Hub repository changed repeatedly during archive publishing"
+                        ) from error
         except HfHubHTTPError as error:
             status = getattr(error.response, "status_code", None)
             if status in (401, 403):
                 raise StorageNotConfigured(
                     "HF_TOKEN cannot write to the configured Hub storage"
                 ) from error
-            if status == 409:
-                raise StoredCorpusConflict(f"A corpus named {name!r} already exists") from error
             raise StorageError(f"Could not upload {name} to Hub storage") from error
         except OSError as error:
             raise StorageError("Could not stage corpus archive for Hub upload") from error

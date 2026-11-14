@@ -10,6 +10,7 @@ from urllib.parse import unquote
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from huggingface_hub.errors import HfHubHTTPError
 
 from corpora_api import app as app_module
 from corpora_api.app import app
@@ -262,10 +263,12 @@ def test_hub_upload_and_delete_use_configured_repo(monkeypatch: pytest.MonkeyPat
                 if name in objects
             ]
 
-        def upload_file(
-            self, *, path_or_fileobj: str, path_in_repo: str, **_kwargs: object
-        ) -> None:
-            objects[path_in_repo] = Path(path_or_fileobj).read_bytes()
+        def repo_info(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(sha="current-head")
+
+        def create_commit(self, *, operations: list[object], **_kwargs: object) -> None:
+            operation = operations[0]
+            objects[operation.path_in_repo] = Path(operation.path_or_fileobj).read_bytes()
 
         def delete_file(self, path: str, *_args: object, **_kwargs: object) -> None:
             del objects[path]
@@ -283,6 +286,54 @@ def test_hub_upload_and_delete_use_configured_repo(monkeypatch: pytest.MonkeyPat
         storage.upload(ALICE, "new.corpus", ARCHIVE)
     storage.delete(ALICE, "new.corpus")
     assert objects == {}
+
+
+def test_hub_conditional_commit_rejects_a_concurrent_filename_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    objects: dict[str, bytes] = {}
+
+    class RacingHubApi:
+        def create_repo(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def get_paths_info(
+            self, _repo_id: str, *, paths: list[str], **_kwargs: object
+        ) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(path=name, size=len(objects[name]))
+                for name in paths
+                if name in objects
+            ]
+
+        def repo_info(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(sha="current-head")
+
+        def create_commit(self, *_args: object, **_kwargs: object) -> None:
+            objects["same.corpus"] = b"first caller's archive"
+            response = httpx.Response(409, request=httpx.Request("POST", "https://huggingface.co"))
+            raise HfHubHTTPError("parent commit changed", response=response)
+
+    monkeypatch.setenv("HF_STORAGE_REPO", "philagora/corpora-archives")
+    monkeypatch.setenv("HF_STORAGE_REPO_TYPE", "dataset")
+    monkeypatch.setenv("HF_STORAGE_WRITE_TOKEN", "write-token-placeholder")
+    storage = HubCorpusStorage(api=RacingHubApi())
+
+    with pytest.raises(StoredCorpusConflict):
+        storage.upload(ALICE, "same.corpus", ARCHIVE)
+    assert objects == {"same.corpus": b"first caller's archive"}
+
+
+def test_hub_bucket_publish_is_disabled_without_conditional_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HF_STORAGE_REPO", "philagora/corpora-archives")
+    monkeypatch.setenv("HF_STORAGE_REPO_TYPE", "bucket")
+    monkeypatch.setenv("HF_STORAGE_WRITE_TOKEN", "write-token-placeholder")
+    storage = HubCorpusStorage(api=SimpleNamespace())
+
+    with pytest.raises(StorageNotConfigured, match="concurrent overwrites"):
+        storage.upload(ALICE, "new.corpus", ARCHIVE)
 
 
 def test_hub_writes_do_not_reuse_the_read_token(monkeypatch: pytest.MonkeyPatch) -> None:
