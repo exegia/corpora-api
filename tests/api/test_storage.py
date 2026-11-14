@@ -159,7 +159,10 @@ def test_hub_backend_reads_legacy_metadata_and_archive_bytes(
 
     class FakeHubApi:
         def list_repo_tree(self, _repo_id: str, **_kwargs: object) -> list[SimpleNamespace]:
-            return [SimpleNamespace(path="first.corpus", size=len(archive))]
+            return [
+                SimpleNamespace(path="first.corpus", size=len(archive)),
+                SimpleNamespace(path="nested/hidden.corpus", size=len(archive)),
+            ]
 
         def get_paths_info(self, _repo_id: str, **_kwargs: object) -> list[SimpleNamespace]:
             return [SimpleNamespace(path="first.corpus", size=len(archive))]
@@ -191,6 +194,29 @@ def test_hub_backend_reads_legacy_metadata_and_archive_bytes(
     assert listed.json() == [expected]
     assert info.json() == expected
     assert download.content == archive
+
+
+def test_hub_metadata_transport_failures_map_to_bad_gateway(
+    monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
+) -> None:
+    class UnavailableHubApi:
+        def list_repo_tree(self, _repo_id: str, **_kwargs: object) -> list[SimpleNamespace]:
+            raise httpx.ReadTimeout("Hub list timed out")
+
+        def get_paths_info(self, _repo_id: str, **_kwargs: object) -> list[SimpleNamespace]:
+            raise httpx.ConnectError("Hub metadata connection failed")
+
+    monkeypatch.setenv("STORAGE_BACKEND", "huggingface")
+    monkeypatch.setenv("HF_STORAGE_REPO", "philagora/corpora-archives")
+    monkeypatch.setenv("HF_STORAGE_REPO_TYPE", "dataset")
+    hub = HubCorpusStorage(api=UnavailableHubApi())
+    monkeypatch.setattr(app_module, "corpus_storage", CorpusStorage(hub=hub))
+
+    with TestClient(app) as client:
+        listed = client.get("/v1/storage", headers=headers("alice-token"))
+        inspected = client.get("/v1/storage/first", headers=headers("alice-token"))
+
+    assert listed.status_code == inspected.status_code == 502
 
 
 def test_hub_storage_reports_missing_configuration_and_private_access(

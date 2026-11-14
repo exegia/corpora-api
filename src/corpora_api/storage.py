@@ -217,6 +217,8 @@ class HubCorpusStorage:
                 )
                 for entry in entries
                 if entry.path.endswith((".corpus", ".cusx"))
+                and "/" not in entry.path
+                and "\\" not in entry.path
             ]
         except (RepositoryNotFoundError, BucketNotFoundError) as error:
             if getattr(error.response, "status_code", None) in (401, 403):
@@ -225,6 +227,8 @@ class HubCorpusStorage:
         except HfHubHTTPError as error:
             if getattr(error.response, "status_code", None) in (401, 403):
                 raise StorageNotConfigured(HUB_ACCESS_ERROR) from error
+            raise StorageError("Could not list corpus archives") from error
+        except httpx.RequestError as error:
             raise StorageError("Could not list corpus archives") from error
 
     def info(self, _user_id: str, filename: str) -> StoredCorpus:
@@ -242,6 +246,8 @@ class HubCorpusStorage:
         except HfHubHTTPError as error:
             if getattr(error.response, "status_code", None) in (401, 403):
                 raise StorageNotConfigured(HUB_ACCESS_ERROR) from error
+            raise StorageError("Could not inspect corpus archive") from error
+        except httpx.RequestError as error:
             raise StorageError("Could not inspect corpus archive") from error
         if not entries:
             raise StoredCorpusNotFound(f"No corpus named {name!r}")
