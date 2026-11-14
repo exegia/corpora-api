@@ -233,6 +233,7 @@ dependencies = [
     { name = "corpora-schema-types" },
     { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "httpx" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
@@ -240,7 +241,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "httpx2" },
     { name = "pytest" },
     { name = "ruff" },
@@ -248,9 +248,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "corpora-schema-types", git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=34a1af489b9cc17f2ccf74025d192fdf7941bda6" },
+    { name = "corpora-schema-types", git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=7dba8dce9a5c1c3d2e472c77361be2dd88e2682b" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "fastmcp", specifier = ">=4,<5" },
+    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
     { name = "python-multipart", specifier = ">=0.0.20,<1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
@@ -258,7 +259,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "httpx2", specifier = ">=2.16,<3" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "ruff", specifier = ">=0.11,<1" },
@@ -267,9 +267,11 @@ dev = [
 [[package]]
 name = "corpora-schema-types"
 version = "1.0.0"
-source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=34a1af489b9cc17f2ccf74025d192fdf7941bda6#34a1af489b9cc17f2ccf74025d192fdf7941bda6" }
+source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=7dba8dce9a5c1c3d2e472c77361be2dd88e2682b#7dba8dce9a5c1c3d2e472c77361be2dd88e2682b" }
 dependencies = [
+    { name = "jsonschema" },
     { name = "pydantic" },
+    { name = "referencing" },
 ]
 
 [[package]]
