@@ -1,6 +1,6 @@
 FROM rust:1.91-bookworm AS core-builder
 
-ARG CORPORA_CORE_REF=2291a4a6706bc488ee3acd709a128759c363dd2b
+ARG CORPORA_CORE_REF=b7e8ebdaec119b2532004d193bc333fa2df7e563
 RUN git clone https://github.com/exegia/corpora-core.git /core
 WORKDIR /core
 RUN git checkout "$CORPORA_CORE_REF" && \
@@ -11,7 +11,7 @@ RUN git checkout "$CORPORA_CORE_REF" && \
 FROM python:3.13-slim-bookworm
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      ca-certificates poppler-utils tesseract-ocr \
+      ca-certificates git poppler-utils tesseract-ocr \
       tesseract-ocr-eng tesseract-ocr-fra tesseract-ocr-heb && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /app

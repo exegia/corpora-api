@@ -2,7 +2,8 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from corpora_schema_types import TextRange
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CoreModel(BaseModel):
@@ -178,6 +179,15 @@ class SpellDiagnostic(CoreModel):
     suggestions: list[str]
     replacement: str | None
     reason: str
+
+    def text_range(self) -> TextRange:
+        """Expose the core schema's Unicode scalar range without changing the HTTP wire shape."""
+        return TextRange(start=self.start, end=self.end)
+
+    @model_validator(mode="after")
+    def validate_text_range(self) -> "SpellDiagnostic":
+        self.text_range()
+        return self
 
 
 class SpellReport(CoreModel):
