@@ -92,6 +92,8 @@ runners. Each stack has a skill with the conventions and pitfalls.
 - A schedule (22:00 UTC) or the **Promote to next** workflow opens `dev -> next`. A push to `next` cuts
   `release/vX.Y.Z` (version files + `CHANGELOG.md`) and opens a draft PR into `main`.
 - Merging that PR tags `vX.Y.Z`, publishes the GitHub Release, which triggers `publish.yml`.
+- Promotion skips matching `dev` and `next` trees. The release job builds `dist/` first and attaches
+  its files while creating the release, before immutability locks the published assets.
 - Required checks: `guard`, `check`, `Detect hardcoded secrets`.
 
 If this file and the automation disagree, `.github/BRANCH-AND-RELEASE-POLICY.md` (rules),
