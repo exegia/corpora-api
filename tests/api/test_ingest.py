@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -227,3 +229,19 @@ def test_optional_worker_uses_staged_upload_and_validates_result(
         "document.pdf", b"document contents", name="", language="und", corpus_id=""
     )
     assert graph.source_asset["sourceFormat"] == "pdf"
+
+
+def test_configured_worker_without_optional_dependencies_fails_before_storage(monkeypatch, store):
+    if importlib.util.find_spec("admin") is not None:
+        pytest.skip("requires an API environment without the optional admin package")
+    artifacts, jobs, _transport = store
+    monkeypatch.setenv("CORPORA_INGEST_WORKER_PYTHON", sys.executable)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/ingest",
+            headers=headers("alice-token"),
+            files={"file": ("document.pdf", b"%PDF fixture")},
+        )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Docling worker dependencies are unavailable"}
+    assert not artifacts and not jobs
