@@ -9,6 +9,21 @@ import sys
 from dataclasses import asdict
 from typing import Any
 
+# Leave room under the 4 MB hosted response limit for route-level metadata.
+MAX_CORPUS_WORKER_RESPONSE_BYTES = 3_900_000
+
+
+def _bounded_response(value: dict[str, Any]) -> str:
+    """Encode before writing so oversized output never crosses the worker pipe."""
+    chunks: list[str] = []
+    size = 0
+    for chunk in json.JSONEncoder(default=str, ensure_ascii=False).iterencode(value):
+        size += len(chunk.encode("utf-8"))
+        if size > MAX_CORPUS_WORKER_RESPONSE_BYTES:
+            return json.dumps({"error": "too_large", "message": "Corpus result exceeds limit"})
+        chunks.append(chunk)
+    return "".join(chunks)
+
 
 class CorpusProcessError(Exception):
     def __init__(self, kind: str, message: str, attributes: dict[str, Any] | None = None):
@@ -98,7 +113,7 @@ def _main() -> None:
         response = {"error": "too_large", "message": str(error)}
     except Exception:
         response = {"error": "invalid", "message": "Corpus archive or selection is invalid"}
-    print(json.dumps(response, default=str))
+    print(_bounded_response(response))
 
 
 if __name__ == "__main__":

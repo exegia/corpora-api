@@ -82,6 +82,48 @@ def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_large_node_response_is_rejected_for_owned_archive(store, tmp_path):
+    from cfabric import Fabric as ContextFabric
+    from corpus_validate import validate_archive
+
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={
+            "otype": {1: "word", 2: "book"},
+            "book": {2: "Mini"},
+            "text": {1: "x" * 2_400_000},
+        },
+        edgeFeatures={"oslots": {2: {1}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "text": {"valueType": "str"},
+            "otext": {
+                "sectionTypes": "book",
+                "sectionFeatures": "book",
+                "fmt:text-orig-full": "{text}",
+            },
+        },
+    )
+    assert ContextFabric(locations=str(root), silent="deep").loadAll(silent="deep")
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    data = stream.getvalue()
+    assert len(data) < 3_000_000
+    assert validate_archive(data, "first.corpus")["valid"]
+    store[f"{ALICE}/first.corpus"] = data
+    with TestClient(app) as client:
+        response = client.get("/v1/storage/first.corpus/nodes/1", headers=headers("alice-token"))
+    assert response.status_code == 413
+    assert len(response.content) < 1_000
+
+
 def test_ai_scope_validation_uses_owned_real_archive(
     store: dict[str, bytes], tmp_path: Path
 ) -> None:
