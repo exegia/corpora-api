@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from tf.fabric import Fabric
 
 from corpora_api import app as app_module
 from corpora_api.app import app
@@ -78,6 +82,72 @@ def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_ai_scope_validation_uses_owned_real_archive(
+    store: dict[str, bytes], tmp_path: Path
+) -> None:
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={
+            "otype": {1: "word", 2: "word", 3: "book"},
+            "book": {3: "Mini"},
+            "text": {1: "A", 2: "B"},
+        },
+        edgeFeatures={"oslots": {3: {1, 2}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "text": {"valueType": "str"},
+            "otext": {
+                "sectionTypes": "book",
+                "sectionFeatures": "book",
+                "fmt:text-orig-full": "{text}",
+            },
+        },
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    scope = {"corpus": "first", "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
+    with TestClient(app) as client:
+        providers = client.get("/v1/ai/providers", headers=headers("alice-token"))
+        valid = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+        foreign = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("bob-token")
+        )
+        stale = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "version": "old"}},
+            headers=headers("alice-token"),
+        )
+        unauthorized = client.get("/v1/ai/providers")
+        schema = client.get("/v1/openapi.json").json()
+    assert [item["id"] for item in providers.json()["providers"]] == [
+        "anthropic",
+        "openai",
+        "google",
+    ]
+    assert valid.status_code == 200, valid.text
+    assert valid.json() == {"corpus": "first", "version": "1.0", "checked_nodes": 1, "findings": []}
+    assert (foreign.status_code, stale.status_code, unauthorized.status_code) == (404, 409, 401)
+    assert stale.json()["code"] == "stale"
+    for path, method in (("/v1/ai/providers", "get"), ("/v1/ai/validate", "post")):
+        assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_ai_range_accepts_node_ids_in_reading_order() -> None:
+    from corpora_api.models import AIUnitRange
+
+    assert AIUnitRange(start=5, end=4).model_dump() == {"start": 5, "end": 4}
+
+
 def test_list_info_and_streamed_download_are_owner_scoped(store: dict[str, bytes]) -> None:
     with TestClient(app) as client:
         listed = client.get("/v1/storage", headers=headers("alice-token"))
@@ -118,19 +188,18 @@ def test_corpus_detail_reads_are_owner_scoped_and_documented(
 ) -> None:
     calls: list[tuple[str, str, str]] = []
 
-    class ArchiveReadNotFound(Exception):
-        pass
+    from corpora_api.corpus_process import CorpusProcessError
 
-    class ArchiveTooLarge(Exception):
-        pass
-
-    def read_archive(data: bytes, view: str, **params: object) -> dict[str, object]:
+    def read_archive(
+        data: bytes, operation: str, *, view: str, **params: object
+    ) -> dict[str, object]:
+        assert operation == "view"
         assert data == store[f"{ALICE}/first.corpus"]
         calls.append((ALICE, view, str(params.get("parent") or params.get("ref") or "")))
         if params.get("ref") == "missing":
-            raise ArchiveReadNotFound("section missing")
+            raise CorpusProcessError("not_found", "section missing")
         if params.get("fmt") == "corrupt":
-            raise ValueError("corrupt graph")
+            raise CorpusProcessError("invalid", "corrupt graph")
         if view == "manifest":
             return {"name": "first"}
         if view == "index":
@@ -172,15 +241,7 @@ def test_corpus_detail_reads_are_owner_scoped_and_documented(
             "occurrences_in_section": 1,
         }
 
-    monkeypatch.setitem(
-        sys.modules,
-        "corpus_validate",
-        SimpleNamespace(
-            ArchiveReadNotFound=ArchiveReadNotFound,
-            ArchiveTooLarge=ArchiveTooLarge,
-            read_archive=read_archive,
-        ),
-    )
+    monkeypatch.setattr("corpora_api.storage_detail.run_corpus", read_archive)
 
     with TestClient(app) as client:
         manifest = client.get("/v1/storage/first.corpus/manifest", headers=headers("alice-token"))
@@ -220,6 +281,147 @@ def test_corpus_detail_reads_are_owner_scoped_and_documented(
         "/v1/storage/{filename}/nodes/{node}",
     ):
         assert schema["paths"][path]["get"]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_versions_read_real_archive_and_enforce_owner(store: dict[str, bytes]) -> None:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("manifest.yml", "name: Example\n")
+        archive.writestr("history.yml", "versions:\n  - id: v1.0\n    current: true\n")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    with TestClient(app) as client:
+        versions = client.get("/v1/storage/first.corpus/versions", headers=headers("alice-token"))
+        foreign = client.get("/v1/storage/first.corpus/versions", headers=headers("bob-token"))
+        unauthorized = client.get("/v1/storage/first.corpus/versions")
+        schema = client.get("/v1/openapi.json").json()
+    assert versions.status_code == 200
+    assert versions.json() == {"versions": [{"id": "v1.0", "current": True}]}
+    assert foreign.status_code == 404
+    assert unauthorized.status_code == 401
+    assert schema["paths"]["/v1/storage/{filename}/versions"]["get"]["security"] == [
+        {"SupabaseUserJWT": []}
+    ]
+
+
+def test_references_use_real_corpus_and_enforce_owner(
+    store: dict[str, bytes], tmp_path: Path
+) -> None:
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={"otype": {1: "word", 2: "word", 3: "book"}, "book": {3: "Mini"}},
+        edgeFeatures={"oslots": {3: {1, 2}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "otext": {"sectionTypes": "book", "sectionFeatures": "book"},
+        },
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("manifest.yml", "name: Mini\nversion: '2.3'\n")
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    store[f"{ALICE}/first.cusx.corpus"] = stream.getvalue()
+    store[f"{ALICE}/Mixed_Case.corpus"] = stream.getvalue()
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/refs",
+            json={"corpus": "first", "node": 1, "end_node": 2},
+            headers=headers("alice-token"),
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["ref"] == "first@2.3/Mini!word1-2"
+        assert body["nodes"] == [1, 2]
+        resolved = client.get(
+            "/v1/refs/resolve", params={"ref": body["urn"]}, headers=headers("alice-token")
+        )
+        compact = client.get(
+            "/v1/refs/resolve", params={"ref": body["token"]}, headers=headers("alice-token")
+        )
+        mixed = client.post(
+            "/v1/refs",
+            json={"corpus": "Mixed_Case", "node": 1},
+            headers=headers("alice-token"),
+        )
+        mixed_resolved = client.get(
+            "/v1/refs/resolve",
+            params={"ref": mixed.json()["token"]},
+            headers=headers("alice-token"),
+        )
+        double_suffix = client.post(
+            "/v1/refs",
+            json={"corpus": "first.cusx.corpus", "node": 1},
+            headers=headers("alice-token"),
+        )
+        double_resolved = client.get(
+            "/v1/refs/resolve",
+            params={"ref": double_suffix.json()["ref"]},
+            headers=headers("alice-token"),
+        )
+        from_ref = client.get(
+            "/v1/refs/shortcode", params={"ref": body["ref"]}, headers=headers("alice-token")
+        )
+        from_node = client.post(
+            "/v1/refs/shortcode",
+            json={"corpus": "first", "node": 1},
+            headers=headers("alice-token"),
+        )
+        foreign = client.get(
+            "/v1/refs/resolve", params={"ref": body["ref"]}, headers=headers("bob-token")
+        )
+        stale = client.get(
+            "/v1/refs/resolve",
+            params={"ref": "first@old/Mini!word1"},
+            headers=headers("alice-token"),
+        )
+        invalid = client.get(
+            "/v1/refs/resolve", params={"ref": "first/Mini!word0"}, headers=headers("alice-token")
+        )
+        mismatch = client.get(
+            "/v1/refs/resolve",
+            params={"ref": "other/Mini!word1", "corpus": "first"},
+            headers=headers("alice-token"),
+        )
+        unauth = client.post("/v1/refs", json={"corpus": "first", "node": 1})
+        schema = client.get("/v1/openapi.json").json()
+    assert resolved.json()["nodes"] == compact.json()["nodes"] == [1, 2]
+    assert mixed_resolved.status_code == 200
+    assert mixed_resolved.json()["ref"] == mixed.json()["ref"]
+    assert double_suffix.json()["ref"] == "first.cusx.corpus@2.3/Mini!word1"
+    assert double_resolved.status_code == 200
+    assert from_ref.json()["ref"] == body["ref"]
+    assert from_node.json()["ref"] == "first@2.3/Mini!word1"
+    assert mismatch.status_code == 400
+    assert (foreign.status_code, stale.status_code, invalid.status_code, unauth.status_code) == (
+        404,
+        409,
+        400,
+        401,
+    )
+    for path, method in (
+        ("/v1/refs", "post"),
+        ("/v1/refs/resolve", "get"),
+        ("/v1/refs/shortcode", "get"),
+        ("/v1/refs/shortcode", "post"),
+    ):
+        assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_compact_corpus_slug_collision_returns_conflict(store: dict[str, bytes]) -> None:
+    store[f"{ALICE}/a-b.corpus"] = b"archive one"
+    store[f"{ALICE}/a_b.corpus"] = b"archive two"
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/refs/resolve",
+            params={"ref": "coa-b_bk001"},
+            headers=headers("alice-token"),
+        )
+    assert response.status_code == 409
 
 
 def test_corpus_detail_download_is_bounded(

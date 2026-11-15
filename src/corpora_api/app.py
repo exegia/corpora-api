@@ -61,6 +61,10 @@ from corpora_api.ingest_worker import (
     run_docling_worker,
 )
 from corpora_api.models import (
+    AIProvider,
+    AIProvidersResponse,
+    AIScopeRequest,
+    AIValidationResponse,
     CorpusContentResponse,
     CorpusIndexResponse,
     CorpusNodeDetailResponse,
@@ -73,6 +77,8 @@ from corpora_api.models import (
     LanguageRequest,
     PurposeReport,
     PurposeRequest,
+    ReferenceCreate,
+    ShortcodeCreate,
     SpellingRequest,
     SpellReport,
     StoragePublishRequest,
@@ -81,6 +87,7 @@ from corpora_api.models import (
     TFCheckReport,
     ValidationResponse,
 )
+from corpora_api.references import reference
 from corpora_api.storage import (
     CorpusStorage,
     StorageError,
@@ -117,6 +124,10 @@ def user_auth_path(path: str) -> bool:
     return (
         path in USER_AUTH_PATHS
         or path.startswith("/v1/storage/")
+        or path == "/v1/ai/providers"
+        or path == "/v1/ai/validate"
+        or path == "/v1/refs"
+        or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
         or path.startswith("/v1/ingest/")
     )
@@ -753,6 +764,88 @@ _STORAGE_DETAIL_RESPONSES = {
 }
 
 
+@app.get("/v1/ai/providers", tags=["ai"], response_model=AIProvidersResponse)
+async def ai_providers(_user_id: Annotated[str, Depends(require_user)]) -> AIProvidersResponse:
+    return AIProvidersResponse(
+        providers=[
+            AIProvider(
+                id="anthropic", label="Anthropic", models=["claude-sonnet-4-5", "claude-haiku-4-5"]
+            ),
+            AIProvider(id="openai", label="OpenAI", models=["gpt-5.2", "gpt-5.2-mini"]),
+            AIProvider(id="google", label="Google", models=["gemini-3-pro", "gemini-3-flash"]),
+        ]
+    )
+
+
+@app.post(
+    "/v1/ai/validate",
+    tags=["ai"],
+    response_model=AIValidationResponse,
+    responses={**_STORAGE_DETAIL_RESPONSES, 409: {"description": "Scope is stale"}},
+)
+async def ai_validate(
+    request: AIScopeRequest, user_id: Annotated[str, Depends(require_user)]
+) -> Any:
+    from corpora_api.ai_validation import validate_scope
+
+    return await run_in_threadpool(
+        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope
+    )
+
+
+_REFERENCE_RESPONSES = {
+    **_STORAGE_DETAIL_RESPONSES,
+    400: {"model": ErrorResponse},
+    409: {"description": "Stale or ambiguous reference"},
+}
+
+
+@app.post("/v1/refs", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def create_reference(
+    body: ReferenceCreate, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await run_in_threadpool(reference, corpus_storage, user_id, **body.model_dump())
+
+
+@app.get("/v1/refs/resolve", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def resolve_reference(
+    user_id: Annotated[str, Depends(require_user)],
+    ref: str,
+    corpus: str | None = None,
+    lang: str | None = None,
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        reference, corpus_storage, user_id, ref=ref, corpus=corpus, lang=lang
+    )
+
+
+@app.get("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def get_reference_shortcode(
+    user_id: Annotated[str, Depends(require_user)],
+    ref: str,
+    corpus: str | None = None,
+    url_template: str | None = None,
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        reference,
+        corpus_storage,
+        user_id,
+        ref=ref,
+        corpus=corpus,
+        shortcode=True,
+        url_template=url_template,
+    )
+
+
+@app.post("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def create_reference_shortcode(
+    body: ShortcodeCreate, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        reference, corpus_storage, user_id, **body.model_dump(), shortcode=True
+    )
+
+
 async def _read_stored_corpus_view(
     filename: str, user_id: str, view: str, **params: Any
 ) -> dict[str, Any]:
@@ -772,6 +865,19 @@ async def get_stored_corpus_manifest(
     filename: str, user_id: Annotated[str, Depends(require_user)]
 ) -> dict[str, Any]:
     return await _read_stored_corpus_view(filename, user_id, "manifest")
+
+
+@app.get(
+    "/v1/storage/{filename}/versions",
+    tags=["storage"],
+    summary="Read a corpus version history",
+    description="Return archive history or the packaged manifest's initial version.",
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_versions(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await _read_stored_corpus_view(filename, user_id, "versions")
 
 
 @app.get(
