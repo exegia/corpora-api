@@ -6,11 +6,13 @@ import io
 import json
 import sys
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from tf.fabric import Fabric
 
 from corpora_api import app as app_module
 from corpora_api.app import app
@@ -242,6 +244,101 @@ def test_versions_read_real_archive_and_enforce_owner(store: dict[str, bytes]) -
     assert schema["paths"]["/v1/storage/{filename}/versions"]["get"]["security"] == [
         {"SupabaseUserJWT": []}
     ]
+
+
+def test_references_use_real_corpus_and_enforce_owner(
+    store: dict[str, bytes], tmp_path: Path
+) -> None:
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={"otype": {1: "word", 2: "word", 3: "book"}, "book": {3: "Mini"}},
+        edgeFeatures={"oslots": {3: {1, 2}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "otext": {"sectionTypes": "book", "sectionFeatures": "book"},
+        },
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("manifest.yml", "name: Mini\nversion: '2.3'\n")
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/refs",
+            json={"corpus": "first", "node": 1, "end_node": 2},
+            headers=headers("alice-token"),
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["ref"] == "first@2.3/Mini!word1-2"
+        assert body["nodes"] == [1, 2]
+        resolved = client.get(
+            "/v1/refs/resolve", params={"ref": body["urn"]}, headers=headers("alice-token")
+        )
+        compact = client.get(
+            "/v1/refs/resolve", params={"ref": body["token"]}, headers=headers("alice-token")
+        )
+        from_ref = client.get(
+            "/v1/refs/shortcode", params={"ref": body["ref"]}, headers=headers("alice-token")
+        )
+        from_node = client.post(
+            "/v1/refs/shortcode",
+            json={"corpus": "first", "node": 1},
+            headers=headers("alice-token"),
+        )
+        foreign = client.get(
+            "/v1/refs/resolve", params={"ref": body["ref"]}, headers=headers("bob-token")
+        )
+        stale = client.get(
+            "/v1/refs/resolve",
+            params={"ref": "first@old/Mini!word1"},
+            headers=headers("alice-token"),
+        )
+        invalid = client.get(
+            "/v1/refs/resolve", params={"ref": "first/Mini!word0"}, headers=headers("alice-token")
+        )
+        mismatch = client.get(
+            "/v1/refs/resolve",
+            params={"ref": "other/Mini!word1", "corpus": "first"},
+            headers=headers("alice-token"),
+        )
+        unauth = client.post("/v1/refs", json={"corpus": "first", "node": 1})
+        schema = client.get("/v1/openapi.json").json()
+    assert resolved.json()["nodes"] == compact.json()["nodes"] == [1, 2]
+    assert from_ref.json()["ref"] == body["ref"]
+    assert from_node.json()["ref"] == "first@2.3/Mini!word1"
+    assert mismatch.status_code == 400
+    assert (foreign.status_code, stale.status_code, invalid.status_code, unauth.status_code) == (
+        404,
+        409,
+        400,
+        401,
+    )
+    for path, method in (
+        ("/v1/refs", "post"),
+        ("/v1/refs/resolve", "get"),
+        ("/v1/refs/shortcode", "get"),
+        ("/v1/refs/shortcode", "post"),
+    ):
+        assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_compact_corpus_slug_collision_returns_conflict(store: dict[str, bytes]) -> None:
+    store[f"{ALICE}/a-b.corpus"] = b"archive one"
+    store[f"{ALICE}/a_b.corpus"] = b"archive two"
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/refs/resolve",
+            params={"ref": "coa-b_bk001"},
+            headers=headers("alice-token"),
+        )
+    assert response.status_code == 409
 
 
 def test_corpus_detail_download_is_bounded(
