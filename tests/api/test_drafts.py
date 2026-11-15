@@ -2,7 +2,9 @@
 
 import io
 import json
+import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import httpx
@@ -13,10 +15,76 @@ from fastapi.testclient import TestClient
 from tf.fabric import Fabric
 
 from corpora_api import app as app_module
+from corpora_api import drafts as drafts_module
 from corpora_api.app import app
 from corpora_api.auth import UserAuthError
 from corpora_api.drafts import DraftStore
 from corpora_api.validation import ValidationBridge
+
+
+def test_concurrent_draft_creation_reuses_the_same_immutable_object(monkeypatch):
+    owner, job = str(uuid4()), str(uuid4())
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    objects, heads = {}, {}
+    monkeypatch.setenv("SUPABASE_URL", "https://fixture.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "fixture-key")
+    monkeypatch.setattr(drafts_module, "read_archive", lambda *_: {"version": "1.0"})
+
+    def transport(request):
+        key = request.url.path
+        if request.method == "POST":
+            assert request.headers["x-upsert"] == "false"
+            barrier.wait(timeout=10)
+            with lock:
+                if key in objects:
+                    return httpx.Response(409)
+                objects[key] = request.content
+                return httpx.Response(201)
+        if request.method == "GET":
+            with lock:
+                return httpx.Response(200, content=objects[key])
+        raise AssertionError("unexpected storage request")
+
+    store = DraftStore(httpx.Client(transport=httpx.MockTransport(transport)))
+
+    def missing(*_):
+        raise HTTPException(404, "Draft not found")
+
+    def rpc(action, principal, payload):
+        if action == "capabilities":
+            return {"draft_api": 1}
+        assert action == "provision"
+        with lock:
+            if not heads:
+                heads.update(
+                    {
+                        **{
+                            key: value
+                            for key, value in payload.items()
+                            if key not in ("name", "job_id")
+                        },
+                        "owner": principal,
+                        "state": "draft",
+                    }
+                )
+            return dict(heads)
+
+    monkeypatch.setattr(store, "resolve", missing)
+    monkeypatch.setattr(store, "_rpc", rpc)
+
+    class Jobs:
+        def fetch(self, *_):
+            return "fixture.corpus", b"same verified bytes"
+
+    class Validator:
+        def validate(self, *_):
+            return {"valid": True}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: store.create(owner, job, Jobs(), Validator()), range(2)))
+    assert results[0] == results[1]
+    assert len(objects) == 1
 
 
 def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkeypatch, tmp_path):

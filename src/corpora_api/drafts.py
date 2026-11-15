@@ -9,7 +9,7 @@ import re
 import zipfile
 from typing import Any, Literal
 from urllib.parse import quote
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 from corpus_validate import read_archive
@@ -186,8 +186,10 @@ class DraftStore:
             raise HTTPException(
                 status_code=422, detail="Working drafts require a major.minor version"
             )
-        revision = str(uuid4())
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        # A retry of the same owned job and bytes must stage the same immutable
+        # object, even if an earlier provision response was lost after commit.
+        revision = str(uuid5(UUID(document_id), digest))
         value = {
             "document_id": document_id,
             "owner": owner,
