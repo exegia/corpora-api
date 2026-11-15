@@ -169,6 +169,9 @@ GRANT INSERT, DELETE ON reference_working.resource_access TO service_role;
 GRANT INSERT, UPDATE ON reference_working.entitlement_heads TO service_role;
 GRANT USAGE ON SCHEMA auth TO service_role;
 GRANT SELECT (id, user_id, not_after) ON auth.sessions TO service_role;
+-- PostgreSQL requires UPDATE on a column for SELECT FOR SHARE. Hold the
+-- session row until the operation commits so revocation cannot pass a write.
+GRANT UPDATE (not_after) ON auth.sessions TO service_role;
 -- Space/member creation and removal have no service-role grant here.
 -- History/event rows have no UPDATE or DELETE grants. Owners remain privileged.
 COMMIT;
