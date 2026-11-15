@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from corpora_api.conversion_artifacts import ConversionArtifactNotFound
 from corpora_api.corpus_process import (
     SAFE_SCOPE_ERRORS,
     CorpusProcessError,
@@ -30,7 +31,10 @@ def validate_scope(
             UUID(request.corpus[4:])
         except ValueError as error:
             raise HTTPException(422, "Expected job:<UUID>") from error
-        _, data = jobs.fetch(owner, request.corpus[4:])
+        try:
+            _, data = jobs.fetch(owner, request.corpus[4:])
+        except ConversionArtifactNotFound as error:
+            raise HTTPException(404, "Corpus not found") from error
     else:
         if not request.corpus.startswith("draft:") and (
             not _ARCHIVE_ID.fullmatch(request.corpus) or request.corpus != request.corpus.strip()
@@ -38,8 +42,8 @@ def validate_scope(
             raise HTTPException(422, "Expected a flat corpus archive ID, not a path or URL")
         try:
             data = download_stored_archive(storage, owner, request.corpus)
-        except StoredCorpusNotFound:
-            raise
+        except StoredCorpusNotFound as error:
+            raise HTTPException(404, "Corpus not found") from error
         except StorageError as error:
             raise HTTPException(503, "Corpus storage is unavailable") from error
     try:

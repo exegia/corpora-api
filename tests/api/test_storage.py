@@ -318,6 +318,7 @@ def test_ai_scope_validation_uses_owned_real_archive(
         "findings": [],
     }
     assert foreign_job.status_code == 404 and downloads == [True]
+    assert foreign_job.json() == {"detail": "Corpus not found"}
     assert finding.status_code == 200, finding.text
     located = finding.json()["findings"]
     assert len(located) == 1
@@ -330,6 +331,7 @@ def test_ai_scope_validation_uses_owned_real_archive(
     assert "book" in located[0]["message"]
     assert foreign_finding.status_code == 404 and "findings" not in foreign_finding.json()
     assert (foreign.status_code, stale.status_code, unauthorized.status_code) == (404, 409, 401)
+    assert foreign.json() == {"detail": "Corpus not found"}
     assert stale.json()["code"] == "stale"
     assert unknown_node.status_code == 422
     assert unknown_node.json() == {"detail": "Unknown node 2147483647"}
