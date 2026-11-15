@@ -13,9 +13,12 @@ from corpora_api.storage_detail import download_stored_archive
 
 
 def validate_scope(
-    storage: Any, jobs: Any, owner: str, request: AINodeScope
+    storage: Any, jobs: Any, drafts: Any, owner: str, request: AINodeScope
 ) -> dict[str, Any] | JSONResponse:
-    if request.corpus.startswith("job:"):
+    if request.corpus.startswith("draft:"):
+        head = drafts.resolve(owner, request.corpus[6:])
+        data = drafts._download(head)
+    elif request.corpus.startswith("job:"):
         _, data = jobs.fetch(owner, request.corpus[4:])
     else:
         data = download_stored_archive(storage, owner, request.corpus)
