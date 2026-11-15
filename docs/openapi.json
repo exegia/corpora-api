@@ -1,6 +1,424 @@
 {
   "components": {
     "schemas": {
+      "AIChatDiffRow": {
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "new": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New"
+          },
+          "old": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old"
+          }
+        },
+        "required": [
+          "field",
+          "old",
+          "new"
+        ],
+        "title": "AIChatDiffRow",
+        "type": "object"
+      },
+      "AIChatDoneEvent": {
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "done",
+            "default": "done",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "message_id"
+        ],
+        "title": "AIChatDoneEvent",
+        "type": "object"
+      },
+      "AIChatErrorEvent": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/AIChatErrorInfo"
+          },
+          "type": {
+            "const": "error",
+            "default": "error",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "AIChatErrorEvent",
+        "type": "object"
+      },
+      "AIChatErrorInfo": {
+        "properties": {
+          "code": {
+            "enum": [
+              "locked",
+              "stale",
+              "confirmation_required",
+              "model_unavailable",
+              "forbidden"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "reason",
+          "retryable"
+        ],
+        "title": "AIChatErrorInfo",
+        "type": "object"
+      },
+      "AIChatNodeScope": {
+        "properties": {
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "corpus": {
+            "title": "Corpus",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "word",
+              "passage",
+              "section",
+              "document",
+              "corpus"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "node_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Id"
+          },
+          "node_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Type"
+          },
+          "unit_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AIChatUnitRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "corpus",
+          "level",
+          "label",
+          "version"
+        ],
+        "title": "AIChatNodeScope",
+        "type": "object"
+      },
+      "AIChatRequest": {
+        "properties": {
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "mode": {
+            "default": "ask",
+            "enum": [
+              "ask",
+              "fix"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AIChatNodeScope"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "scope",
+          "message"
+        ],
+        "title": "AIChatRequest",
+        "type": "object"
+      },
+      "AIChatSuggestion": {
+        "properties": {
+          "base_version": {
+            "title": "Base Version",
+            "type": "string"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "diff": {
+            "items": {
+              "$ref": "#/components/schemas/AIChatDiffRow"
+            },
+            "minItems": 1,
+            "title": "Diff",
+            "type": "array"
+          },
+          "finding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AIFinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generated": {
+            "const": true,
+            "default": true,
+            "title": "Generated",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "annotation",
+              "label",
+              "boundary",
+              "formatting",
+              "reference",
+              "text"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AIChatNodeScope"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "applied",
+              "rejected",
+              "stale"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_node": {
+            "title": "Target Node",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "kind",
+          "target_node",
+          "diff",
+          "rationale",
+          "base_version",
+          "content_hash"
+        ],
+        "title": "AIChatSuggestion",
+        "type": "object"
+      },
+      "AIChatSuggestionEvent": {
+        "properties": {
+          "suggestion": {
+            "$ref": "#/components/schemas/AIChatSuggestion"
+          },
+          "type": {
+            "const": "suggestion",
+            "default": "suggestion",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suggestion"
+        ],
+        "title": "AIChatSuggestionEvent",
+        "type": "object"
+      },
+      "AIChatTokenEvent": {
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "token",
+            "default": "token",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AIChatTokenEvent",
+        "type": "object"
+      },
+      "AIChatToolEvent": {
+        "properties": {
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
+          },
+          "status": {
+            "enum": [
+              "started",
+              "finished",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          },
+          "type": {
+            "const": "tool",
+            "default": "tool",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "status"
+        ],
+        "title": "AIChatToolEvent",
+        "type": "object"
+      },
+      "AIChatUnitRange": {
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "AIChatUnitRange",
+        "type": "object"
+      },
       "AIFinding": {
         "properties": {
           "consequence": {
@@ -177,6 +595,12 @@
       },
       "AIProvidersResponse": {
         "properties": {
+          "gateway": {
+            "const": "vercel-ai-gateway",
+            "default": "vercel-ai-gateway",
+            "title": "Gateway",
+            "type": "string"
+          },
           "providers": {
             "items": {
               "$ref": "#/components/schemas/AIProvider"
@@ -2100,6 +2524,169 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/ai/chat": {
+      "post": {
+        "description": "Describe the legacy streaming contract without starting a model request.",
+        "operationId": "ai_chat_v1_ai_chat_post",
+        "parameters": [
+          {
+            "description": "Gateway provider slug",
+            "in": "header",
+            "name": "x-ai-provider",
+            "required": true,
+            "schema": {
+              "description": "Gateway provider slug",
+              "title": "X-Ai-Provider",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Request-scoped provider API key",
+            "in": "header",
+            "name": "x-ai-api-key",
+            "required": true,
+            "schema": {
+              "description": "Request-scoped provider API key",
+              "title": "X-Ai-Api-Key",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional model override",
+            "in": "header",
+            "name": "x-ai-model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional model override",
+              "title": "X-Ai-Model"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AIChatTokenEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatToolEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatSuggestionEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatDoneEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatErrorEvent"
+                    }
+                  ],
+                  "title": "Response 200 Ai Chat V1 Ai Chat Post"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AIChatTokenEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatToolEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatSuggestionEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatDoneEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AIChatErrorEvent"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "SSE events: token, tool, suggestion, done or error."
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Caller lacks corpus rights"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Corpus is published and locked"
+          },
+          "501": {
+            "description": "Chat is not implemented"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Model or provider unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Ai Chat",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
     "/v1/ai/drafts": {
       "get": {
         "operationId": "list_working_drafts_v1_ai_drafts_get",

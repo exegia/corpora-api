@@ -211,7 +211,87 @@ class AIProvider(BaseModel):
 
 
 class AIProvidersResponse(BaseModel):
+    gateway: Literal["vercel-ai-gateway"] = "vercel-ai-gateway"
     providers: list[AIProvider]
+
+
+class AIChatUnitRange(AIUnitRange):
+    @model_validator(mode="after")
+    def ordered(self) -> AIChatUnitRange:
+        if self.end < self.start:
+            raise ValueError("range end must be >= start")
+        return self
+
+
+class AIChatNodeScope(AINodeScope):
+    unit_range: AIChatUnitRange | None = None
+
+
+class AIChatRequest(BaseModel):
+    thread_id: str | None = None
+    scope: AIChatNodeScope
+    message: str = Field(min_length=1)
+    mode: Literal["ask", "fix"] = "ask"
+
+
+class AIChatDiffRow(BaseModel):
+    field: str
+    old: str | None
+    new: str | None
+
+
+class AIChatSuggestion(BaseModel):
+    id: str
+    scope: AIChatNodeScope
+    kind: Literal["annotation", "label", "boundary", "formatting", "reference", "text"]
+    target_node: int
+    diff: list[AIChatDiffRow] = Field(min_length=1)
+    rationale: str
+    generated: Literal[True] = True
+    base_version: str
+    content_hash: str
+    status: Literal["pending", "applied", "rejected", "stale"] = "pending"
+    finding: AIFinding | None = None
+
+
+class AIChatErrorInfo(BaseModel):
+    code: Literal["locked", "stale", "confirmation_required", "model_unavailable", "forbidden"]
+    reason: str
+    retryable: bool
+    current_version: str | None = None
+
+
+class AIChatTokenEvent(BaseModel):
+    type: Literal["token"] = "token"
+    text: str
+
+
+class AIChatToolEvent(BaseModel):
+    type: Literal["tool"] = "tool"
+    tool: str
+    status: Literal["started", "finished", "failed"]
+    payload: dict[str, Any] | None = None
+
+
+class AIChatSuggestionEvent(BaseModel):
+    type: Literal["suggestion"] = "suggestion"
+    suggestion: AIChatSuggestion
+
+
+class AIChatDoneEvent(BaseModel):
+    type: Literal["done"] = "done"
+    thread_id: str
+    message_id: str
+
+
+class AIChatErrorEvent(BaseModel):
+    type: Literal["error"] = "error"
+    error: AIChatErrorInfo
+
+
+AIChatEvent = (
+    AIChatTokenEvent | AIChatToolEvent | AIChatSuggestionEvent | AIChatDoneEvent | AIChatErrorEvent
+)
 
 
 class ReferenceCreate(BaseModel):
