@@ -1,6 +1,6 @@
 FROM rust:1.91-bookworm AS core-builder
 
-ARG CORPORA_CORE_REF=50ca875b065172c102146ce6327f7750ab1ef4b0
+ARG CORPORA_CORE_REF=4900929b7e7afcbc27d5bc0cbd87ed45e14acb7f
 RUN git clone https://github.com/exegia/corpora-core.git /core
 WORKDIR /core
 RUN git checkout "$CORPORA_CORE_REF" && \
@@ -21,7 +21,6 @@ COPY --from=core-builder /core/target/release/corpora-pdf-extract /usr/local/bin
 COPY --from=core-builder /core/packages/tei-to-tf /opt/core-packages/tei-to-tf
 COPY --from=core-builder /core/packages/epub-to-tf /opt/core-packages/epub-to-tf
 COPY --from=core-builder /core/packages/pdf-to-tf /opt/core-packages/pdf-to-tf
-COPY --from=core-builder /core/packages/corpus-validate /opt/core-packages/corpus-validate
 COPY --from=core-builder /core/crates/corpora-core/tools/install_dictionaries.py /tmp/dictionaries/install_dictionaries.py
 COPY --from=core-builder /core/crates/corpora-core/tools/dictionaries.lock.json /tmp/dictionaries/dictionaries.lock.json
 COPY pyproject.toml uv.lock README.md ./
@@ -32,8 +31,6 @@ RUN pip install --no-cache-dir uv && \
       /opt/core-packages/tei-to-tf \
       /opt/core-packages/epub-to-tf \
       /opt/core-packages/pdf-to-tf && \
-    uv pip install --no-editable --python /app/.venv/bin/python \
-      /opt/core-packages/corpus-validate && \
     python /tmp/dictionaries/install_dictionaries.py \
       --output /usr/local/share/corpora-dictionaries && \
     rm -rf /tmp/dictionaries && \

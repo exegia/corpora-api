@@ -61,6 +61,10 @@ from corpora_api.ingest_worker import (
     run_docling_worker,
 )
 from corpora_api.models import (
+    CorpusContentResponse,
+    CorpusIndexResponse,
+    CorpusNodeDetailResponse,
+    CorpusSectionPageResponse,
     DiagnosticReport,
     ErrorResponse,
     IngestCreated,
@@ -84,6 +88,7 @@ from corpora_api.storage import (
     StoredCorpusConflict,
     StoredCorpusNotFound,
 )
+from corpora_api.storage_detail import read_stored_archive_view
 from corpora_api.tf_check import MAX_ARCHIVE_BYTES as MAX_TF_ARCHIVE_BYTES
 from corpora_api.tf_check import TFArchiveRejected, check_tf_archive
 from corpora_api.validation import (
@@ -737,6 +742,118 @@ _STORAGE_RESPONSES = {
     502: {"model": ErrorResponse},
     503: {"model": ErrorResponse},
 }
+
+_STORAGE_DETAIL_RESPONSES = {
+    401: {"model": ErrorResponse},
+    404: {"model": ErrorResponse},
+    413: {"model": ErrorResponse},
+    422: {"model": ErrorResponse},
+    502: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+}
+
+
+async def _read_stored_corpus_view(
+    filename: str, user_id: str, view: str, **params: Any
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        read_stored_archive_view, corpus_storage, user_id, filename, view, **params
+    )
+
+
+@app.get(
+    "/v1/storage/{filename}/manifest",
+    tags=["storage"],
+    summary="Read an owned corpus manifest",
+    description="Return the manifest from an archive in the verified caller's storage prefix.",
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_manifest(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await _read_stored_corpus_view(filename, user_id, "manifest")
+
+
+@app.get(
+    "/v1/storage/{filename}/index",
+    tags=["storage"],
+    summary="Read a corpus section index",
+    description="Return the table of contents, section hierarchy, and node-type counts.",
+    response_model=CorpusIndexResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_index(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> CorpusIndexResponse:
+    result = await _read_stored_corpus_view(filename, user_id, "index")
+    return CorpusIndexResponse.model_validate(result)
+
+
+@app.get(
+    "/v1/storage/{filename}/sections",
+    tags=["storage"],
+    summary="Read a page of corpus sections",
+    description=(
+        "List section children beneath a section reference, or top-level sections when parent "
+        "is omitted. Limits are capped at 200."
+    ),
+    response_model=CorpusSectionPageResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_sections(
+    filename: str,
+    user_id: Annotated[str, Depends(require_user)],
+    parent: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50),
+) -> CorpusSectionPageResponse:
+    result = await _read_stored_corpus_view(
+        filename, user_id, "sections", parent=parent, offset=offset, limit=limit
+    )
+    return CorpusSectionPageResponse.model_validate(result)
+
+
+@app.get(
+    "/v1/storage/{filename}/content",
+    tags=["storage"],
+    summary="Read paginated corpus content",
+    description=(
+        "Return passages under an optional section reference with stable Text-Fabric node IDs "
+        "and slot tokens. Limits are capped at 200."
+    ),
+    response_model=CorpusContentResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_content(
+    filename: str,
+    user_id: Annotated[str, Depends(require_user)],
+    ref: str | None = Query(default=None),
+    fmt: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50),
+) -> CorpusContentResponse:
+    result = await _read_stored_corpus_view(
+        filename, user_id, "content", ref=ref, fmt=fmt, offset=offset, limit=limit
+    )
+    return CorpusContentResponse.model_validate(result)
+
+
+@app.get(
+    "/v1/storage/{filename}/nodes/{node}",
+    tags=["storage"],
+    summary="Read one corpus graph node",
+    description=(
+        "Return a node's type, stable identity, slot span, text, features, annotation, and "
+        "containing context."
+    ),
+    response_model=CorpusNodeDetailResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_node(
+    filename: str, node: int, user_id: Annotated[str, Depends(require_user)]
+) -> CorpusNodeDetailResponse:
+    result = await _read_stored_corpus_view(filename, user_id, "node", node=node)
+    return CorpusNodeDetailResponse.model_validate(result)
 
 
 @app.get(

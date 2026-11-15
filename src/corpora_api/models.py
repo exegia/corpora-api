@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from corpora_schema_types import TextRange
@@ -75,6 +75,69 @@ class StoredCorpusResponse(BaseModel):
     size_bytes: int | None
     repo_id: str
     url: str
+
+
+class CorpusNodeTypeStat(BaseModel):
+    type: str
+    count: int
+    avg_slots: float
+    is_slot: bool
+
+
+class CorpusIndexResponse(BaseModel):
+    toc: Any = None
+    sections: dict[str, Any] | None
+    node_types: list[CorpusNodeTypeStat]
+
+
+class CorpusSectionPageResponse(BaseModel):
+    parent: str | None
+    levels: list[str]
+    items: list[dict[str, Any]]
+    total: int
+    offset: int
+    limit: int
+    next_offset: int | None
+
+
+class CorpusPassage(BaseModel):
+    node: int
+    ref: str
+    text: str
+    tokens: list[dict[str, Any]]
+
+
+class CorpusContentResponse(BaseModel):
+    ref: str | None
+    format: str
+    passages: list[CorpusPassage]
+    total: int
+    offset: int
+    limit: int
+    next_offset: int | None
+
+
+class CorpusNodeContext(BaseModel):
+    node: int
+    otype: str
+    ref: str
+
+
+class CorpusNodeDetailResponse(BaseModel):
+    node: int
+    otype: str
+    is_slot: bool
+    slot_type: str
+    first_slot: int | None
+    last_slot: int | None
+    section_ref: str
+    text: str
+    features: dict[str, Any]
+    annotation: dict[str, Any] | None
+    node_types: list[str]
+    context: list[CorpusNodeContext]
+    occurrences: int
+    occurrences_in_section: int
 
 
 class StoragePublishRequest(BaseModel):

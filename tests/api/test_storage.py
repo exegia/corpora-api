@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -110,6 +111,160 @@ def test_list_info_and_streamed_download_are_owner_scoped(store: dict[str, bytes
     assert [item["filename"] for item in bob.json()] == ["private.corpus"]
     for path in ("/v1/storage", "/v1/storage/{filename}", "/v1/storage/{filename}/download"):
         assert schema["paths"][path]["get"]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_corpus_detail_reads_are_owner_scoped_and_documented(
+    monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    class ArchiveReadNotFound(Exception):
+        pass
+
+    class ArchiveTooLarge(Exception):
+        pass
+
+    def read_archive(data: bytes, view: str, **params: object) -> dict[str, object]:
+        assert data == store[f"{ALICE}/first.corpus"]
+        calls.append((ALICE, view, str(params.get("parent") or params.get("ref") or "")))
+        if params.get("ref") == "missing":
+            raise ArchiveReadNotFound("section missing")
+        if params.get("fmt") == "corrupt":
+            raise ValueError("corrupt graph")
+        if view == "manifest":
+            return {"name": "first"}
+        if view == "index":
+            return {"toc": None, "sections": None, "node_types": []}
+        if view == "sections":
+            return {
+                "parent": None,
+                "levels": [],
+                "items": [],
+                "total": 0,
+                "offset": 0,
+                "limit": 50,
+                "next_offset": None,
+            }
+        if view == "content":
+            return {
+                "ref": None,
+                "format": "",
+                "passages": [],
+                "total": 0,
+                "offset": 0,
+                "limit": 50,
+                "next_offset": None,
+            }
+        return {
+            "node": 1,
+            "otype": "word",
+            "is_slot": True,
+            "slot_type": "word",
+            "first_slot": 1,
+            "last_slot": 1,
+            "section_ref": "Mini 1:1",
+            "text": "Alpha",
+            "features": {"word": "Alpha"},
+            "annotation": None,
+            "node_types": ["verse", "word"],
+            "context": [],
+            "occurrences": 1,
+            "occurrences_in_section": 1,
+        }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "corpus_validate",
+        SimpleNamespace(
+            ArchiveReadNotFound=ArchiveReadNotFound,
+            ArchiveTooLarge=ArchiveTooLarge,
+            read_archive=read_archive,
+        ),
+    )
+
+    with TestClient(app) as client:
+        manifest = client.get("/v1/storage/first.corpus/manifest", headers=headers("alice-token"))
+        index = client.get("/v1/storage/first.corpus/index", headers=headers("alice-token"))
+        sections = client.get("/v1/storage/first.corpus/sections", headers=headers("alice-token"))
+        content = client.get("/v1/storage/first.corpus/content", headers=headers("alice-token"))
+        node = client.get("/v1/storage/first.corpus/nodes/1", headers=headers("alice-token"))
+        foreign = client.get("/v1/storage/private.corpus/manifest", headers=headers("alice-token"))
+        missing_section = client.get(
+            "/v1/storage/first.corpus/content?ref=missing", headers=headers("alice-token")
+        )
+        corrupt = client.get(
+            "/v1/storage/first.corpus/content?fmt=corrupt", headers=headers("alice-token")
+        )
+        unauthorized = client.get("/v1/storage/first.corpus/manifest")
+        schema = client.get("/v1/openapi.json").json()
+
+    assert [response.status_code for response in (manifest, index, sections, content, node)] == [
+        200,
+        200,
+        200,
+        200,
+        200,
+    ]
+    assert manifest.json() == {"name": "first"}
+    assert node.json()["node"] == 1
+    assert foreign.status_code == 404
+    assert missing_section.status_code == 404
+    assert corrupt.status_code == 422
+    assert unauthorized.status_code == 401
+    assert [call[1] for call in calls[:5]] == ["manifest", "index", "sections", "content", "node"]
+    for path in (
+        "/v1/storage/{filename}/manifest",
+        "/v1/storage/{filename}/index",
+        "/v1/storage/{filename}/sections",
+        "/v1/storage/{filename}/content",
+        "/v1/storage/{filename}/nodes/{node}",
+    ):
+        assert schema["paths"][path]["get"]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_corpus_detail_download_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
+) -> None:
+    store[f"{ALICE}/first.corpus"] = b"x" * 3_000_001
+    monkeypatch.setitem(
+        sys.modules,
+        "corpus_validate",
+        SimpleNamespace(
+            ArchiveReadNotFound=RuntimeError,
+            ArchiveTooLarge=RuntimeError,
+            read_archive=lambda *_args, **_kwargs: pytest.fail(
+                "oversized bytes reached the reader"
+            ),
+        ),
+    )
+    with TestClient(app) as client:
+        response = client.get("/v1/storage/first.corpus/manifest", headers=headers("alice-token"))
+    assert response.status_code == 413
+
+
+def test_corpus_detail_stream_failure_maps_to_storage_error(
+    monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
+) -> None:
+    class BrokenStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"partial archive"
+            raise httpx.ReadError("connection closed")
+
+        def close(self) -> None:
+            pass
+
+    response = httpx.Response(200, stream=BrokenStream())
+    monkeypatch.setattr(
+        app_module,
+        "corpus_storage",
+        SimpleNamespace(open_download=lambda _user_id, _filename: (response, "first.corpus")),
+    )
+
+    with TestClient(app) as client:
+        result = client.get("/v1/storage/first.corpus/manifest", headers=headers("alice-token"))
+
+    assert result.status_code == 502
+    assert result.json() == {"detail": "Corpus storage request failed"}
 
 
 def test_storage_requires_user_and_maps_missing_or_unavailable_store(
