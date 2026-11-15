@@ -98,7 +98,9 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 CatalogEntry(work_id="book", names=("Book",)),
             ),
             snapshots=(TextSnapshot(endpoint=base, stream_id="body", text="Quote tail"),),
-            assets=(AssetRecord(endpoint=html_endpoint, format="html", data=html),),
+            assets=(
+                AssetRecord(endpoint=html_endpoint, format="html", data=html, asset_id="html"),
+            ),
         )
         scopes = {
             endpoint_scope(e)[0]: endpoint_scope(e)[1]
@@ -168,6 +170,15 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 f"/v1/linking/{space}/browser-selection", json=browser_body, headers=a
             )
             assert browser.status_code == 200 and browser.json()["text"] == "A word", browser.text
+            forged_browser = client.post(
+                f"/v1/linking/{space}/browser-selection",
+                json={**browser_body, "asset_id": "forged"},
+                headers=a,
+            )
+            assert forged_browser.status_code == 422
+            forged_native = browser.json()["endpoint"]
+            forged_native["locators"][0]["asset_id"] = "forged"
+            assert client.post(selection_path, json=forged_native, headers=a).status_code == 422
             broken = client.post(
                 f"/v1/linking/{space}/browser-selection",
                 json={**browser_body, "captured_nodes": []},

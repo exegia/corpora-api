@@ -217,6 +217,8 @@ def browser_selection(space_id: UUID, body: BrowserSelectionRequest, request: Re
             ]
             if len(assets) != 1:
                 raise ValueError("HTML asset unavailable or ambiguous")
+            if assets[0].asset_id is None or body.asset_id != assets[0].asset_id:
+                raise ValueError("native asset ID does not match trusted inventory")
             endpoint = make_browser_html_range(
                 assets[0].data,
                 body.original,
