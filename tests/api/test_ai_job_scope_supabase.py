@@ -108,9 +108,16 @@ def test_job_scope_through_local_auth_postgrest_and_storage(tmp_path, monkeypatc
                 foreign = api.post(
                     "/v1/ai/validate", json={"scope": scope}, headers=foreign_headers
                 )
+                missing = api.post(
+                    "/v1/ai/validate",
+                    json={"scope": {**scope, "corpus": "job:" + str(uuid4())}},
+                    headers=own_headers,
+                )
                 assert own.status_code == 200, own.text
                 assert own.json()["checked_nodes"] == 1 and own.json()["findings"] == []
                 assert foreign.status_code == 404
+                assert missing.status_code == 404
+                assert foreign.json() == missing.json() == {"detail": "Corpus not found"}
                 db.execute("UPDATE public.conversion_jobs SET status='running' WHERE id=%s", (job,))
                 pending = api.post("/v1/ai/validate", json={"scope": scope}, headers=own_headers)
                 assert pending.status_code == 409
