@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import zipfile
+from pathlib import PurePosixPath
 from typing import Any
 
 import yaml
@@ -52,7 +53,8 @@ def reference(
                 return refdisplay.shortcode_payload(parsed, ref, url_template=template)
             raise tfref.ParseError("Reference names no corpus; provide corpus explicitly")
         filename = archive_name(corpus)
-        corpus_id = filename.removesuffix(".corpus").removesuffix(".cusx")
+        stem = PurePosixPath(filename).stem
+        corpus_id = filename if stem.endswith((".corpus", ".cusx")) else stem
         data = download_stored_archive(storage, user_id, filename)
         return reference_archive(
             data,

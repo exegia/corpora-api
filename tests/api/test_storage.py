@@ -268,6 +268,7 @@ def test_references_use_real_corpus_and_enforce_owner(
             if path.is_file():
                 archive.write(path, f"corpora/{path.relative_to(root)}")
     store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    store[f"{ALICE}/first.cusx.corpus"] = stream.getvalue()
     with TestClient(app) as client:
         created = client.post(
             "/v1/refs",
@@ -283,6 +284,16 @@ def test_references_use_real_corpus_and_enforce_owner(
         )
         compact = client.get(
             "/v1/refs/resolve", params={"ref": body["token"]}, headers=headers("alice-token")
+        )
+        double_suffix = client.post(
+            "/v1/refs",
+            json={"corpus": "first.cusx.corpus", "node": 1},
+            headers=headers("alice-token"),
+        )
+        double_resolved = client.get(
+            "/v1/refs/resolve",
+            params={"ref": double_suffix.json()["ref"]},
+            headers=headers("alice-token"),
         )
         from_ref = client.get(
             "/v1/refs/shortcode", params={"ref": body["ref"]}, headers=headers("alice-token")
@@ -311,6 +322,8 @@ def test_references_use_real_corpus_and_enforce_owner(
         unauth = client.post("/v1/refs", json={"corpus": "first", "node": 1})
         schema = client.get("/v1/openapi.json").json()
     assert resolved.json()["nodes"] == compact.json()["nodes"] == [1, 2]
+    assert double_suffix.json()["ref"] == "first.cusx.corpus@2.3/Mini!word1"
+    assert double_resolved.status_code == 200
     assert from_ref.json()["ref"] == body["ref"]
     assert from_node.json()["ref"] == "first@2.3/Mini!word1"
     assert mismatch.status_code == 400
