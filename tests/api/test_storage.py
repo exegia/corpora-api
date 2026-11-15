@@ -144,9 +144,10 @@ def test_ai_scope_validation_uses_owned_real_archive(
 
 
 def test_ai_range_accepts_node_ids_in_reading_order() -> None:
-    from corpora_api.models import AIUnitRange
+    from corpora_api.models import AIChatUnitRange, AIUnitRange
 
     assert AIUnitRange(start=5, end=4).model_dump() == {"start": 5, "end": 4}
+    assert AIChatUnitRange(start=5, end=4).model_dump() == {"start": 5, "end": 4}
 
 
 def test_ai_chat_preserves_authenticated_stub_and_stream_contract(store: dict[str, bytes]) -> None:
@@ -177,7 +178,7 @@ def test_ai_chat_preserves_authenticated_stub_and_stream_contract(store: dict[st
     assert missing.status_code == 422
     assert stub.status_code == 501
     assert "test-key-placeholder" not in stub.text
-    assert reversed_range.status_code == 422
+    assert reversed_range.status_code == 501
     assert preflight.status_code == 200
     operation = schema["paths"]["/v1/ai/chat"]["post"]
     assert operation["security"] == [{"SupabaseUserJWT": []}]
