@@ -12,6 +12,7 @@ import select
 import subprocess
 from pathlib import Path
 from uuid import uuid4
+from xml.etree import ElementTree
 
 import psycopg
 import pytest
@@ -22,6 +23,7 @@ from corpora_linking import (
     Provenance,
     Reference,
     ScholarlyCitationMention,
+    StructuralLocator,
     TextLocator,
     TextSnapshot,
 )
@@ -32,6 +34,12 @@ from corpora_api import app as app_module
 from corpora_api import linking_postgres
 from corpora_api.auth import UserAuthError
 from corpora_api.linking_access import endpoint_scope, evidence_endpoints
+from corpora_api.linking_cusx import (
+    STREAM,
+    AnchorBinding,
+    bind_cusx_anchors,
+    cusx_text,
+)
 from corpora_api.linking_html_ranges import _stream
 from corpora_api.linking_pdf import sha256_revision
 from corpora_api.linking_publication import SnapshotPublicationAdapter
@@ -124,6 +132,44 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             revision=sha256_revision(b"Compare John 3:16.\n"),
             document_id="body",
         )
+        cusx_source = (
+            '<usx version="3.0"><para style="p">😀 See <char style="it">John</char> 3:16.</para>'
+            '<para style="p">Next</para></usx>'
+        ).encode()
+        cusx_endpoint = Endpoint(
+            work_id="cusx", edition_id="e", package_id="p", revision="1", document_id="doc"
+        )
+        cusx_snapshot = TextSnapshot(
+            endpoint=cusx_endpoint, stream_id=STREAM, text=cusx_text(cusx_source)
+        )
+        quote = "See John 3:16"
+        start = cusx_snapshot.text.index(quote)
+        cusx_selection = cusx_endpoint.model_copy(
+            update={
+                "locators": (
+                    TextLocator(
+                        stream_id=STREAM,
+                        start=start,
+                        end=start + len(quote),
+                        exact=quote,
+                        prefix="😀 ",
+                        suffix=".",
+                    ),
+                )
+            }
+        )
+        cusx_data = bind_cusx_anchors(
+            cusx_source,
+            cusx_snapshot,
+            (AnchorBinding(selection=cusx_selection, anchor_id="verse"),),
+        )
+        cusx_reference = Reference(
+            source=cusx_selection,
+            target=cusx_endpoint.model_copy(
+                update={"locators": (StructuralLocator(anchor_id="verse"),)}
+            ),
+            provenance=Provenance(origin="manual", agent_id="forged", method="fixture"),
+        )
         inventory = LinkingInventory(
             bible=BibleDetectionContext(
                 books=(BibleBook(work_id="john", aliases=("John",)),),
@@ -135,11 +181,21 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             catalog=(
                 CatalogEntry(work_id="essay", names=("Essay",)),
                 CatalogEntry(work_id="book", names=("Book",)),
+                CatalogEntry(work_id="cusx", names=("USX",)),
             ),
-            snapshots=(TextSnapshot(endpoint=base, stream_id="body", text="Quote tail"),),
+            snapshots=(
+                TextSnapshot(endpoint=base, stream_id="body", text="Quote tail"),
+                cusx_snapshot,
+            ),
             assets=(
                 AssetRecord(endpoint=html_endpoint, format="html", data=html),
                 AssetRecord(endpoint=original, format="html", data=conversion_data),
+                AssetRecord(
+                    endpoint=cusx_endpoint,
+                    format="cusx",
+                    data=cusx_data,
+                    checksum=sha256_revision(cusx_data),
+                ),
             ),
         )
         scopes = {
@@ -147,6 +203,7 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             for e in evidence_endpoints(
                 (
                     reference,
+                    cusx_reference,
                     html_endpoint,
                     original,
                     converted,
@@ -264,6 +321,75 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 ).status_code
                 == 422
             )
+            cusx_body = {"reference": cusx_reference.model_dump(mode="json"), "reason": "manual"}
+            cusx_created = client.post(path, json=cusx_body, headers=a)
+            assert cusx_created.status_code == 200, cusx_created.text
+            cusx_id = cusx_created.json()["reference"]["id"]
+            cusx_export_url = f"/v1/linking/{space}/export-cusx"
+            cusx_export_body = {
+                "source": cusx_endpoint.model_dump(mode="json"),
+                "reference_ids": [cusx_id],
+            }
+            assert client.post(cusx_export_url, json=cusx_export_body).status_code == 401
+            assert client.post(cusx_export_url, json=cusx_export_body, headers=a).status_code == 422
+            cusx_resolved = client.post(
+                f"{path}/{cusx_id}/resolve",
+                json={"expected_version": 1, "reason": "resolve"},
+                headers=a,
+            )
+            assert cusx_resolved.status_code == 200, cusx_resolved.text
+            cusx_history = client.get(f"{path}/{cusx_id}", headers=a).json()
+            assert cusx_history["history"][-1]["reference"]["resolution"] == "resolved", (
+                cusx_history
+            )
+            cusx_approved = client.post(
+                f"{path}/{cusx_id}/approve",
+                json={"expected_version": 2, "reason": "review"},
+                headers=b,
+            )
+            assert cusx_approved.status_code == 200, cusx_approved.text
+            history_before_export = client.get(f"{path}/{cusx_id}", headers=a).json()
+            cusx_export = client.post(cusx_export_url, json=cusx_export_body, headers=a)
+            assert cusx_export.status_code == 200, cusx_export.text
+            output = cusx_export.json()
+            entry = output["snapshot"]["entries"][0]["reference"]
+            assert entry["id"] == cusx_id and entry["provenance"]["agent_id"] == str(creator)
+            assert client.get(f"{path}/{cusx_id}", headers=a).json() == history_before_export
+            assert cusx_text(output["cusx"].encode()) == cusx_snapshot.text
+            xml = ElementTree.fromstring(output["cusx"])
+            jumps = [element for element in xml.iter("char") if element.get("style") == "jmp"]
+            assert "".join(element.text for element in jumps) == quote
+            assert {element.get("link-id") for element in jumps} == {f"urn:uuid:{cusx_id}"}
+            assert all(element.get("link-href", "").endswith("#verse") for element in jumps)
+            assert (
+                client.get(f"{path}/{cusx_id}", headers=a).json()["history"][-1]["reference"][
+                    "publication"
+                ]
+                == "draft"
+            )
+            forged = {
+                **cusx_export_body,
+                "bindings": [
+                    {
+                        "selection": cusx_selection.model_dump(mode="json"),
+                        "anchor_id": "not-advertised",
+                    }
+                ],
+            }
+            assert client.post(cusx_export_url, json=forged, headers=a).status_code == 422
+            key, scope = endpoint_scope(cusx_endpoint)
+            with psycopg.connect(dsn) as db:
+                db.execute(
+                    "DELETE FROM reference_working.resource_access "
+                    "WHERE space_id=%s AND user_id=%s AND resource_key=%s",
+                    (space, creator, key),
+                )
+            assert client.post(cusx_export_url, json=cusx_export_body, headers=a).status_code == 403
+            with psycopg.connect(dsn) as db:
+                db.execute(
+                    "INSERT INTO reference_working.resource_access VALUES (%s,%s,%s,%s)",
+                    (space, creator, key, Jsonb(scope)),
+                )
             selection_path = f"/v1/linking/{space}/retrieve"
             assert client.post(
                 selection_path, json=selected.model_dump(mode="json"), headers=a

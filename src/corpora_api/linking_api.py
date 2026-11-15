@@ -428,10 +428,12 @@ def export_cusx(space_id: UUID, body: CUSXRequest, request: Request):
                 return matches[0]
 
             source_asset = asset_for(body.source)
-            source_snapshot = runtime.snapshot(store, body.source)
+            source_snapshot = runtime._snapshot_in_transaction(store, db, actor, body.source)
             for binding in bindings:
                 target_asset = asset_for(binding.selection)
-                target_snapshot = runtime.snapshot(store, target_asset.endpoint)
+                target_snapshot = runtime._snapshot_in_transaction(
+                    store, db, actor, target_asset.endpoint
+                )
                 validate_cusx_binding(target_asset.data, target_snapshot, binding)
             # Structural destinations also require actual advertised anchors.
             from corpora_linking import StructuralLocator
