@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
+import zipfile
 from types import SimpleNamespace
 
 import httpx
@@ -220,6 +222,26 @@ def test_corpus_detail_reads_are_owner_scoped_and_documented(
         "/v1/storage/{filename}/nodes/{node}",
     ):
         assert schema["paths"][path]["get"]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_versions_read_real_archive_and_enforce_owner(store: dict[str, bytes]) -> None:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("manifest.yml", "name: Example\n")
+        archive.writestr("history.yml", "versions:\n  - id: v1.0\n    current: true\n")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    with TestClient(app) as client:
+        versions = client.get("/v1/storage/first.corpus/versions", headers=headers("alice-token"))
+        foreign = client.get("/v1/storage/first.corpus/versions", headers=headers("bob-token"))
+        unauthorized = client.get("/v1/storage/first.corpus/versions")
+        schema = client.get("/v1/openapi.json").json()
+    assert versions.status_code == 200
+    assert versions.json() == {"versions": [{"id": "v1.0", "current": True}]}
+    assert foreign.status_code == 404
+    assert unauthorized.status_code == 401
+    assert schema["paths"]["/v1/storage/{filename}/versions"]["get"]["security"] == [
+        {"SupabaseUserJWT": []}
+    ]
 
 
 def test_corpus_detail_download_is_bounded(
