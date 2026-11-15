@@ -42,6 +42,10 @@ def test_linking_requires_user_and_explicit_configuration(monkeypatch):
         ("/v1/linking/{space_id}/references", "post"),
         ("/v1/linking/{space_id}/references/{reference_id}", "get"),
         ("/v1/linking/{space_id}/references/{reference_id}/{action}", "post"),
+        ("/v1/linking/{space_id}/retrieve", "post"),
+        ("/v1/linking/{space_id}/export", "post"),
+        ("/v1/linking/{space_id}/publication/{reference_id}/{action}", "post"),
+        ("/v1/linking/{space_id}/browser-selection", "post"),
     ):
         assert schema["paths"][route][method]["security"] == [{"SupabaseUserJWT": []}]
 

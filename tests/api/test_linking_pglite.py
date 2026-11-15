@@ -23,7 +23,9 @@ from corpora_api import app as app_module
 from corpora_api import linking_postgres
 from corpora_api.auth import UserAuthError
 from corpora_api.linking_access import endpoint_scope, evidence_endpoints
-from corpora_api.linking_runtime import LinkingInventory, LinkingRuntime
+from corpora_api.linking_html_ranges import _stream
+from corpora_api.linking_pdf import sha256_revision
+from corpora_api.linking_runtime import AssetRecord, LinkingInventory, LinkingRuntime
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_PGLITE_ROOT"), reason="set CORPORA_PGLITE_ROOT for isolated PG fixture"
@@ -82,14 +84,26 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             target=Endpoint(work_id="book"),
             provenance=Provenance(origin="manual", agent_id="forged", method="fixture"),
         )
+        html = b"<html><head></head><body><p>A <em>word</em>.</p></body></html>"
+        html_endpoint = Endpoint(
+            work_id="essay",
+            edition_id="e",
+            package_id="html",
+            revision=sha256_revision(html),
+            document_id="html",
+        )
         inventory = LinkingInventory(
             catalog=(
                 CatalogEntry(work_id="essay", names=("Essay",)),
                 CatalogEntry(work_id="book", names=("Book",)),
             ),
             snapshots=(TextSnapshot(endpoint=base, stream_id="body", text="Quote tail"),),
+            assets=(AssetRecord(endpoint=html_endpoint, format="html", data=html),),
         )
-        scopes = {endpoint_scope(e)[0]: endpoint_scope(e)[1] for e in evidence_endpoints(reference)}
+        scopes = {
+            endpoint_scope(e)[0]: endpoint_scope(e)[1]
+            for e in evidence_endpoints((reference, html_endpoint))
+        }
         with psycopg.connect(dsn) as db:
             db.execute("INSERT INTO auth.users VALUES (%s),(%s)", (creator, reviewer))
             db.execute(
@@ -99,8 +113,8 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             )
             db.execute(
                 "INSERT INTO reference_working.memberships "
-                "VALUES (%s,%s,'contribute'),(%s,%s,'review')",
-                (space, creator, space, reviewer),
+                "VALUES (%s,%s,'contribute'),(%s,%s,'review'),(%s,%s,'publish')",
+                (space, creator, space, reviewer, space, reviewer),
             )
             db.execute(
                 "INSERT INTO auth.sessions VALUES (%s,%s,NULL),(%s,%s,NULL)",
@@ -136,10 +150,41 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
         path = f"/v1/linking/{space}/references"
         body = {"reference": reference.model_dump(mode="json"), "reason": "manual"}
         with TestClient(app_module.app) as client:
+            selection_path = f"/v1/linking/{space}/retrieve"
+            assert client.post(
+                selection_path, json=selected.model_dump(mode="json"), headers=a
+            ).json() == {"text": "Quote"}
+            _, spans = _stream(html)
+            browser_body = {
+                "original": html_endpoint.model_dump(mode="json"),
+                "asset_id": "html",
+                "captured_nodes": [(node_path, text) for node_path, _start, _end, text in spans],
+                "start_path": spans[0][0],
+                "start_utf16": 0,
+                "end_path": spans[1][0],
+                "end_utf16": 4,
+            }
+            browser = client.post(
+                f"/v1/linking/{space}/browser-selection", json=browser_body, headers=a
+            )
+            assert browser.status_code == 200 and browser.json()["text"] == "A word", browser.text
+            broken = client.post(
+                f"/v1/linking/{space}/browser-selection",
+                json={**browser_body, "captured_nodes": []},
+                headers=a,
+            )
+            assert broken.status_code == 422
             created = client.post(path, json=body, headers=a)
             assert created.status_code == 200, created.text
             assert created.json()["reference"]["provenance"]["agent_id"] == str(creator)
             reference_id = created.json()["reference"]["id"]
+            export_path = f"/v1/linking/{space}/export"
+            assert (
+                client.post(
+                    export_path, json={"reference_ids": [reference_id]}, headers=a
+                ).status_code
+                == 422
+            )
             assert (
                 client.get(f"/v1/linking/{other}/references/{reference_id}", headers=a).status_code
                 == 403
@@ -168,6 +213,52 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             )
             history = client.get(f"{path}/{reference_id}", headers=a)
             assert [row["version"] for row in history.json()["history"]] == [1, 2, 3]
+            snapshot = client.post(export_path, json={"reference_ids": [reference_id]}, headers=a)
+            assert snapshot.status_code == 200, snapshot.text
+            publication_path = f"/v1/linking/{space}/publication/{reference_id}"
+            publish_body = {
+                "event_id": str(uuid4()),
+                "expected_version": 3,
+                "reason": "publish",
+                "snapshot": snapshot.text,
+            }
+            assert (
+                client.post(
+                    publication_path + "/acknowledge", json=publish_body, headers=a
+                ).status_code
+                == 403
+            )
+            published = client.post(publication_path + "/acknowledge", json=publish_body, headers=b)
+            assert published.status_code == 200 and published.json()["working_version"] == 4, (
+                published.text
+            )
+            assert (
+                client.post(publication_path + "/acknowledge", json=publish_body, headers=b).json()
+                == published.json()
+            )
+            withdraw_body = {"event_id": str(uuid4()), "expected_version": 4, "reason": "withdraw"}
+            withdrawn = client.post(
+                publication_path + "/withdraw",
+                json=withdraw_body,
+                headers=b,
+            )
+            assert withdrawn.status_code == 200 and withdrawn.json()["working_version"] == 5, (
+                withdrawn.text
+            )
+            assert (
+                client.post(publication_path + "/withdraw", json=withdraw_body, headers=b).json()
+                == withdrawn.json()
+            )
+            after_withdrawal = client.post(
+                export_path, json={"reference_ids": [reference_id]}, headers=a
+            )
+            assert after_withdrawal.status_code == 200 and after_withdrawal.json()["entries"] == []
+            reopened = client.post(
+                f"{path}/{reference_id}/reopen",
+                json={"expected_version": 5, "reason": "reopen"},
+                headers=a,
+            )
+            assert reopened.status_code == 200 and reopened.json()["version"] == 6
             with psycopg.connect(dsn) as db:
                 db.execute(
                     "DELETE FROM reference_working.resource_access "

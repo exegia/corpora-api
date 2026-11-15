@@ -782,6 +782,74 @@
         "title": "Body_validate_corpus_upload_v1_validate_post",
         "type": "object"
       },
+      "BrowserSelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "captured_nodes": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Captured Nodes",
+            "type": "array"
+          },
+          "end_path": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "End Path",
+            "type": "array"
+          },
+          "end_utf16": {
+            "minimum": 0.0,
+            "title": "End Utf16",
+            "type": "integer"
+          },
+          "original": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "start_path": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Start Path",
+            "type": "array"
+          },
+          "start_utf16": {
+            "minimum": 0.0,
+            "title": "Start Utf16",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "original",
+          "asset_id",
+          "captured_nodes",
+          "start_path",
+          "start_utf16",
+          "end_path",
+          "end_utf16"
+        ],
+        "title": "BrowserSelectionRequest",
+        "type": "object"
+      },
       "CitationLocator": {
         "additionalProperties": false,
         "description": "An unresolved address request, never proof of an exact passage.",
@@ -1512,6 +1580,24 @@
         "title": "ErrorResponse",
         "type": "object"
       },
+      "ExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reference_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Reference Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reference_ids"
+        ],
+        "title": "ExportRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2107,6 +2193,49 @@
           "method"
         ],
         "title": "Provenance",
+        "type": "object"
+      },
+      "PublicationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_unresolved_target": {
+            "default": false,
+            "title": "Allow Unresolved Target",
+            "type": "boolean"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          }
+        },
+        "required": [
+          "expected_version",
+          "reason",
+          "event_id"
+        ],
+        "title": "PublicationRequest",
         "type": "object"
       },
       "PurposeField": {
@@ -4570,6 +4699,206 @@
         ]
       }
     },
+    "/v1/linking/{space_id}/browser-selection": {
+      "post": {
+        "operationId": "browser_selection_v1_linking__space_id__browser_selection_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserSelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Browser Selection",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/export": {
+      "post": {
+        "operationId": "export_references_v1_linking__space_id__export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Export References",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/publication/{reference_id}/{action}": {
+      "post": {
+        "operationId": "publication_v1_linking__space_id__publication__reference_id___action__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "enum": [
+                "acknowledge",
+                "withdraw"
+              ],
+              "title": "Action",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Publication",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
     "/v1/linking/{space_id}/references": {
       "post": {
         "operationId": "save_link_v1_linking__space_id__references_post",
@@ -4767,6 +5096,65 @@
           }
         ],
         "summary": "Reference Decision",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/retrieve": {
+      "post": {
+        "operationId": "retrieve_selection_v1_linking__space_id__retrieve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Endpoint"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Retrieve Selection",
         "tags": [
           "linking"
         ]

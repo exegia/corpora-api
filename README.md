@@ -58,6 +58,10 @@ available under AGPL or commercial terms.
 The server adapter and offline schema fixture are derived from `corpora-py`
 revision `663eec793b384bca22afbb065678573e21ed5b97`; the shared reference
 models and resolver are provided by `corpora-linking`.
+The same authority can retrieve exact selections, map browser DOM ranges, export
+audited reference snapshots, and record publication or withdrawal decisions.
+Publication events record an acknowledgment or withdrawal intent; they do not
+assert that an artifact was delivered or removed remotely.
 An optional isolated PostgreSQL authorization test starts a fresh in-memory
 PGlite server on a loopback port. It does not connect to or modify a Supabase
 project, and its single connection does not establish concurrency guarantees:

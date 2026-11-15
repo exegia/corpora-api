@@ -10,9 +10,9 @@ from typing import Literal
 from uuid import UUID
 
 import psycopg
-from corpora_linking import Provenance, Reference
+from corpora_linking import Endpoint, Provenance, Reference
 from corpora_linking.models import NonEmpty, Value
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import Field, ValidationError
 
 from .auth import UserAuthError
@@ -32,6 +32,25 @@ class Decision(Value):
     expected_version: int = Field(ge=1, strict=True)
     reason: NonEmpty
     allow_unresolved_target: bool = False
+
+
+class ExportRequest(Value):
+    reference_ids: tuple[UUID, ...]
+
+
+class PublicationRequest(Decision):
+    event_id: UUID
+    snapshot: str | None = None
+
+
+class BrowserSelectionRequest(Value):
+    original: Endpoint
+    asset_id: NonEmpty
+    captured_nodes: tuple[tuple[tuple[int, ...], str], ...]
+    start_path: tuple[int, ...]
+    start_utf16: int = Field(ge=0, strict=True)
+    end_path: tuple[int, ...]
+    end_utf16: int = Field(ge=0, strict=True)
 
 
 @lru_cache(maxsize=1)
@@ -132,3 +151,80 @@ def reference_decision(
         else:
             version = store.reopen(reference_id, **parameters)
         return {"version": version}
+
+
+@router.post("/{space_id}/retrieve")
+def retrieve_selection(space_id: UUID, endpoint: Endpoint, request: Request):
+    with _operation(request, space_id) as (runtime, store):
+        return {"text": runtime.resolver(store).retrieve(endpoint)}
+
+
+@router.post("/{space_id}/export")
+def export_references(space_id: UUID, body: ExportRequest, request: Request):
+    with _operation(request, space_id) as (_, store):
+        from .linking_postgres_publication import PostgreSQLPublicationLedger
+
+        return Response(
+            PostgreSQLPublicationLedger(store).export_current(body.reference_ids),
+            media_type="application/json",
+        )
+
+
+@router.post("/{space_id}/publication/{reference_id}/{action}")
+def publication(
+    space_id: UUID,
+    reference_id: UUID,
+    action: Literal["acknowledge", "withdraw"],
+    body: PublicationRequest,
+    request: Request,
+):
+    with _operation(request, space_id) as (_, store):
+        from .linking_postgres_publication import PostgreSQLPublicationLedger
+
+        ledger = PostgreSQLPublicationLedger(store)
+        if action == "acknowledge":
+            if body.snapshot is None:
+                raise HTTPException(422, "Approved snapshot is required")
+            return ledger.acknowledge_snapshot(
+                body.snapshot.encode(),
+                reference_id,
+                event_id=body.event_id,
+                expected_version=body.expected_version,
+                reason=body.reason,
+            )
+        return ledger.withdraw(
+            reference_id,
+            event_id=body.event_id,
+            expected_version=body.expected_version,
+            reason=body.reason,
+        )
+
+
+@router.post("/{space_id}/browser-selection")
+def browser_selection(space_id: UUID, body: BrowserSelectionRequest, request: Request):
+    with _operation(request, space_id) as (runtime, store):
+        from .linking_access import endpoint_scope
+        from .linking_html_ranges import make_browser_html_range
+
+        with psycopg.connect(store.dsn) as db:
+            actor = store._authorize(db, None)
+            store._check_access(db, actor, body.original)
+            assets = [
+                asset
+                for asset in runtime.inventory.assets
+                if asset.format == "html"
+                and endpoint_scope(asset.endpoint)[0] == endpoint_scope(body.original)[0]
+            ]
+            if len(assets) != 1:
+                raise ValueError("HTML asset unavailable or ambiguous")
+            endpoint = make_browser_html_range(
+                assets[0].data,
+                body.original,
+                asset_id=body.asset_id,
+                captured_nodes=body.captured_nodes,
+                start_path=body.start_path,
+                start_utf16=body.start_utf16,
+                end_path=body.end_path,
+                end_utf16=body.end_utf16,
+            )
+        return {"endpoint": endpoint, "text": runtime.resolver(store).retrieve(endpoint)}
