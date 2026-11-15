@@ -9,7 +9,13 @@ from uuid import UUID
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from corpora_api.corpus_process import CorpusProcessError, run_corpus
+from corpora_api.conversion_artifacts import ConversionArtifactNotFound
+from corpora_api.corpus_process import (
+    SAFE_SCOPE_ERRORS,
+    CorpusProcessError,
+    run_corpus,
+    safe_scope_node_type,
+)
 from corpora_api.models import AINodeScope
 from corpora_api.storage import StorageError, StoredCorpusNotFound
 from corpora_api.storage_detail import download_stored_archive
@@ -25,7 +31,10 @@ def validate_scope(
             UUID(request.corpus[4:])
         except ValueError as error:
             raise HTTPException(422, "Expected job:<UUID>") from error
-        _, data = jobs.fetch(owner, request.corpus[4:])
+        try:
+            _, data = jobs.fetch(owner, request.corpus[4:])
+        except ConversionArtifactNotFound as error:
+            raise HTTPException(404, "Corpus not found") from error
     else:
         if not request.corpus.startswith("draft:") and (
             not _ARCHIVE_ID.fullmatch(request.corpus) or request.corpus != request.corpus.strip()
@@ -33,13 +42,34 @@ def validate_scope(
             raise HTTPException(422, "Expected a flat corpus archive ID, not a path or URL")
         try:
             data = download_stored_archive(storage, owner, request.corpus)
-        except StoredCorpusNotFound:
-            raise
+        except StoredCorpusNotFound as error:
+            raise HTTPException(404, "Corpus not found") from error
         except StorageError as error:
             raise HTTPException(503, "Corpus storage is unavailable") from error
     try:
         return run_corpus(data, "scope", scope=request.model_dump())
     except CorpusProcessError as error:
+        if error.kind == "unknown_scope_node":
+            nodes = [request.node_id]
+            if request.unit_range is not None:
+                nodes.extend([request.unit_range.start, request.unit_range.end])
+            node = error.attributes.get("node")
+            if type(node) is int and node in nodes:
+                raise HTTPException(422, f"Unknown node {node}") from error
+        if error.kind == "invalid_scope":
+            detail = error.attributes.get("detail")
+            if isinstance(detail, str) and detail in SAFE_SCOPE_ERRORS:
+                raise HTTPException(422, detail) from error
+        if error.kind == "scope_type_mismatch":
+            actual = error.attributes.get("actual")
+            if (
+                request.node_id is not None
+                and request.node_type is not None
+                and safe_scope_node_type(actual)
+            ):
+                raise HTTPException(
+                    422, f"Node {request.node_id} has type {actual!r}, not {request.node_type!r}"
+                ) from error
         if error.kind == "stale":
             reason = (
                 "Scoped text has changed"
