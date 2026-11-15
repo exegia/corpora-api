@@ -1,4 +1,8 @@
-"""Opt-in ingestion test against disposable local Supabase services."""
+"""Opt-in ingestion test against disposable local Supabase services.
+
+Set CORPORA_TEST_DOCLING_PYTHON to a worker interpreter containing the API,
+its schema bindings, and corpora-admin with the Docling extra to test Markdown.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +45,7 @@ def running_api(port):
         stderr=subprocess.DEVNULL,
     )
     try:
-        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=15) as api:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=120) as api:
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
                 if process.poll() is not None:
@@ -64,7 +68,24 @@ def running_api(port):
             process.wait(timeout=5)
 
 
-def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
+@pytest.mark.parametrize(
+    ("filename", "source", "expected_text"),
+    [
+        ("letter.txt", b"Hello, world!\nSecond line.\n", "Hello, world!\nSecond line.\n"),
+        pytest.param(
+            "proof.md",
+            b"# Worker proof\n\nA small document for ingestion.\n",
+            "A small document for ingestion.",
+            marks=pytest.mark.skipif(
+                not os.getenv("CORPORA_TEST_DOCLING_PYTHON"),
+                reason="requires a configured real Docling worker interpreter",
+            ),
+        ),
+    ],
+)
+def test_ingest_persists_graph_across_processes_and_isolates_users(
+    monkeypatch, filename, source, expected_text
+):
     psycopg = pytest.importorskip("psycopg")
     url, dsn = os.environ["API_URL"].rstrip("/"), os.environ["DB_URL"]
     assert urlparse(url).hostname in {"localhost", "127.0.0.1", "::1"}
@@ -76,6 +97,10 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
     monkeypatch.setenv("SUPABASE_JOBS_BUCKET", bucket)
     monkeypatch.setenv("SUPABASE_JWKS_URL", url + "/auth/v1/.well-known/jwks.json")
     monkeypatch.setenv("SUPABASE_JWT_ISSUER", url + "/auth/v1")
+    if filename.endswith(".md"):
+        monkeypatch.setenv(
+            "CORPORA_INGEST_WORKER_PYTHON", os.environ["CORPORA_TEST_DOCLING_PYTHON"]
+        )
     service_headers = {"apikey": service, "Authorization": "Bearer " + service}
     users, job = [], None
     bucket_created = False
@@ -98,7 +123,6 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
             )
             response.raise_for_status()
             bucket_created = True
-            source = b"Hello, world!\nSecond line.\n"
             own_headers = {"Authorization": "Bearer " + users[0][1]}
             foreign_headers = {"Authorization": "Bearer " + users[1][1]}
             with socket.socket() as probe:
@@ -108,7 +132,7 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
                 created = api.post(
                     "/v1/ingest",
                     headers=own_headers,
-                    files={"file": ("letter.txt", source)},
+                    files={"file": (filename, source)},
                     data={"name": "A Letter", "language": "en"},
                 )
                 assert created.status_code == 202, created.text
@@ -120,7 +144,10 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
                 assert status.status_code == 200 and status.json()["download_ready"] is True
                 assert download.status_code == 200
                 graph = validate_graph(download.json()).to_wire()
-                assert graph["fragments"][0]["text"] == source.decode()
+                text = "".join(item["text"] for item in graph["fragments"])
+                assert expected_text in text
+                if filename.endswith(".txt"):
+                    assert text == expected_text
                 assert graph["sourceAsset"]["sha256"] == hashlib.sha256(source).hexdigest()
                 assert api.get("/v1/ingest/" + job, headers=foreign_headers).status_code == 404
                 assert (
