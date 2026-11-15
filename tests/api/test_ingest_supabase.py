@@ -3,25 +3,65 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
+import socket
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from urllib.parse import quote, urlparse
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from corpora_schema_types import validate_graph
-from fastapi.testclient import TestClient
 
-from corpora_api import app as app_module
 from corpora_api.auth import verify_user_token
-from corpora_api.ingest_store import IngestStore
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_TEST_LOCAL_SUPABASE"), reason="requires disposable local Supabase"
 )
+
+
+@contextmanager
+def running_api(port):
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "corpora_api.app:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--no-access-log",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=15) as api:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError("Local API process exited during startup")
+                try:
+                    if api.get("/v1/health", timeout=1).status_code == 200:
+                        break
+                except httpx.RequestError:
+                    pass
+                time.sleep(0.1)
+            else:
+                raise TimeoutError("Local API process did not start")
+            yield api, process.pid
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
@@ -36,7 +76,6 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
     monkeypatch.setenv("SUPABASE_JOBS_BUCKET", bucket)
     monkeypatch.setenv("SUPABASE_JWKS_URL", url + "/auth/v1/.well-known/jwks.json")
     monkeypatch.setenv("SUPABASE_JWT_ISSUER", url + "/auth/v1")
-    monkeypatch.setattr(app_module, "ingest_store", IngestStore())
     service_headers = {"apikey": service, "Authorization": "Bearer " + service}
     users, job = [], None
     bucket_created = False
@@ -60,9 +99,12 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
             response.raise_for_status()
             bucket_created = True
             source = b"Hello, world!\nSecond line.\n"
-            with TestClient(app_module.app) as api:
-                own_headers = {"Authorization": "Bearer " + users[0][1]}
-                foreign_headers = {"Authorization": "Bearer " + users[1][1]}
+            own_headers = {"Authorization": "Bearer " + users[0][1]}
+            foreign_headers = {"Authorization": "Bearer " + users[1][1]}
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            with running_api(port) as (api, original_pid):
                 created = api.post(
                     "/v1/ingest",
                     headers=own_headers,
@@ -71,6 +113,8 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
                 )
                 assert created.status_code == 202, created.text
                 job = str(UUID(created.json()["job_id"]))
+            with running_api(port) as (api, restarted_pid):
+                assert restarted_pid != original_pid
                 status = api.get("/v1/ingest/" + job, headers=own_headers)
                 download = api.get("/v1/ingest/" + job + "/download", headers=own_headers)
                 assert status.status_code == 200 and status.json()["download_ready"] is True
@@ -88,23 +132,6 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(monkeypatch):
                     browser_headers = {"apikey": anon, "Authorization": "Bearer " + user_token}
                     denied = client.get(object_url, headers=browser_headers)
                     assert denied.status_code in (400, 403, 404)
-                script = (
-                    "import json,sys; from corpora_api.ingest_store import IngestStore; "
-                    "from corpora_schema_types import validate_graph; "
-                    "s=IngestStore(); row=s.status(sys.argv[1],sys.argv[2]); "
-                    "data,_=s.download(sys.argv[1],sys.argv[2]); "
-                    "g=validate_graph(json.loads(data)).to_wire(); "
-                    "print(json.dumps({'ready':row['download_ready'],"
-                    "'text_matches':g['fragments'][0]['text']=='Hello, world!\\nSecond line.\\n'}))"
-                )
-                child = subprocess.run(
-                    [sys.executable, "-c", script, users[0][0], job],
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                    check=True,
-                )
-                assert json.loads(child.stdout) == {"ready": True, "text_matches": True}
         finally:
             if users:
                 db.execute("DELETE FROM public.conversion_jobs WHERE owner=%s", (users[0][0],))
