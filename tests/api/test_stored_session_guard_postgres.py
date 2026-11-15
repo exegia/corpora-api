@@ -120,6 +120,23 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                     ),
                 )
 
+            def import_archive(db, principal=owner, session_id=session, expiry=None):
+                return db.execute(
+                    "SELECT public.corpora_stored_session_import(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        principal,
+                        session_id,
+                        int(time.time()) + 60 if expiry is None else expiry,
+                        "legacy",
+                        "import.corpus",
+                        str(uuid4()),
+                        "source-version",
+                        str(uuid4()),
+                        digest,
+                        "v1.0",
+                    ),
+                )
+
             # No grant is applied by the migration; lack of access fails closed.
             with (
                 psycopg.connect(service) as db,
@@ -131,6 +148,11 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                 pytest.raises(psycopg.errors.InsufficientPrivilege),
             ):
                 create(db)
+            with (
+                psycopg.connect(service) as db,
+                pytest.raises(psycopg.errors.InsufficientPrivilege),
+            ):
+                import_archive(db)
             with psycopg.connect(dsn, autocommit=True) as db:
                 db.execute((root / "tests/fixtures/stored-session-grant-proposal.sql").read_text())
             with (
@@ -138,6 +160,13 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                 pytest.raises(psycopg.errors.InsufficientPrivilege),
             ):
                 db.execute("UPDATE auth.sessions SET user_id=%s WHERE id=%s", (other, session))
+            # PR #86 supplies this dependency; without it, even a valid session
+            # fails before any archive head can be created.
+            with (
+                psycopg.connect(service) as db,
+                pytest.raises(psycopg.errors.UndefinedFunction),
+            ):
+                import_archive(db)
             for principal, session_id, expiry in (
                 (other, session, int(time.time()) + 60),
                 (owner, str(uuid4()), int(time.time()) + 60),
@@ -153,6 +182,11 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                     pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
                 ):
                     create(db, principal, session_id, expiry)
+                with (
+                    psycopg.connect(service) as db,
+                    pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
+                ):
+                    import_archive(db, principal, session_id, expiry)
             for role in ("anon", "authenticated"):
                 browser = psycopg.conninfo.make_conninfo(dsn, options=f"-c role={role}")
                 with (
@@ -165,6 +199,11 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                     pytest.raises(psycopg.errors.InsufficientPrivilege),
                 ):
                     create(db)
+                with (
+                    psycopg.connect(browser) as db,
+                    pytest.raises(psycopg.errors.InsufficientPrivilege),
+                ):
+                    import_archive(db)
 
             with psycopg.connect(dsn, autocommit=True) as db:
                 db.execute(
