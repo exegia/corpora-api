@@ -115,6 +115,7 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
         own_headers = {"Authorization": f"Bearer {owner}"}
         foreign_headers = {"Authorization": f"Bearer {foreign}"}
         created = api.post("/v1/ai/drafts", json={"job_id": job}, headers=own_headers)
+        foreign_create = api.post("/v1/ai/drafts", json={"job_id": job}, headers=foreign_headers)
         listed = api.get("/v1/ai/drafts", headers=own_headers)
         info = api.get(f"/v1/ai/drafts/{first['id']}", headers=own_headers)
         exported = api.get(f"/v1/ai/drafts/{first['id']}/archive", headers=own_headers)
@@ -125,7 +126,13 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
     assert info.json() == first
     assert exported.content == archive_data
     assert exported.headers["cache-control"] == "private, no-store"
-    assert (other.status_code, unauthenticated.status_code) == (404, 401)
+    assert exported.headers["etag"] == f'"{first["digest"]}"'
+    assert exported.headers["x-draft-revision"] == first["revision"]
+    assert (other.status_code, foreign_create.status_code, unauthenticated.status_code) == (
+        404,
+        404,
+        401,
+    )
     with pytest.raises(HTTPException) as absent:
         second.resolve(foreign, first["id"])
     assert absent.value.status_code == 404

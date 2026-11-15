@@ -819,6 +819,8 @@ async def download_working_draft(
         headers={
             "Cache-Control": "private, no-store",
             "Content-Disposition": f'attachment; filename="{head.document_id}.corpus"',
+            "ETag": f'"{head.digest}"',
+            "X-Draft-Revision": str(head.revision),
         },
     )
 
