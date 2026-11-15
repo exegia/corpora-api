@@ -12,7 +12,7 @@ from urllib.parse import quote
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
-from corpus_validate import read_archive, validate_archive
+from corpus_validate import read_archive
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -157,7 +157,7 @@ class DraftStore:
             "next_offset": offset + limit if len(heads) > limit else None,
         }
 
-    def create(self, owner: str, job_id: str, jobs: Any) -> dict[str, Any]:
+    def create(self, owner: str, job_id: str, jobs: Any, validator: Any) -> dict[str, Any]:
         try:
             owner, job_id = str(UUID(owner)), str(UUID(job_id))
         except ValueError as error:
@@ -173,7 +173,7 @@ class DraftStore:
             if error.status_code != 404:
                 raise
         try:
-            verdict = validate_archive(data, name)
+            verdict = validator.validate(name, data)
             manifest = read_archive(data, "manifest")
         except (ValueError, zipfile.BadZipFile) as error:
             raise HTTPException(

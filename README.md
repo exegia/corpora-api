@@ -46,6 +46,12 @@ owner/document/revision keys and checked against their SHA-256 digest before
 publication and download. The API requires the server-side Supabase service key;
 no caller-supplied storage path is accepted.
 
+
+The authenticated `/v1/refs` endpoints create and resolve versioned
+Text-Fabric references and compact tokens from stored corpora. Resolution
+rejects stale versions and ambiguous compact corpus names; access follows the
+configured storage backend's rules.
+
 ## Local development
 
 Requirements: Python 3.13+, uv, Git for the pinned core schema package, Rust 1.91+ to build the core executables, Node.js 22.23.4+ for docs. PDF conversion also needs Poppler and Tesseract.

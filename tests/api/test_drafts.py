@@ -16,6 +16,7 @@ from corpora_api import app as app_module
 from corpora_api.app import app
 from corpora_api.auth import UserAuthError
 from corpora_api.drafts import DraftStore
+from corpora_api.validation import ValidationBridge
 
 
 def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkeypatch, tmp_path):
@@ -94,13 +95,15 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
     monkeypatch.setenv("SUPABASE_URL", "https://supabase.example.test")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "placeholder-service-key")
     client = httpx.Client(transport=httpx.MockTransport(respond))
-    first = DraftStore(client).create(owner, job, Jobs())
-    assert DraftStore(client).create(owner, job, Jobs()) == first
+    validator = ValidationBridge()
+    first = DraftStore(client).create(owner, job, Jobs(), validator)
+    assert DraftStore(client).create(owner, job, Jobs(), validator) == first
     second = DraftStore(client)
     assert second.list(owner, 50, 0)["drafts"] == [first]
     assert second._download(second.resolve(owner, first["id"])) == archive_data
     monkeypatch.setattr(app_module, "draft_store", second)
     monkeypatch.setattr(app_module, "conversion_artifact_store", Jobs())
+    monkeypatch.setattr(app_module, "validator", validator)
 
     def verify(token):
         if token in (owner, foreign):
