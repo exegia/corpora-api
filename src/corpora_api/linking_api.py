@@ -308,3 +308,178 @@ def discovery_decision(
             expected_version=body.expected_version,
             reason=body.reason,
         )
+
+
+class ConversionRequest(Value):
+    original: Endpoint
+    converted: Endpoint
+    asset_id: NonEmpty
+    stream_id: NonEmpty = "body"
+    event_id: UUID
+    reason: NonEmpty
+
+
+@router.post("/{space_id}/conversion-events")
+def conversion_event(space_id: UUID, body: ConversionRequest, request: Request):
+    with _operation(request, space_id) as (runtime, store):
+        return runtime.register_conversion(
+            store,
+            body.original,
+            body.converted,
+            asset_id=body.asset_id,
+            stream_id=body.stream_id,
+            event_id=body.event_id,
+            reason=body.reason,
+        )
+
+
+class ImportRequest(Value):
+    snapshot: str
+
+
+@router.post("/{space_id}/import-plan")
+def import_plan(space_id: UUID, body: ImportRequest, request: Request):
+    with _operation(request, space_id) as (runtime, store):
+        import psycopg
+
+        from .linking_postgres_publication import _authority
+        from .linking_publication import SnapshotPublicationAdapter
+
+        with psycopg.connect(store.dsn) as db:
+            actor = store._authorize(db, "contribute")
+            from .linking_publication import PublicationSnapshot
+
+            snapshot = PublicationSnapshot.model_validate_json(body.snapshot)
+            store._check_access(db, actor, snapshot)
+            authority = _authority(db, store)
+        return {
+            "decisions": SnapshotPublicationAdapter(authority).plan_import(
+                body.snapshot.encode(), store
+            )
+        }
+
+
+class ApplyImportRequest(Value):
+    snapshot: str
+    reference_id: UUID
+    expected_version: int | None = Field(default=None, ge=1, strict=True)
+    reason: NonEmpty
+
+
+@router.post("/{space_id}/import")
+def apply_import(space_id: UUID, body: ApplyImportRequest, request: Request):
+    """Recompute the decision server-side; no client-supplied approval/decision."""
+    with _operation(request, space_id) as (runtime, store):
+        import psycopg
+
+        from .linking_postgres_publication import _authority
+        from .linking_publication import PublicationSnapshot, SnapshotPublicationAdapter
+        from .linking_store import VersionConflictError
+
+        snapshot = PublicationSnapshot.model_validate_json(body.snapshot)
+        with psycopg.connect(store.dsn) as db:
+            actor = store._authorize(db, "contribute")
+            store._check_access(db, actor, snapshot)
+            authority = _authority(db, store)
+        adapter = SnapshotPublicationAdapter(authority)
+        decisions = adapter.plan_import(body.snapshot.encode(), store)
+        selected = [item for item in decisions if item.entry.reference.id == body.reference_id]
+        if len(selected) != 1:
+            raise HTTPException(422, "Reference is absent from snapshot")
+        decision = selected[0]
+        if decision.expected_version != body.expected_version:
+            raise VersionConflictError("import version changed")
+        return {"version": adapter.apply_import(decision, store, reason=body.reason)}
+
+
+class CUSXRequest(ExportRequest):
+    source: Endpoint
+    # Typed in the endpoint body below without importing XML libraries on startup.
+    bindings: tuple[dict, ...] = ()
+
+
+@router.post("/{space_id}/export-cusx")
+def export_cusx(space_id: UUID, body: CUSXRequest, request: Request):
+    with _operation(request, space_id) as (runtime, store):
+        import psycopg
+
+        from .linking_access import endpoint_scope
+        from .linking_cusx import AnchorBinding, publish_cusx_links, validate_cusx_binding
+        from .linking_postgres_publication import PostgreSQLPublicationLedger
+        from .linking_publication import PublicationSnapshot
+
+        publication = PublicationSnapshot.model_validate_json(
+            PostgreSQLPublicationLedger(store).export_current(body.reference_ids)
+        )
+        bindings = tuple(AnchorBinding.model_validate(value) for value in body.bindings)
+        with psycopg.connect(store.dsn) as db:
+            actor = store._authorize(db, None)
+            store._check_access(db, actor, (body.source, bindings, publication))
+
+            def asset_for(endpoint):
+                matches = [
+                    asset
+                    for asset in runtime.inventory.assets
+                    if asset.format == "cusx"
+                    and endpoint_scope(asset.endpoint)[0] == endpoint_scope(endpoint)[0]
+                ]
+                if len(matches) != 1:
+                    raise ValueError("published C-USX document unavailable or ambiguous")
+                return matches[0]
+
+            source_asset = asset_for(body.source)
+            source_snapshot = runtime.snapshot(store, body.source)
+            for binding in bindings:
+                target_asset = asset_for(binding.selection)
+                target_snapshot = runtime.snapshot(store, target_asset.endpoint)
+                validate_cusx_binding(target_asset.data, target_snapshot, binding)
+            # Structural destinations also require actual advertised anchors.
+            from corpora_linking import StructuralLocator
+            from lxml import etree
+
+            from .linking_cusx import CX
+
+            for entry in publication.entries:
+                for locator in entry.reference.target.locators:
+                    if isinstance(locator, StructuralLocator):
+                        target_asset = asset_for(entry.reference.target)
+                        root = etree.fromstring(
+                            target_asset.data,
+                            etree.XMLParser(resolve_entities=False, no_network=True),
+                        )
+                        matches = [
+                            element
+                            for element in root.iter()
+                            if element.get(f"{{{CX}}}id") == locator.anchor_id
+                        ]
+                        if len(matches) != 1:
+                            raise ValueError("structural destination is not uniquely advertised")
+            xml = publish_cusx_links(
+                source_asset.data, source_snapshot, publication, target_bindings=bindings
+            )
+        return {"cusx": xml.decode("utf-8"), "snapshot": publication}
+
+
+class ScholarlyConversionRequest(Value):
+    original: Endpoint
+    converted: Endpoint
+    asset_id: NonEmpty
+    stream_id: NonEmpty = "body"
+    event_ids: tuple[UUID, ...]
+    reason: NonEmpty
+
+
+@router.post("/{space_id}/scholarly-conversion-events")
+def scholarly_conversion_events(space_id: UUID, body: ScholarlyConversionRequest, request: Request):
+    with _operation(request, space_id) as (runtime, store):
+        return {
+            "discoveries": runtime.register_scholarly_conversion(
+                store,
+                body.original,
+                body.converted,
+                asset_id=body.asset_id,
+                stream_id=body.stream_id,
+                event_ids=body.event_ids,
+                reason=body.reason,
+            )
+        }

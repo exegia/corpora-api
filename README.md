@@ -45,7 +45,7 @@ findings and rejecting stale version or content hashes.
 Corpus detail, reference, and scope reads run the native loader in a separate
 short-lived process per request so its state cannot cross server worker threads.
 
-The three `/v1/linking/{space_id}/references` operations are disabled by default.
+The `/v1/linking/{space_id}` operations are disabled by default.
 They require a server-controlled `LINKING_DATABASE_URL`, `LINKING_INVENTORY`
 file, `LINKING_ENABLED=true`, and the existing Supabase JWT configuration.
 Every operation rechecks the verified session, space membership and exact
@@ -64,6 +64,10 @@ Publication events record an acknowledgment or withdrawal intent; they do not
 assert that an artifact was delivered or removed remotely.
 Discovery routes retain submitted citation evidence and reviewer decisions as
 append-only history; selecting a work creates a pending working reference.
+Exchange routes inspect and import publication snapshots, export C-USX, and register
+conversion events without changing the existing `/convert` service. Scholarly
+conversion events additionally require a trusted recognizer injected into the
+server runtime; environment configuration alone does not supply one.
 An optional isolated PostgreSQL authorization test starts a fresh in-memory
 PGlite server on a loopback port. It does not connect to or modify a Supabase
 project, and its single connection does not establish concurrency guarantees:

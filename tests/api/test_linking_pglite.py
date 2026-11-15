@@ -16,6 +16,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 from corpora_linking import (
+    BibleBook,
     CatalogEntry,
     Endpoint,
     Provenance,
@@ -33,7 +34,13 @@ from corpora_api.auth import UserAuthError
 from corpora_api.linking_access import endpoint_scope, evidence_endpoints
 from corpora_api.linking_html_ranges import _stream
 from corpora_api.linking_pdf import sha256_revision
-from corpora_api.linking_runtime import AssetRecord, LinkingInventory, LinkingRuntime
+from corpora_api.linking_publication import SnapshotPublicationAdapter
+from corpora_api.linking_runtime import (
+    AssetRecord,
+    BibleDetectionContext,
+    LinkingInventory,
+    LinkingRuntime,
+)
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_PGLITE_ROOT"), reason="set CORPORA_PGLITE_ROOT for isolated PG fixture"
@@ -100,17 +107,53 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             revision=sha256_revision(html),
             document_id="html",
         )
+        conversion_data = (
+            b"<html><head></head><body><p>Compare John <em>3:16</em>.</p></body></html>"
+        )
+        original = Endpoint(
+            work_id="essay",
+            edition_id="e",
+            package_id="convert-html",
+            revision=sha256_revision(conversion_data),
+            document_id="asset",
+        )
+        converted = Endpoint(
+            work_id="essay",
+            edition_id="e",
+            package_id="convert-text",
+            revision=sha256_revision(b"Compare John 3:16.\n"),
+            document_id="body",
+        )
         inventory = LinkingInventory(
+            bible=BibleDetectionContext(
+                books=(BibleBook(work_id="john", aliases=("John",)),),
+                profile="fixture",
+                scheme_id="fixture",
+                scheme_version="1",
+                detector_revision="1",
+            ),
             catalog=(
                 CatalogEntry(work_id="essay", names=("Essay",)),
                 CatalogEntry(work_id="book", names=("Book",)),
             ),
             snapshots=(TextSnapshot(endpoint=base, stream_id="body", text="Quote tail"),),
-            assets=(AssetRecord(endpoint=html_endpoint, format="html", data=html),),
+            assets=(
+                AssetRecord(endpoint=html_endpoint, format="html", data=html),
+                AssetRecord(endpoint=original, format="html", data=conversion_data),
+            ),
         )
         scopes = {
             endpoint_scope(e)[0]: endpoint_scope(e)[1]
-            for e in evidence_endpoints((reference, html_endpoint, Endpoint(work_id="other")))
+            for e in evidence_endpoints(
+                (
+                    reference,
+                    html_endpoint,
+                    original,
+                    converted,
+                    Endpoint(work_id="john"),
+                    Endpoint(work_id="other"),
+                )
+            )
         }
         with psycopg.connect(dsn) as db:
             db.execute("INSERT INTO auth.users VALUES (%s),(%s)", (creator, reviewer))
@@ -148,16 +191,79 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
         monkeypatch.setattr(app_module, "verify_user_token", verify)
         monkeypatch.setattr(linking_postgres, "verify_user_token", verify)
         server_dsn = psycopg.conninfo.make_conninfo(dsn, options="-c role=service_role")
+
+        class Recognizer:
+            def recognize(self, snapshot):
+                start = snapshot.text.index("John 3:16")
+                return (
+                    ScholarlyCitationMention(
+                        selection=TextLocator(
+                            stream_id="body", start=start, end=start + 9, exact="John 3:16"
+                        ),
+                        cited_name="John",
+                    ),
+                )
+
         monkeypatch.setattr(
             app_module.app.state,
             "linking_runtime",
-            LinkingRuntime(dsn=server_dsn, inventory=inventory),
+            LinkingRuntime(
+                dsn=server_dsn,
+                inventory=inventory,
+                scholarly_recognizer=Recognizer(),
+                scholarly_revision="fixture-v1",
+            ),
             raising=False,
         )
         a, b = {"Authorization": "Bearer creator"}, {"Authorization": "Bearer reviewer"}
         path = f"/v1/linking/{space}/references"
         body = {"reference": reference.model_dump(mode="json"), "reason": "manual"}
         with TestClient(app_module.app) as client:
+            conversion_url = f"/v1/linking/{space}/conversion-events"
+            conversion_body = {
+                "original": original.model_dump(mode="json"),
+                "converted": converted.model_dump(mode="json"),
+                "asset_id": "convert-html",
+                "event_id": str(uuid4()),
+                "reason": "converted",
+            }
+            first_conversion = client.post(conversion_url, json=conversion_body, headers=a)
+            assert first_conversion.status_code == 200, first_conversion.text
+            assert len(first_conversion.json()["report"]["references"]) == 1
+            assert (
+                client.post(conversion_url, json=conversion_body, headers=a).json()
+                == first_conversion.json()
+            )
+            assert (
+                client.post(
+                    conversion_url, json={**conversion_body, "asset_id": "forged"}, headers=a
+                ).status_code
+                == 409
+            )
+            assert (
+                client.post(
+                    f"/v1/linking/{other}/conversion-events", json=conversion_body, headers=a
+                ).status_code
+                == 403
+            )
+            scholarly_url = f"/v1/linking/{space}/scholarly-conversion-events"
+            scholarly_body = {
+                key: value for key, value in conversion_body.items() if key != "event_id"
+            }
+            scholarly_body["event_ids"] = [str(uuid4())]
+            scholarly = client.post(scholarly_url, json=scholarly_body, headers=a)
+            assert scholarly.status_code == 200, scholarly.text
+            assert len(scholarly.json()["discoveries"]) == 1
+            assert (
+                client.post(scholarly_url, json=scholarly_body, headers=a).json()
+                == scholarly.json()
+            )
+            assert (
+                client.post(
+                    scholarly_url, json={**scholarly_body, "event_ids": []}, headers=a
+                ).status_code
+                == 422
+            )
             selection_path = f"/v1/linking/{space}/retrieve"
             assert client.post(
                 selection_path, json=selected.model_dump(mode="json"), headers=a
@@ -223,6 +329,45 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             assert [row["version"] for row in history.json()["history"]] == [1, 2, 3]
             snapshot = client.post(export_path, json={"reference_ids": [reference_id]}, headers=a)
             assert snapshot.status_code == 200, snapshot.text
+            import_plan = client.post(
+                f"/v1/linking/{space}/import-plan", json={"snapshot": snapshot.text}, headers=a
+            )
+            assert import_plan.status_code == 200, import_plan.text
+            assert len(import_plan.json()["decisions"]) == 1
+            stale_import = client.post(
+                f"/v1/linking/{space}/import",
+                json={
+                    "snapshot": snapshot.text,
+                    "reference_id": reference_id,
+                    "expected_version": 1,
+                    "reason": "import",
+                },
+                headers=a,
+            )
+            assert stale_import.status_code == 409, stale_import.text
+            imported_ref = reference.model_copy(
+                update={"id": uuid4(), "review": "approved", "resolution": "resolved"}
+            )
+            external_snapshot = (
+                SnapshotPublicationAdapter("upstream").export((imported_ref,)).decode()
+            )
+            import_body = {
+                "snapshot": external_snapshot,
+                "reference_id": str(imported_ref.id),
+                "reason": "import",
+            }
+            imported = client.post(f"/v1/linking/{space}/import", json=import_body, headers=a)
+            assert imported.status_code == 200, imported.text
+            assert imported.json()["version"] == 1
+            imported_state = client.get(f"{path}/{imported_ref.id}", headers=a)
+            assert (
+                imported_state.status_code == 200
+                and imported_state.json()["history"][-1]["reference"]["review"] == "pending"
+            ), imported_state.text
+            assert (
+                client.post(f"/v1/linking/{space}/import", json=import_body, headers=a).status_code
+                == 409
+            )
             publication_path = f"/v1/linking/{space}/publication/{reference_id}"
             publish_body = {
                 "event_id": str(uuid4()),

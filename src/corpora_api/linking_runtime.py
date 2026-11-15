@@ -10,6 +10,7 @@ from uuid import UUID
 import psycopg
 from corpora_linking import (
     BibleBook,
+    BibleCitationDetector,
     CatalogEntry,
     Endpoint,
     EpubLocator,
@@ -18,6 +19,7 @@ from corpora_linking import (
     PassageEntry,
     PdfLocator,
     ResolutionResult,
+    ScholarlyCitationRecognizer,
     SnapshotCatalog,
     SnapshotResolver,
     StructuralLocator,
@@ -84,9 +86,22 @@ class LinkingInventory(Value):
 class LinkingRuntime:
     """Server-configured authority; never accepts an inventory from a client."""
 
-    def __init__(self, *, dsn: str, inventory: LinkingInventory):
+    def __init__(
+        self,
+        *,
+        dsn: str,
+        inventory: LinkingInventory,
+        scholarly_recognizer: ScholarlyCitationRecognizer | None = None,
+        scholarly_revision: str | None = None,
+    ):
         self.dsn = dsn
         self.inventory = LinkingInventory.model_validate(inventory.model_dump())
+        if (scholarly_recognizer is None) != (
+            scholarly_revision is None
+        ) or scholarly_revision == "":
+            raise ValueError("scholarly recognizer requires an explicit implementation revision")
+        self.scholarly_recognizer = scholarly_recognizer
+        self.scholarly_revision = scholarly_revision
 
     def store(self, space_id: UUID, token: str) -> PostgreSQLReferenceStore:
         return PostgreSQLReferenceStore(self.dsn, space_id=space_id, token=token)
@@ -101,6 +116,143 @@ class LinkingRuntime:
             if len(matches) != 1:
                 raise ValueError("source snapshot unavailable or ambiguous")
             return matches[0]
+
+    def conversion(
+        self,
+        store: PostgreSQLReferenceStore,
+        original: Endpoint,
+        converted: Endpoint,
+        *,
+        asset_id: str,
+        stream_id: str,
+    ):
+        with psycopg.connect(store.dsn) as db:
+            actor = store._authorize(db, "contribute")
+            store._check_access(db, actor, (original, converted))
+            matches = [
+                asset
+                for asset in self.inventory.assets
+                if endpoint_scope(asset.endpoint)[0] == endpoint_scope(original)[0]
+            ]
+            if len(matches) != 1 or original.locators or converted.locators:
+                raise ValueError("conversion requires an available whole asset")
+            asset = matches[0]
+            if asset.format == "pdf":
+                from .linking_pymupdf import extract_pymupdf_references_input
+
+                return extract_pymupdf_references_input(
+                    asset.data,
+                    original=original,
+                    converted=converted,
+                    asset_id=asset_id,
+                    stream_id=stream_id,
+                )
+            if asset.format == "epub":
+                from .linking_epub import extract_epub_references_input
+
+                return extract_epub_references_input(
+                    asset.data,
+                    original=original,
+                    converted=converted,
+                    asset_id=asset_id,
+                    stream_id=stream_id,
+                )
+            if asset.format != "html":
+                raise ValueError("asset format has no conversion extractor")
+            from .linking_html import extract_html_references_input
+
+            return extract_html_references_input(
+                asset.data,
+                original=original,
+                converted=converted,
+                asset_id=asset_id,
+                stream_id=stream_id,
+            )
+
+    def register_conversion(
+        self,
+        store: PostgreSQLReferenceStore,
+        original: Endpoint,
+        converted: Endpoint,
+        *,
+        asset_id: str,
+        stream_id: str,
+        event_id: UUID,
+        reason: str,
+    ):
+        from .linking_postgres_conversion import PostgreSQLConversionEventRegistry
+
+        context = self.inventory.bible
+        if context is None:
+            raise ValueError("citation detector context is not configured")
+        conversion = self.conversion(
+            store, original, converted, asset_id=asset_id, stream_id=stream_id
+        )
+        detector = BibleCitationDetector(
+            books=context.books,
+            stream_id=stream_id,
+            profile=context.profile,
+            scheme_id=context.scheme_id,
+            scheme_version=context.scheme_version,
+            agent_id="corpora:bible-detector",
+        )
+        return PostgreSQLConversionEventRegistry(store).register(
+            conversion,
+            detector,
+            event_id=event_id,
+            detector_revision=context.detector_revision,
+            reason=reason,
+        )
+
+    def register_scholarly_conversion(
+        self,
+        store: PostgreSQLReferenceStore,
+        original: Endpoint,
+        converted: Endpoint,
+        *,
+        asset_id: str,
+        stream_id: str,
+        event_ids: tuple[UUID, ...],
+        reason: str,
+    ):
+        """Persist every recognized mention, including unknowns, with explicit job IDs.
+
+        The ingest job durably assigns one event ID per ordered mention before
+        registration. Each mention commits atomically; partial jobs resume using
+        those same IDs. This operation never deletes earlier discoveries.
+        """
+        from corpora_linking import Provenance, identify_scholarly_citation
+
+        from .linking_postgres_discoveries import PostgreSQLDiscoveryStore
+
+        if self.scholarly_recognizer is None:
+            raise ValueError("scholarly recognizer is not configured")
+        conversion = self.conversion(
+            store, original, converted, asset_id=asset_id, stream_id=stream_id
+        )
+        mentions = tuple(self.scholarly_recognizer.recognize(conversion.converted))
+        if len(mentions) != len(event_ids) or len(set(event_ids)) != len(event_ids):
+            raise ValueError("each ordered scholarly mention requires its own durable event ID")
+        discoveries = PostgreSQLDiscoveryStore(store)
+        return tuple(
+            discoveries.register(
+                identify_scholarly_citation(
+                    conversion.converted,
+                    mention,
+                    SnapshotCatalog(entries=self.inventory.catalog),
+                    provenance=Provenance(
+                        origin="automatic",
+                        agent_id="corpora:scholarly-recognizer",
+                        method=f"configured-recognizer:{self.scholarly_revision}",
+                    ),
+                ),
+                conversion.converted,
+                mappings=conversion.mappings,
+                event_id=event_id,
+                reason=reason,
+            )
+            for mention, event_id in zip(mentions, event_ids, strict=True)
+        )
 
     def resolver(self, store: PostgreSQLReferenceStore) -> "AuthorizedInventoryResolver":
         return AuthorizedInventoryResolver(store, self.inventory)

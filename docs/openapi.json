@@ -677,6 +677,44 @@
         "title": "AIValidationResponse",
         "type": "object"
       },
+      "ApplyImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot",
+          "reference_id",
+          "reason"
+        ],
+        "title": "ApplyImportRequest",
+        "type": "object"
+      },
       "Body_check_text_fabric_v1_checks_text_fabric_post": {
         "properties": {
           "file": {
@@ -850,6 +888,37 @@
         "title": "BrowserSelectionRequest",
         "type": "object"
       },
+      "CUSXRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "bindings": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Bindings",
+            "type": "array"
+          },
+          "reference_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Reference Ids",
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Endpoint"
+          }
+        },
+        "required": [
+          "reference_ids",
+          "source"
+        ],
+        "title": "CUSXRequest",
+        "type": "object"
+      },
       "CitationLocator": {
         "additionalProperties": false,
         "description": "An unresolved address request, never proof of an exact passage.",
@@ -899,6 +968,47 @@
           "scheme_version"
         ],
         "title": "CitationLocator",
+        "type": "object"
+      },
+      "ConversionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "converted": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "stream_id": {
+            "default": "body",
+            "minLength": 1,
+            "title": "Stream Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "original",
+          "converted",
+          "asset_id",
+          "event_id",
+          "reason"
+        ],
+        "title": "ConversionRequest",
         "type": "object"
       },
       "CorpusContentResponse": {
@@ -1756,6 +1866,20 @@
           "text"
         ],
         "title": "HtmlTextLocator",
+        "type": "object"
+      },
+      "ImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "title": "ImportRequest",
         "type": "object"
       },
       "IngestCreated": {
@@ -2620,6 +2744,50 @@
           "cited_name"
         ],
         "title": "ScholarlyCitationMention",
+        "type": "object"
+      },
+      "ScholarlyConversionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "converted": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "event_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Event Ids",
+            "type": "array"
+          },
+          "original": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "stream_id": {
+            "default": "body",
+            "minLength": 1,
+            "title": "Stream Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "original",
+          "converted",
+          "asset_id",
+          "event_ids",
+          "reason"
+        ],
+        "title": "ScholarlyConversionRequest",
         "type": "object"
       },
       "ShortcodeCreate": {
@@ -4855,6 +5023,65 @@
         ]
       }
     },
+    "/v1/linking/{space_id}/conversion-events": {
+      "post": {
+        "operationId": "conversion_event_v1_linking__space_id__conversion_events_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Conversion Event",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
     "/v1/linking/{space_id}/discoveries": {
       "post": {
         "operationId": "register_discovery_v1_linking__space_id__discoveries_post",
@@ -5110,6 +5337,184 @@
           }
         ],
         "summary": "Export References",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/export-cusx": {
+      "post": {
+        "operationId": "export_cusx_v1_linking__space_id__export_cusx_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CUSXRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Export Cusx",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/import": {
+      "post": {
+        "description": "Recompute the decision server-side; no client-supplied approval/decision.",
+        "operationId": "apply_import_v1_linking__space_id__import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Apply Import",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/import-plan": {
+      "post": {
+        "operationId": "import_plan_v1_linking__space_id__import_plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Import Plan",
         "tags": [
           "linking"
         ]
@@ -5453,6 +5858,65 @@
           }
         ],
         "summary": "Retrieve Selection",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/scholarly-conversion-events": {
+      "post": {
+        "operationId": "scholarly_conversion_events_v1_linking__space_id__scholarly_conversion_events_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScholarlyConversionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Scholarly Conversion Events",
         "tags": [
           "linking"
         ]
