@@ -61,6 +61,10 @@ from corpora_api.ingest_worker import (
     run_docling_worker,
 )
 from corpora_api.models import (
+    AIProvider,
+    AIProvidersResponse,
+    AIScopeRequest,
+    AIValidationResponse,
     CorpusContentResponse,
     CorpusIndexResponse,
     CorpusNodeDetailResponse,
@@ -120,6 +124,8 @@ def user_auth_path(path: str) -> bool:
     return (
         path in USER_AUTH_PATHS
         or path.startswith("/v1/storage/")
+        or path == "/v1/ai/providers"
+        or path == "/v1/ai/validate"
         or path == "/v1/refs"
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
@@ -756,6 +762,35 @@ _STORAGE_DETAIL_RESPONSES = {
     502: {"model": ErrorResponse},
     503: {"model": ErrorResponse},
 }
+
+
+@app.get("/v1/ai/providers", tags=["ai"], response_model=AIProvidersResponse)
+async def ai_providers(_user_id: Annotated[str, Depends(require_user)]) -> AIProvidersResponse:
+    return AIProvidersResponse(
+        providers=[
+            AIProvider(
+                id="anthropic", label="Anthropic", models=["claude-sonnet-4-5", "claude-haiku-4-5"]
+            ),
+            AIProvider(id="openai", label="OpenAI", models=["gpt-5.2", "gpt-5.2-mini"]),
+            AIProvider(id="google", label="Google", models=["gemini-3-pro", "gemini-3-flash"]),
+        ]
+    )
+
+
+@app.post(
+    "/v1/ai/validate",
+    tags=["ai"],
+    response_model=AIValidationResponse,
+    responses={**_STORAGE_DETAIL_RESPONSES, 409: {"description": "Scope is stale"}},
+)
+async def ai_validate(
+    request: AIScopeRequest, user_id: Annotated[str, Depends(require_user)]
+) -> Any:
+    from corpora_api.ai_validation import validate_scope
+
+    return await run_in_threadpool(
+        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope
+    )
 
 
 _REFERENCE_RESPONSES = {
