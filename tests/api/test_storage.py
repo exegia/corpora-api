@@ -326,6 +326,7 @@ def test_references_use_real_corpus_and_enforce_owner(
                 archive.write(path, f"corpora/{path.relative_to(root)}")
     store[f"{ALICE}/first.corpus"] = stream.getvalue()
     store[f"{ALICE}/first.cusx.corpus"] = stream.getvalue()
+    store[f"{ALICE}/first.cusx"] = stream.getvalue()
     store[f"{ALICE}/Mixed_Case.corpus"] = stream.getvalue()
     with TestClient(app) as client:
         created = client.post(
@@ -363,6 +364,16 @@ def test_references_use_real_corpus_and_enforce_owner(
             params={"ref": double_suffix.json()["ref"]},
             headers=headers("alice-token"),
         )
+        cusx = client.post(
+            "/v1/refs", json={"corpus": "first.cusx", "node": 1}, headers=headers("alice-token")
+        )
+        assert cusx.status_code == 200, cusx.text
+        cusx_responses = [
+            client.get(
+                "/v1/refs/resolve", params={"ref": cusx.json()[key]}, headers=headers("alice-token")
+            )
+            for key in ("ref", "urn", "token")
+        ]
         from_ref = client.get(
             "/v1/refs/shortcode", params={"ref": body["ref"]}, headers=headers("alice-token")
         )
@@ -394,6 +405,11 @@ def test_references_use_real_corpus_and_enforce_owner(
     assert mixed_resolved.json()["ref"] == mixed.json()["ref"]
     assert double_suffix.json()["ref"] == "first.cusx.corpus@2.3/Mini!word1"
     assert double_resolved.status_code == 200
+    assert cusx.json()["ref"] == "first.cusx@2.3/Mini!word1"
+    assert all(
+        response.status_code == 200 and response.json()["ref"] == cusx.json()["ref"]
+        for response in cusx_responses
+    )
     assert from_ref.json()["ref"] == body["ref"]
     assert from_node.json()["ref"] == "first@2.3/Mini!word1"
     assert mismatch.status_code == 400
