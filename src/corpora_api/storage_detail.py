@@ -7,6 +7,8 @@ from typing import Any, Protocol
 import httpx
 from fastapi import HTTPException
 
+from corpora_api.storage import StorageError
+
 MAX_STORED_ARCHIVE_BYTES = 3_000_000
 
 
@@ -34,6 +36,8 @@ def read_stored_archive_view(
                     detail=f"Stored corpus archive exceeds {MAX_STORED_ARCHIVE_BYTES} bytes",
                 )
             chunks.append(chunk)
+    except httpx.HTTPError as error:
+        raise StorageError("Corpus storage request failed") from error
     finally:
         response.close()
 

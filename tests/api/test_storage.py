@@ -242,6 +242,31 @@ def test_corpus_detail_download_is_bounded(
     assert response.status_code == 413
 
 
+def test_corpus_detail_stream_failure_maps_to_storage_error(
+    monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
+) -> None:
+    class BrokenStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"partial archive"
+            raise httpx.ReadError("connection closed")
+
+        def close(self) -> None:
+            pass
+
+    response = httpx.Response(200, stream=BrokenStream())
+    monkeypatch.setattr(
+        app_module,
+        "corpus_storage",
+        SimpleNamespace(open_download=lambda _user_id, _filename: (response, "first.corpus")),
+    )
+
+    with TestClient(app) as client:
+        result = client.get("/v1/storage/first.corpus/manifest", headers=headers("alice-token"))
+
+    assert result.status_code == 502
+    assert result.json() == {"detail": "Corpus storage request failed"}
+
+
 def test_storage_requires_user_and_maps_missing_or_unavailable_store(
     monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
 ) -> None:
