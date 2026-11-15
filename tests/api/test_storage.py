@@ -285,6 +285,11 @@ def test_ai_scope_validation_uses_owned_real_archive(
             json={"scope": {**scope, "version": "old"}},
             headers=headers("alice-token"),
         )
+        unknown_node = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "node_id": 2147483647}},
+            headers=headers("alice-token"),
+        )
         unauthorized = client.get("/v1/ai/providers")
         schema = client.get("/v1/openapi.json").json()
     assert [item["id"] for item in providers.json()["providers"]] == [
@@ -316,6 +321,8 @@ def test_ai_scope_validation_uses_owned_real_archive(
     assert foreign_finding.status_code == 404 and "findings" not in foreign_finding.json()
     assert (foreign.status_code, stale.status_code, unauthorized.status_code) == (404, 409, 401)
     assert stale.json()["code"] == "stale"
+    assert unknown_node.status_code == 422
+    assert unknown_node.json() == {"detail": "Unknown node 2147483647"}
     for path, method in (("/v1/ai/providers", "get"), ("/v1/ai/validate", "post")):
         assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
 

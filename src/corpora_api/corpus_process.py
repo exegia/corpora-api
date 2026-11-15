@@ -32,6 +32,11 @@ class CorpusProcessError(Exception):
         self.attributes = attributes or {}
 
 
+class UnknownScopeNode(Exception):
+    def __init__(self, node: int):
+        self.node = node
+
+
 def run_corpus(data: bytes, operation: str, **kwargs: Any) -> dict[str, Any]:
     """Keep native loader state out of the long-lived multithreaded server."""
     payload = json.dumps(
@@ -84,10 +89,22 @@ def _main() -> None:
             raw["level"] = ScopeLevel(raw["level"])
             if raw.get("unit_range") is not None:
                 raw["unit_range"] = UnitRange(**raw["unit_range"])
-            value = asdict(validate_archive_scope(data, NodeScope(**raw)))
+            scope = NodeScope(**raw)
+            try:
+                value = asdict(validate_archive_scope(data, scope))
+            except ValueError as error:
+                nodes = [scope.node_id]
+                if scope.unit_range is not None:
+                    nodes.extend([scope.unit_range.start, scope.unit_range.end])
+                for node in nodes:
+                    if node is not None and str(error) == f"Unknown node {node}":
+                        raise UnknownScopeNode(node) from error
+                raise
         else:
             raise ValueError("Unsupported corpus operation")
         response = {"result": value}
+    except UnknownScopeNode as error:
+        response = {"error": "unknown_scope_node", "attributes": {"node": error.node}}
     except StaleScope as error:
         response = {
             "error": "stale",

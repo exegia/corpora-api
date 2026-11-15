@@ -40,6 +40,13 @@ def validate_scope(
     try:
         return run_corpus(data, "scope", scope=request.model_dump())
     except CorpusProcessError as error:
+        if error.kind == "unknown_scope_node":
+            nodes = [request.node_id]
+            if request.unit_range is not None:
+                nodes.extend([request.unit_range.start, request.unit_range.end])
+            node = error.attributes.get("node")
+            if type(node) is int and node in nodes:
+                raise HTTPException(422, f"Unknown node {node}") from error
         if error.kind == "stale":
             reason = (
                 "Scoped text has changed"
