@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
@@ -18,8 +17,11 @@ from cfabric import Fabric as ContextFabric
 from fastapi import HTTPException
 from tf.fabric import Fabric
 
-from corpora_api.stored_revisions import Revision, StoredRevisions
+from corpora_api.storage import SupabaseCorpusStorage
+from corpora_api.stored_import import StoredArchiveImporter
+from corpora_api.stored_revisions import StoredRevisions
 from corpora_api.stored_versions import StoredVersions
+from corpora_api.validation import ValidationBridge
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_TEST_LOCAL_SUPABASE") or not os.getenv("CORPORA_CORE_TEST_ROOT"),
@@ -80,18 +82,51 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
                 json={"email": f"{uuid4()}@example.org", "password": str(uuid4())},
             )
             assert response.status_code == 200
-            return response.json()["user"]["id"]
+            body = response.json()
+            return body["user"]["id"], body["access_token"]
 
-        owner, other = signup(), signup()
-        store = StoredRevisions(client)
-        initial = Revision(
-            owner=owner,
-            filename="mini.corpus",
-            revision=uuid4(),
-            digest="sha256:" + hashlib.sha256(data).hexdigest(),
-            version="v1.0",
+        owner, _ = signup()
+        other, other_token = signup()
+        bucket = "legacy-test-" + uuid4().hex
+        headers = {"apikey": service, "Authorization": "Bearer " + service}
+        created = client.post(
+            url + "/storage/v1/bucket",
+            headers=headers,
+            json={"id": bucket, "name": bucket, "public": False},
         )
-        store.publish(initial, data, None)
+        assert created.status_code in (200, 201)
+        monkeypatch.setenv("SUPABASE_STORAGE_BUCKET", bucket)
+        object_url = f"{url}/storage/v1/object/{bucket}/{owner}/mini.corpus"
+        assert client.post(object_url, headers=headers, content=data).status_code in (200, 201)
+        direct = client.post(
+            url + "/rest/v1/rpc/corpora_legacy_source_stamp",
+            headers={"apikey": anon, "Authorization": "Bearer " + other_token},
+            json={"p_owner": owner, "p_bucket": bucket, "p_filename": "mini.corpus"},
+        )
+        assert direct.status_code in (401, 403, 404)
+        store = StoredRevisions(client)
+        importer = StoredArchiveImporter(SupabaseCorpusStorage(client), store, ValidationBridge())
+        with pytest.raises(HTTPException) as foreign_import:
+            importer.import_archive(other, "mini.corpus")
+        assert foreign_import.value.status_code == 404
+        initial = importer.import_archive(owner, "mini.corpus")
+        assert store.get(owner, "mini.corpus").data == data
+        race_url = f"{url}/storage/v1/object/{bucket}/{owner}/race.corpus"
+        assert client.post(race_url, headers=headers, content=data).status_code in (200, 201)
+        stage = store.stage
+
+        def race_stage(fact, content):
+            stage(fact, content)
+            assert client.put(race_url, headers=headers, content=b"changed").status_code == 200
+
+        monkeypatch.setattr(store, "stage", race_stage)
+        with pytest.raises(HTTPException) as import_race:
+            importer.import_archive(owner, "race.corpus")
+        assert import_race.value.status_code == 409
+        with pytest.raises(HTTPException) as not_imported:
+            store.get(owner, "race.corpus")
+        assert not_imported.value.status_code == 404
+        monkeypatch.setattr(store, "stage", stage)
         versions = StoredVersions(store)
         edit = versions.edit(
             owner, "mini.corpus", str(initial.revision), "manifest", {"name": "Edited"}
@@ -135,7 +170,7 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
             assert manifest["name"] == "Original"
             assert manifest["written_date"].isoformat() == "2024-01-02"
             history = yaml.safe_load(archive.read("history.yml"))["versions"]
-            assert [row["id"] for row in history] == ["v1.0", "v1.1", "v1.2", "v1.3", "v1.4"]
+            assert [row["id"] for row in history] == ["1.0", "v1.1", "v1.2", "v1.3", "v1.4"]
             assert history[2]["snapshot_revision"] == winner["revision"]
             assert history[-1]["snapshot_revision"] == restored["revision"]
             assert history[-1]["restored_from"]["snapshot_revision"] == str(initial.revision)
