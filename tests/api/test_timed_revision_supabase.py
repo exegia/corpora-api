@@ -18,6 +18,7 @@ import pytest
 from fastapi import HTTPException
 
 from corpora_api.auth import verify_user_token
+from corpora_api.session_connection import SessionDatabase
 from corpora_api.session_read import SessionBoundRead, SessionBoundTimedRevisions
 
 pytestmark = pytest.mark.skipif(
@@ -26,7 +27,43 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_timed_worker_is_reaped_before_logout_and_validates_real_storage(tmp_path, monkeypatch):
+@pytest.fixture
+def dedicated_session_database():
+    psycopg = pytest.importorskip("psycopg")
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict
+
+    admin_dsn = os.getenv("CORPORA_TEST_LOCAL_ROLE_ADMIN_DSN")
+    if not admin_dsn:
+        pytest.skip("requires explicit disposable local role administrator")
+    local = conninfo_to_dict(admin_dsn)
+    assert local.get("host") in {"localhost", "127.0.0.1", "::1"}
+    role, password = "test_timed_reader_" + uuid4().hex, uuid4().hex + uuid4().hex
+    with psycopg.connect(admin_dsn, autocommit=True, connect_timeout=5) as admin:
+        admin.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}"
+            ).format(sql.Identifier(role), sql.Literal(password))
+        )
+        try:
+            admin.execute(sql.SQL("GRANT service_role TO {}").format(sql.Identifier(role)))
+            yield SessionDatabase(
+                host=local["host"],
+                hostaddr="127.0.0.1" if local["host"] == "localhost" else local["host"],
+                port=int(local.get("port", 5432)),
+                database=local["dbname"],
+                user=role,
+                password=password,
+                allow_insecure_local=True,
+            )
+        finally:
+            admin.execute(sql.SQL("REVOKE service_role FROM {}").format(sql.Identifier(role)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def test_timed_worker_is_reaped_before_logout_and_validates_real_storage(
+    tmp_path, monkeypatch, dedicated_session_database
+):
     psycopg = pytest.importorskip("psycopg")
     import corpora_api
     import corpora_api.timed_revision_read as timed_module
@@ -68,8 +105,7 @@ def test_timed_worker_is_reaped_before_logout_and_validates_real_storage(tmp_pat
     monkeypatch.setattr(timed_module.subprocess, "Popen", capture_popen)
 
     def connect():
-        db = psycopg.connect(dsn, autocommit=True)
-        db.execute("SET ROLE service_role")
+        db = dedicated_session_database.connect()
         backend_pid.append(db.info.backend_pid)
         return db
 
@@ -92,7 +128,7 @@ def test_timed_worker_is_reaped_before_logout_and_validates_real_storage(tmp_pat
         )
         store = StoredRevisions(client)
         store.publish(fact, data, None)
-        lease = SessionBoundRead(connect)
+        lease = SessionBoundRead(connect, assume_service_role=True)
         actual = SessionBoundTimedRevisions(lease, store, timeout=10)
         snapshot = actual.get(claims, "timed.corpus", str(fact.revision))
         assert snapshot.data == data and snapshot.fact.revision == fact.revision
