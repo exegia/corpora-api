@@ -108,6 +108,9 @@ def test_private_draft_relations_are_hidden_and_legacy_relations_still_work():
                         "SELECT has_table_privilege("
                         "current_user,'public.corpus_commits','TRUNCATE')"
                     ).fetchone()[0]
+                    assert not db.execute(
+                        "SELECT has_table_privilege(current_user,'public.projects','TRUNCATE')"
+                    ).fetchone()[0]
                     assert (
                         db.execute(
                             "SELECT id FROM public.projects WHERE id=%s", (private_project,)
@@ -121,6 +124,12 @@ def test_private_draft_relations_are_hidden_and_legacy_relations_still_work():
                         ).fetchall()
                         == []
                     )
+                with (
+                    psycopg.connect(browser) as db,
+                    pytest.raises(psycopg.errors.InsufficientPrivilege),
+                ):
+                    db.execute("SELECT set_config('request.jwt.claim.sub',%s,true)", (subject,))
+                    db.execute("TRUNCATE public.projects")
                 with (
                     psycopg.connect(browser) as db,
                     pytest.raises(psycopg.errors.InsufficientPrivilege),

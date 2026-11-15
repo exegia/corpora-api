@@ -467,6 +467,8 @@ CREATE POLICY projects_ai_private ON public.projects AS RESTRICTIVE
         WHERE d.id = projects.corpus_document_id AND NOT d.ai_private))
     WITH CHECK (corpus_document_id IS NULL OR EXISTS (SELECT 1 FROM public.corpus_documents d
         WHERE d.id = projects.corpus_document_id AND NOT d.ai_private));
+-- TRUNCATE bypasses RLS and could erase projects referencing private drafts.
+REVOKE TRUNCATE ON public.projects FROM anon,authenticated;
 
 CREATE OR REPLACE FUNCTION public.corpora_ai_storage(p_action text, p_owner uuid, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
