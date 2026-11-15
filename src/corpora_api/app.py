@@ -77,6 +77,8 @@ from corpora_api.models import (
     LanguageRequest,
     PurposeReport,
     PurposeRequest,
+    ReferenceCreate,
+    ShortcodeCreate,
     SpellingRequest,
     SpellReport,
     StoragePublishRequest,
@@ -85,6 +87,7 @@ from corpora_api.models import (
     TFCheckReport,
     ValidationResponse,
 )
+from corpora_api.references import reference
 from corpora_api.storage import (
     CorpusStorage,
     StorageError,
@@ -123,6 +126,8 @@ def user_auth_path(path: str) -> bool:
         or path.startswith("/v1/storage/")
         or path == "/v1/ai/providers"
         or path == "/v1/ai/validate"
+        or path == "/v1/refs"
+        or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
         or path.startswith("/v1/ingest/")
     )
@@ -785,6 +790,59 @@ async def ai_validate(
 
     return await run_in_threadpool(
         validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope
+    )
+
+
+_REFERENCE_RESPONSES = {
+    **_STORAGE_DETAIL_RESPONSES,
+    400: {"model": ErrorResponse},
+    409: {"description": "Stale or ambiguous reference"},
+}
+
+
+@app.post("/v1/refs", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def create_reference(
+    body: ReferenceCreate, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await run_in_threadpool(reference, corpus_storage, user_id, **body.model_dump())
+
+
+@app.get("/v1/refs/resolve", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def resolve_reference(
+    user_id: Annotated[str, Depends(require_user)],
+    ref: str,
+    corpus: str | None = None,
+    lang: str | None = None,
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        reference, corpus_storage, user_id, ref=ref, corpus=corpus, lang=lang
+    )
+
+
+@app.get("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def get_reference_shortcode(
+    user_id: Annotated[str, Depends(require_user)],
+    ref: str,
+    corpus: str | None = None,
+    url_template: str | None = None,
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        reference,
+        corpus_storage,
+        user_id,
+        ref=ref,
+        corpus=corpus,
+        shortcode=True,
+        url_template=url_template,
+    )
+
+
+@app.post("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
+async def create_reference_shortcode(
+    body: ShortcodeCreate, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        reference, corpus_storage, user_id, **body.model_dump(), shortcode=True
     )
 
 

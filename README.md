@@ -42,6 +42,14 @@ Authenticated `/v1/ai/providers` lists the legacy provider guidance without
 accepting API keys. `/v1/ai/validate` validates a version-pinned scope against
 an accessible stored corpus or owned completed conversion, returning located
 findings and rejecting stale version or content hashes.
+Corpus detail, reference, and scope reads run the native loader in a separate
+short-lived process per request so its state cannot cross server worker threads.
+
+
+The authenticated `/v1/refs` endpoints create and resolve versioned
+Text-Fabric references and compact tokens from stored corpora. Resolution
+rejects stale versions and ambiguous compact corpus names; access follows the
+configured storage backend's rules.
 
 ## Local development
 
