@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
-from corpora_api.stored_revisions import Revision, Snapshot, StoredRevisions
+from corpora_api.stored_revisions import RegistryConflict, Revision, Snapshot, StoredRevisions
 from corpora_api.version_process import VersionProcessError, run_version
 
 
@@ -28,7 +28,7 @@ class StoredVersions:
             raise HTTPException(422, "Invalid expected revision") from error
         head = self.revisions.get(owner, filename)
         if head.fact.revision != expected_id:
-            raise HTTPException(409, "Stored revision is stale")
+            raise HTTPException(412, "Stored revision is stale")
         return head
 
     def _publish(self, head: Snapshot, revision: UUID, prepared: dict[str, Any]) -> dict[str, Any]:
@@ -45,7 +45,12 @@ class StoredVersions:
                 raise ValueError("invalid prepared archive")
         except (ValueError, KeyError, TypeError) as error:
             raise HTTPException(503, "Version worker returned invalid data") from error
-        self.revisions.publish(fact, data, str(head.fact.revision))
+        try:
+            self.revisions.publish(fact, data, str(head.fact.revision))
+        except RegistryConflict as error:
+            if error.reason == "stale":
+                raise HTTPException(412, "Stored revision is stale") from error
+            raise
         return {"revision": str(revision), "version": fact.version, "result": prepared["result"]}
 
     @staticmethod

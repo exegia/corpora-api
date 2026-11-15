@@ -14,13 +14,15 @@ import httpx
 import pytest
 import yaml
 from cfabric import Fabric as ContextFabric
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.testclient import TestClient
 from tf.fabric import Fabric
 
 from corpora_api.storage import SupabaseCorpusStorage
 from corpora_api.stored_history import stored_history
 from corpora_api.stored_import import StoredArchiveImporter
 from corpora_api.stored_revisions import StoredRevisions
+from corpora_api.stored_version_routes import stored_version_router
 from corpora_api.stored_versions import StoredVersions
 from corpora_api.validation import ValidationBridge
 
@@ -84,7 +86,7 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
             body = response.json()
             return body["user"]["id"], body["access_token"]
 
-        owner, _ = signup()
+        owner, owner_token = signup()
         other, other_token = signup()
         bucket = "legacy-test-" + uuid4().hex
         headers = {"apikey": service, "Authorization": "Bearer " + service}
@@ -155,7 +157,7 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
         assert edit["result"]["written_date"] == "2024-01-02"
         with pytest.raises(HTTPException) as stale:
             versions.edit(owner, "mini.corpus", str(initial.revision), "manifest", {"name": "Lost"})
-        assert stale.value.status_code == 409
+        assert stale.value.status_code == 412
         with pytest.raises(HTTPException) as foreign:
             versions.restore(other, "mini.corpus", edit["revision"], str(initial.revision))
         assert foreign.value.status_code == 404
@@ -175,7 +177,7 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
         monkeypatch.setattr(versions, "_prepare", race_prepare)
         with pytest.raises(HTTPException) as raced:
             versions.edit(owner, "mini.corpus", edit["revision"], "manifest", {"name": "Losing"})
-        assert raced.value.status_code == 409
+        assert raced.value.status_code == 412
         assert winner["version"] == "v1.2"
         node = versions.edit(
             owner, "mini.corpus", winner["revision"], "node", {"note": "reviewed"}, node=1
@@ -222,3 +224,64 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
                 "annotations.json" not in archive.namelist()
                 or not json.loads(archive.read("annotations.json"))["nodes"]
             )
+
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def simulated_identity(request: Request, call_next):
+            # Local Auth issued these tokens; this test substitutes token
+            # verification and exercises the owner-scoped service and storage.
+            credential = request.headers.get("Authorization", "")
+            if credential == "Bearer " + owner_token:
+                request.state.user_id = owner
+            elif credential == "Bearer " + other_token:
+                request.state.user_id = other
+            return await call_next(request)
+
+        app.include_router(stored_version_router(store))
+        with TestClient(app) as http:
+            path = "/v1/storage/mini.corpus"
+            owner_headers = {"Authorization": "Bearer " + owner_token}
+            other_headers = {"Authorization": "Bearer " + other_token}
+            assert http.get(path + "/versions").status_code == 401
+            assert http.get(path + "/versions", headers=other_headers).status_code == 404
+            history_response = http.get(path + "/versions", headers=owner_headers)
+            assert history_response.status_code == 200
+            original_etag = history_response.headers["ETag"]
+            assert original_etag == f'"{restored["revision"]}"'
+            assert (
+                http.patch(
+                    path + "/manifest", headers=owner_headers, json={"name": "No precondition"}
+                ).status_code
+                == 428
+            )
+            changed = http.patch(
+                path + "/manifest",
+                headers={**owner_headers, "If-Match": original_etag},
+                json={"name": "From route"},
+            )
+            assert changed.status_code == 200 and changed.json()["name"] == "From route"
+            assert changed.json()["written_date"] == "2024-01-02"
+            assert (
+                http.patch(
+                    path + "/manifest",
+                    headers={**owner_headers, "If-Match": original_etag},
+                    json={"name": "Stale"},
+                ).status_code
+                == 412
+            )
+            annotated = http.patch(
+                path + "/nodes/1",
+                headers={**owner_headers, "If-Match": changed.headers["ETag"]},
+                json={"note": "via route"},
+            )
+            assert annotated.status_code == 200 and annotated.json()["note"] == "via route"
+            recovered = http.post(
+                path + "/restore",
+                headers={**owner_headers, "If-Match": annotated.headers["ETag"]},
+                json={"revision": str(initial.revision)},
+            )
+            assert (
+                recovered.status_code == 200 and recovered.json()["manifest"]["name"] == "Original"
+            )
+            assert recovered.headers["ETag"] == f'"{recovered.json()["revision"]}"'
