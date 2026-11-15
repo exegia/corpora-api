@@ -447,6 +447,27 @@ CREATE POLICY corpus_documents_ai_private ON public.corpus_documents AS RESTRICT
 REVOKE TRUNCATE ON public.corpus_documents FROM anon,authenticated;
 GRANT SELECT,INSERT,UPDATE ON public.corpus_documents TO service_role;
 
+-- Legacy commit policies allow browser roles to read, insert and delete. A
+-- private document must not become reachable through its commit rows or be
+-- assigned foreign commits by a caller who knows its UUID. The subquery is
+-- intentionally subject to document RLS: hidden documents cannot match.
+CREATE POLICY corpus_commits_ai_private ON public.corpus_commits AS RESTRICTIVE
+    FOR ALL TO PUBLIC
+    USING (EXISTS (SELECT 1 FROM public.corpus_documents d
+        WHERE d.id = corpus_commits.document_id AND NOT d.ai_private))
+    WITH CHECK (EXISTS (SELECT 1 FROM public.corpus_documents d
+        WHERE d.id = corpus_commits.document_id AND NOT d.ai_private));
+REVOKE TRUNCATE ON public.corpus_commits FROM anon,authenticated;
+
+-- Legacy project policies also allow browser roles to attach corpus UUIDs.
+-- Only visible non-private documents may be referenced by browser operations.
+CREATE POLICY projects_ai_private ON public.projects AS RESTRICTIVE
+    FOR ALL TO PUBLIC
+    USING (corpus_document_id IS NULL OR EXISTS (SELECT 1 FROM public.corpus_documents d
+        WHERE d.id = projects.corpus_document_id AND NOT d.ai_private))
+    WITH CHECK (corpus_document_id IS NULL OR EXISTS (SELECT 1 FROM public.corpus_documents d
+        WHERE d.id = projects.corpus_document_id AND NOT d.ai_private));
+
 CREATE OR REPLACE FUNCTION public.corpora_ai_storage(p_action text, p_owner uuid, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
 DECLARE
