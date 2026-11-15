@@ -50,7 +50,7 @@ class PostgreSQLReferenceStore(SQLiteReferenceStore):
         actor, session_id = self._claims()
         session = db.execute(
             "SELECT id FROM auth.sessions WHERE id = %s AND user_id = %s "
-            "AND (not_after IS NULL OR not_after > clock_timestamp())",
+            "AND (not_after IS NULL OR not_after > clock_timestamp()) FOR SHARE",
             (session_id, actor),
         ).fetchone()
         if session is None:
