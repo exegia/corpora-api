@@ -103,7 +103,9 @@ def _main() -> None:
             "digest": prepared.digest,
             "result": prepared.result,
         }
-        encoded = json.dumps(response, ensure_ascii=False)
+        # YAML may decode dates into Python objects; match the existing corpus
+        # worker's JSON representation without changing the archive itself.
+        encoded = json.dumps(response, ensure_ascii=False, default=str)
         if len(encoded.encode("utf-8")) > MAX_WORKER_RESPONSE:
             raise VersionProcessError("too_large")
     except VersionProcessError as error:

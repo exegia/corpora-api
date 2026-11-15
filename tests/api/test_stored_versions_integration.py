@@ -66,7 +66,9 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
         for path in root.rglob("*"):
             if path.is_file():
                 archive.write(path, "corpora/" + path.relative_to(root).as_posix())
-        archive.writestr("manifest.yml", "name: Original\nversion: '1.0'\n")
+        archive.writestr(
+            "manifest.yml", "name: Original\nversion: '1.0'\nwritten_date: 2024-01-02\n"
+        )
         archive.writestr("toc.yml", "version: v1.0\ndocuments: []\n")
     data = output.getvalue()
     with httpx.Client(timeout=30) as client:
@@ -95,6 +97,7 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
             owner, "mini.corpus", str(initial.revision), "manifest", {"name": "Edited"}
         )
         assert edit["version"] == "v1.1"
+        assert edit["result"]["written_date"] == "2024-01-02"
         with pytest.raises(HTTPException) as stale:
             versions.edit(owner, "mini.corpus", str(initial.revision), "manifest", {"name": "Lost"})
         assert stale.value.status_code == 409
@@ -128,7 +131,9 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
         current = store.get(owner, "mini.corpus")
         assert str(current.fact.revision) == restored["revision"]
         with zipfile.ZipFile(io.BytesIO(current.data)) as archive:
-            assert yaml.safe_load(archive.read("manifest.yml"))["name"] == "Original"
+            manifest = yaml.safe_load(archive.read("manifest.yml"))
+            assert manifest["name"] == "Original"
+            assert manifest["written_date"].isoformat() == "2024-01-02"
             history = yaml.safe_load(archive.read("history.yml"))["versions"]
             assert [row["id"] for row in history] == ["v1.0", "v1.1", "v1.2", "v1.3", "v1.4"]
             assert history[2]["snapshot_revision"] == winner["revision"]
