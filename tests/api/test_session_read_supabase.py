@@ -139,3 +139,69 @@ def test_session_lock_covers_storage_download_and_logout(monkeypatch):
         with pytest.raises(HTTPException) as expired:
             lease.read(short_claims, slow_read)
         assert expired.value.status_code == 401
+
+
+def test_dedicated_login_assumes_service_role_only_in_transaction(monkeypatch):
+    psycopg = pytest.importorskip("psycopg")
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    admin_dsn = os.getenv("CORPORA_TEST_LOCAL_ROLE_ADMIN_DSN")
+    if not admin_dsn:
+        pytest.skip("requires explicit disposable local role administrator")
+    api_url = os.environ["API_URL"].rstrip("/")
+    assert urlparse(api_url).hostname in {"localhost", "127.0.0.1", "::1"}
+    assert conninfo_to_dict(admin_dsn).get("host") in {"localhost", "127.0.0.1", "::1"}
+    monkeypatch.setenv("SUPABASE_JWKS_URL", api_url + "/auth/v1/.well-known/jwks.json")
+    monkeypatch.setenv("SUPABASE_JWT_ISSUER", api_url + "/auth/v1")
+    anon = os.environ["ANON_KEY"]
+    response = httpx.post(
+        api_url + "/auth/v1/signup",
+        headers={"apikey": anon, "Authorization": "Bearer " + anon},
+        json={"email": f"{uuid4()}@example.org", "password": str(uuid4())},
+        timeout=15,
+    )
+    response.raise_for_status()
+    claims = verify_user_token(response.json()["access_token"])
+    role = "test_session_reader_" + uuid4().hex
+    password = uuid4().hex + uuid4().hex
+    with psycopg.connect(admin_dsn, autocommit=True, connect_timeout=5) as admin:
+        admin.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}"
+            ).format(sql.Identifier(role), sql.Literal(password))
+        )
+        try:
+            admin.execute(sql.SQL("GRANT service_role TO {}").format(sql.Identifier(role)))
+            dsn = make_conninfo(admin_dsn, user=role, password=password, connect_timeout="5")
+
+            def connect():
+                return psycopg.connect(dsn, autocommit=True)
+
+            with connect() as db:
+                assert db.execute("SELECT current_user").fetchone()[0] == role
+                assert not db.execute(
+                    "SELECT has_schema_privilege(current_user, 'auth', 'USAGE')"
+                ).fetchone()[0]
+            with pytest.raises(HTTPException) as denied:
+                SessionBoundRead(connect).read(claims, lambda _owner: b"unreachable")
+            assert denied.value.status_code == 503
+            observed = []
+
+            def download(owner, db):
+                assert owner == claims["sub"]
+                observed.append(db.execute("SELECT current_user").fetchone()[0])
+                return b"verified"
+
+            result = SessionBoundRead(connect, assume_service_role=True).read_with_connection(
+                claims, download
+            )
+            assert result == b"verified" and observed == ["service_role"]
+            with connect() as db:
+                with db.transaction():
+                    db.execute("SET LOCAL ROLE service_role")
+                    assert db.execute("SELECT current_user").fetchone()[0] == "service_role"
+                assert db.execute("SELECT current_user").fetchone()[0] == role
+        finally:
+            admin.execute(sql.SQL("REVOKE service_role FROM {}").format(sql.Identifier(role)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))

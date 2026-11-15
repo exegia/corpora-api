@@ -19,8 +19,9 @@ from corpora_api.storage_detail import MAX_STORED_ARCHIVE_BYTES
 class SessionBoundRead:
     """Keep the session row locked until the bounded object read finishes."""
 
-    def __init__(self, connect: Callable[[], Any]) -> None:
+    def __init__(self, connect: Callable[[], Any], *, assume_service_role: bool = False) -> None:
         self.connect = connect
+        self.assume_service_role = assume_service_role
 
     def read(self, verified_claims: Mapping[str, Any], download: Callable[[str], bytes]) -> bytes:
         return self.read_with_connection(verified_claims, lambda owner, _db: download(owner))
@@ -39,6 +40,8 @@ class SessionBoundRead:
         try:
             with self.connect() as db:
                 with db.transaction():
+                    if self.assume_service_role:
+                        db.execute("SET LOCAL ROLE service_role")
                     db.execute("SELECT pg_catalog.set_config('statement_timeout','5000',true)")
                     params = (str(owner), str(session), expiry)
                     db.execute("SELECT public.corpora_stored_lock_session(%s,%s,%s)", params)
