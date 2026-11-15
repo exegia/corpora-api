@@ -211,6 +211,40 @@ class StoredRevisions:
         next_cursor = HistoryCursor(entries[-1].created_at, entries[-1].revision) if more else None
         return HistoryPage(entries, next_cursor)
 
+    def facts(self, owner: str, filename: str, revisions: list[UUID]) -> dict[UUID, Revision]:
+        """Resolve at most 100 registry IDs without inferring object availability."""
+        owner, filename, _ = self._identity(owner, filename)
+        if not 1 <= len(revisions) <= 100 or any(not isinstance(v, UUID) for v in revisions):
+            raise HTTPException(422, "Invalid revision selection")
+        requested = set(revisions)
+        if len(requested) != len(revisions):
+            raise HTTPException(422, "Invalid revision selection")
+        value = self._rpc(
+            "corpora_stored_revision_facts",
+            {
+                "p_owner": owner,
+                "p_filename": filename,
+                "p_revisions": [str(revision) for revision in revisions],
+            },
+        )
+        try:
+            if not isinstance(value, list) or len(value) > len(requested):
+                raise ValueError("invalid revision facts")
+            result: dict[UUID, Revision] = {}
+            for item in value:
+                fact = Revision.model_validate(item)
+                if (
+                    str(fact.owner) != owner
+                    or fact.filename != filename
+                    or fact.revision not in requested
+                    or fact.revision in result
+                ):
+                    raise ValueError("invalid revision binding")
+                result[fact.revision] = fact
+            return result
+        except (ValidationError, ValueError, TypeError) as error:
+            raise HTTPException(503, "Stored revision registry returned invalid facts") from error
+
     def stage(self, fact: Revision, data: bytes) -> None:
         self._identity(str(fact.owner), fact.filename, str(fact.revision))
         if len(data) > MAX_STORED_ARCHIVE_BYTES:

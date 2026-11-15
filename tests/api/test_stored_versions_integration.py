@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from tf.fabric import Fabric
 
 from corpora_api.storage import SupabaseCorpusStorage
+from corpora_api.stored_history import stored_history
 from corpora_api.stored_import import StoredArchiveImporter
 from corpora_api.stored_revisions import StoredRevisions
 from corpora_api.stored_versions import StoredVersions
@@ -182,6 +183,29 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
         assert node["version"] == "v1.3"
         restored = versions.restore(owner, "mini.corpus", node["revision"], str(initial.revision))
         assert restored["version"] == "v1.4"
+        reconciled = stored_history(store, owner, "mini.corpus")
+        assert reconciled["head_revision"] == restored["revision"]
+        assert [row["registered_revision"] for row in reconciled["versions"]] == [
+            str(initial.revision),
+            edit["revision"],
+            winner["revision"],
+            node["revision"],
+            restored["revision"],
+        ]
+        assert store.facts(owner, "mini.corpus", [uuid4()]) == {}
+        with pytest.raises(HTTPException) as foreign_facts:
+            store.facts(other, "mini.corpus", [initial.revision])
+        assert foreign_facts.value.status_code == 404
+        browser_facts = client.post(
+            url + "/rest/v1/rpc/corpora_stored_revision_facts",
+            headers={"apikey": anon, "Authorization": "Bearer " + other_token},
+            json={
+                "p_owner": owner,
+                "p_filename": "mini.corpus",
+                "p_revisions": [str(initial.revision)],
+            },
+        )
+        assert browser_facts.status_code in (401, 403, 404)
         current = store.get(owner, "mini.corpus")
         assert str(current.fact.revision) == restored["revision"]
         with zipfile.ZipFile(io.BytesIO(current.data)) as archive:

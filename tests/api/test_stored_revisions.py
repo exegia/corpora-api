@@ -100,3 +100,32 @@ def test_history_rejects_foreign_duplicate_and_oversized_registry_pages(monkeypa
     with pytest.raises(HTTPException) as invalid:
         store.history(owner, "one.corpus", 101)
     assert invalid.value.status_code == 422
+
+
+def test_batch_facts_reject_foreign_or_unrequested_rows(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "http://example.test")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+    owner, wanted = str(uuid4()), uuid4()
+    row = {
+        "owner": owner,
+        "filename": "one.corpus",
+        "revision": str(wanted),
+        "digest": "sha256:" + "a" * 64,
+        "version": "v1.0",
+    }
+    response = [row]
+    store = StoredRevisions(
+        httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response)))
+    )
+    assert list(store.facts(owner, "one.corpus", [wanted])) == [wanted]
+    response[:] = [{**row, "owner": str(uuid4())}]
+    with pytest.raises(HTTPException) as foreign:
+        store.facts(owner, "one.corpus", [wanted])
+    assert foreign.value.status_code == 503
+    response[:] = [{**row, "revision": str(uuid4())}]
+    with pytest.raises(HTTPException) as unrequested:
+        store.facts(owner, "one.corpus", [wanted])
+    assert unrequested.value.status_code == 503
+    with pytest.raises(HTTPException) as duplicates:
+        store.facts(owner, "one.corpus", [wanted, wanted])
+    assert duplicates.value.status_code == 422
