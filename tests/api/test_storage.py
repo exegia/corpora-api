@@ -131,11 +131,11 @@ def test_ai_scope_validation_uses_owned_real_archive(
     root.mkdir()
     assert Fabric(locations=str(root), silent="deep").save(
         nodeFeatures={
-            "otype": {1: "word", 2: "word", 3: "book"},
+            "otype": {1: "word", 2: "word", 3: "book", 4: "book"},
             "book": {3: "Mini"},
             "text": {1: "A", 2: "B"},
         },
-        edgeFeatures={"oslots": {3: {1, 2}}},
+        edgeFeatures={"oslots": {3: {1}, 4: {2}}},
         metaData={
             "otype": {"valueType": "str"},
             "oslots": {"valueType": "str"},
@@ -161,6 +161,16 @@ def test_ai_scope_validation_uses_owned_real_archive(
         valid = client.post(
             "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
         )
+        finding = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "level": "section", "node_id": 4}},
+            headers=headers("alice-token"),
+        )
+        foreign_finding = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "level": "section", "node_id": 4}},
+            headers=headers("bob-token"),
+        )
         foreign = client.post(
             "/v1/ai/validate", json={"scope": scope}, headers=headers("bob-token")
         )
@@ -179,6 +189,17 @@ def test_ai_scope_validation_uses_owned_real_archive(
     assert providers.json()["gateway"] == "vercel-ai-gateway"
     assert valid.status_code == 200, valid.text
     assert valid.json() == {"corpus": "first", "version": "1.0", "checked_nodes": 1, "findings": []}
+    assert finding.status_code == 200, finding.text
+    located = finding.json()["findings"]
+    assert len(located) == 1
+    assert (located[0]["node_id"], located[0]["node_type"], located[0]["rule"]) == (
+        4,
+        "book",
+        "FEATURE_MISSING",
+    )
+    assert located[0]["severity"] == "error" and not located[0]["fixable"]
+    assert "book" in located[0]["message"]
+    assert foreign_finding.status_code == 404 and "findings" not in foreign_finding.json()
     assert (foreign.status_code, stale.status_code, unauthorized.status_code) == (404, 409, 401)
     assert stale.json()["code"] == "stale"
     for path, method in (("/v1/ai/providers", "get"), ("/v1/ai/validate", "post")):
