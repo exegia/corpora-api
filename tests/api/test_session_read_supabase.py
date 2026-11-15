@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from corpora_api.auth import verify_user_token
+from corpora_api.session_connection import SessionDatabase
 from corpora_api.session_read import SessionBoundRead
 
 pytestmark = pytest.mark.skipif(
@@ -144,7 +145,7 @@ def test_session_lock_covers_storage_download_and_logout(monkeypatch):
 def test_dedicated_login_assumes_service_role_only_in_transaction(monkeypatch):
     psycopg = pytest.importorskip("psycopg")
     from psycopg import sql
-    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from psycopg.conninfo import conninfo_to_dict
 
     admin_dsn = os.getenv("CORPORA_TEST_LOCAL_ROLE_ADMIN_DSN")
     if not admin_dsn:
@@ -173,10 +174,17 @@ def test_dedicated_login_assumes_service_role_only_in_transaction(monkeypatch):
         )
         try:
             admin.execute(sql.SQL("GRANT service_role TO {}").format(sql.Identifier(role)))
-            dsn = make_conninfo(admin_dsn, user=role, password=password, connect_timeout="5")
-
-            def connect():
-                return psycopg.connect(dsn, autocommit=True)
+            local = conninfo_to_dict(admin_dsn)
+            database = SessionDatabase(
+                host=local["host"],
+                hostaddr="127.0.0.1" if local["host"] == "localhost" else local["host"],
+                port=int(local.get("port", 5432)),
+                database=local["dbname"],
+                user=role,
+                password=password,
+                allow_insecure_local=True,
+            )
+            connect = database.connect
 
             with connect() as db:
                 assert db.execute("SELECT current_user").fetchone()[0] == role
