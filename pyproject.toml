@@ -5,10 +5,12 @@ description = "HTTP and MCP interfaces to corpora-core checks and converters"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "corpora-schema-types @ git+https://github.com/exegia/corpora-core.git@92eee59a02efb9566b01d97b5b5020223ef0a09b#subdirectory=generated/python",
+  "corpora-corpus-validate",
+  "corpora-schema-types",
   "fastapi>=0.115,<1",
   "fastmcp>=4,<5",
   "httpx>=0.28,<1",
+  "huggingface-hub>=1.0,<2",
   "pyjwt[crypto]>=2.10,<3",
   "python-multipart>=0.0.20,<1",
   "uvicorn[standard]>=0.34,<1",
@@ -36,3 +38,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.uv.sources]
+corpora-corpus-validate = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "packages/corpus-validate", rev = "4900929b7e7afcbc27d5bc0cbd87ed45e14acb7f" }
+corpora-schema-types = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "generated/python", rev = "4900929b7e7afcbc27d5bc0cbd87ed45e14acb7f" }

@@ -3,21 +3,32 @@
 import base64
 import binascii
 import json
+import logging
 import os
 import secrets
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 from corpora_schema_types import GraphValidationError
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastmcp import FastMCP
+from starlette.background import BackgroundTask
 
 from corpora_api.auth import UserAuthError, current_user_id, require_user, verify_user_token
+from corpora_api.conversion_artifacts import (
+    ConversionArtifactError,
+    ConversionArtifactInvalid,
+    ConversionArtifactNotFound,
+    ConversionArtifactNotReady,
+    ConversionArtifactStore,
+    ConversionArtifactTooLarge,
+)
 from corpora_api.conversions import (
     MAX_UPLOAD_BYTES,
     ConversionBridge,
@@ -50,6 +61,10 @@ from corpora_api.ingest_worker import (
     run_docling_worker,
 )
 from corpora_api.models import (
+    CorpusContentResponse,
+    CorpusIndexResponse,
+    CorpusNodeDetailResponse,
+    CorpusSectionPageResponse,
     DiagnosticReport,
     ErrorResponse,
     IngestCreated,
@@ -60,10 +75,20 @@ from corpora_api.models import (
     PurposeRequest,
     SpellingRequest,
     SpellReport,
+    StoragePublishRequest,
+    StoredCorpusResponse,
     StructureRequest,
     TFCheckReport,
     ValidationResponse,
 )
+from corpora_api.storage import (
+    CorpusStorage,
+    StorageError,
+    StorageNotConfigured,
+    StoredCorpusConflict,
+    StoredCorpusNotFound,
+)
+from corpora_api.storage_detail import read_stored_archive_view
 from corpora_api.tf_check import MAX_ARCHIVE_BYTES as MAX_TF_ARCHIVE_BYTES
 from corpora_api.tf_check import TFArchiveRejected, check_tf_archive
 from corpora_api.validation import (
@@ -80,13 +105,21 @@ bridge = CoreBridge()
 converter = ConversionBridge()
 validator = ValidationBridge()
 ingest_store = IngestStore()
+conversion_artifact_store = ConversionArtifactStore()
+corpus_storage = CorpusStorage()
+logger = logging.getLogger(__name__)
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
-USER_AUTH_PATHS = frozenset({"/v1/auth/me", "/v1/validate"})
+USER_AUTH_PATHS = frozenset({"/v1/auth/me", "/v1/validate", "/v1/storage"})
 
 
 def user_auth_path(path: str) -> bool:
-    return path in USER_AUTH_PATHS or path == "/v1/ingest" or path.startswith("/v1/ingest/")
+    return (
+        path in USER_AUTH_PATHS
+        or path.startswith("/v1/storage/")
+        or path == "/v1/ingest"
+        or path.startswith("/v1/ingest/")
+    )
 
 
 app = FastAPI(
@@ -111,7 +144,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -219,6 +252,61 @@ async def validation_protocol_error(
     return JSONResponse(status_code=502, content={"detail": "Core validation response failed"})
 
 
+@app.exception_handler(StorageNotConfigured)
+async def storage_not_configured(_request: Request, error: StorageNotConfigured) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactNotFound)
+async def conversion_artifact_not_found(
+    _request: Request, error: ConversionArtifactNotFound
+) -> JSONResponse:
+    return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactNotReady)
+async def conversion_artifact_not_ready(
+    _request: Request, error: ConversionArtifactNotReady
+) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactTooLarge)
+async def conversion_artifact_too_large(
+    _request: Request, error: ConversionArtifactTooLarge
+) -> JSONResponse:
+    return JSONResponse(status_code=413, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactInvalid)
+async def conversion_artifact_invalid(
+    _request: Request, error: ConversionArtifactInvalid
+) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(error)})
+
+
+@app.exception_handler(ConversionArtifactError)
+async def conversion_artifact_error(
+    _request: Request, error: ConversionArtifactError
+) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
+@app.exception_handler(StoredCorpusConflict)
+async def stored_corpus_conflict(_request: Request, error: StoredCorpusConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(error)})
+
+
+@app.exception_handler(StoredCorpusNotFound)
+async def stored_corpus_not_found(_request: Request, error: StoredCorpusNotFound) -> JSONResponse:
+    return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(StorageError)
+async def storage_error(_request: Request, error: StorageError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": str(error)})
+
+
 def structure(request: StructureRequest) -> dict[str, Any]:
     return bridge.run({"operation": "structure", **request.model_dump()})
 
@@ -243,8 +331,13 @@ def health() -> dict[str, str]:
 
 @app.get("/v1/capabilities", tags=["service"], summary="Deployment capabilities")
 def capabilities() -> dict[str, bool]:
-    """Match the legacy response shape; this API does not publish to the Hub."""
-    return {"auth_required": bool(os.getenv("CORPORA_API_TOKEN")), "hub_writable": False}
+    """Report whether a dedicated Hub write credential is configured."""
+    hub_writable = (
+        os.getenv("STORAGE_BACKEND", "huggingface") == "huggingface"
+        and os.getenv("HF_STORAGE_REPO_TYPE", "bucket") != "bucket"
+        and bool(os.getenv("HF_STORAGE_WRITE_TOKEN"))
+    )
+    return {"auth_required": bool(os.getenv("CORPORA_API_TOKEN")), "hub_writable": hub_writable}
 
 
 @app.get("/v1/auth/me", tags=["identity"], summary="Verified user identity")
@@ -640,6 +733,248 @@ async def download_ingestion(
         content=graph_bytes,
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+_STORAGE_RESPONSES = {
+    401: {"model": ErrorResponse},
+    404: {"model": ErrorResponse},
+    502: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+}
+
+_STORAGE_DETAIL_RESPONSES = {
+    401: {"model": ErrorResponse},
+    404: {"model": ErrorResponse},
+    413: {"model": ErrorResponse},
+    422: {"model": ErrorResponse},
+    502: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+}
+
+
+async def _read_stored_corpus_view(
+    filename: str, user_id: str, view: str, **params: Any
+) -> dict[str, Any]:
+    return await run_in_threadpool(
+        read_stored_archive_view, corpus_storage, user_id, filename, view, **params
+    )
+
+
+@app.get(
+    "/v1/storage/{filename}/manifest",
+    tags=["storage"],
+    summary="Read an owned corpus manifest",
+    description="Return the manifest from an archive in the verified caller's storage prefix.",
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_manifest(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await _read_stored_corpus_view(filename, user_id, "manifest")
+
+
+@app.get(
+    "/v1/storage/{filename}/index",
+    tags=["storage"],
+    summary="Read a corpus section index",
+    description="Return the table of contents, section hierarchy, and node-type counts.",
+    response_model=CorpusIndexResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_index(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> CorpusIndexResponse:
+    result = await _read_stored_corpus_view(filename, user_id, "index")
+    return CorpusIndexResponse.model_validate(result)
+
+
+@app.get(
+    "/v1/storage/{filename}/sections",
+    tags=["storage"],
+    summary="Read a page of corpus sections",
+    description=(
+        "List section children beneath a section reference, or top-level sections when parent "
+        "is omitted. Limits are capped at 200."
+    ),
+    response_model=CorpusSectionPageResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_sections(
+    filename: str,
+    user_id: Annotated[str, Depends(require_user)],
+    parent: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50),
+) -> CorpusSectionPageResponse:
+    result = await _read_stored_corpus_view(
+        filename, user_id, "sections", parent=parent, offset=offset, limit=limit
+    )
+    return CorpusSectionPageResponse.model_validate(result)
+
+
+@app.get(
+    "/v1/storage/{filename}/content",
+    tags=["storage"],
+    summary="Read paginated corpus content",
+    description=(
+        "Return passages under an optional section reference with stable Text-Fabric node IDs "
+        "and slot tokens. Limits are capped at 200."
+    ),
+    response_model=CorpusContentResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_content(
+    filename: str,
+    user_id: Annotated[str, Depends(require_user)],
+    ref: str | None = Query(default=None),
+    fmt: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50),
+) -> CorpusContentResponse:
+    result = await _read_stored_corpus_view(
+        filename, user_id, "content", ref=ref, fmt=fmt, offset=offset, limit=limit
+    )
+    return CorpusContentResponse.model_validate(result)
+
+
+@app.get(
+    "/v1/storage/{filename}/nodes/{node}",
+    tags=["storage"],
+    summary="Read one corpus graph node",
+    description=(
+        "Return a node's type, stable identity, slot span, text, features, annotation, and "
+        "containing context."
+    ),
+    response_model=CorpusNodeDetailResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_node(
+    filename: str, node: int, user_id: Annotated[str, Depends(require_user)]
+) -> CorpusNodeDetailResponse:
+    result = await _read_stored_corpus_view(filename, user_id, "node", node=node)
+    return CorpusNodeDetailResponse.model_validate(result)
+
+
+@app.get(
+    "/v1/storage",
+    tags=["storage"],
+    summary="List owned corpus archives",
+    response_model=list[StoredCorpusResponse],
+    responses=_STORAGE_RESPONSES,
+)
+async def list_stored_corpora(
+    user_id: Annotated[str, Depends(require_user)],
+) -> list[StoredCorpusResponse]:
+    stored = await run_in_threadpool(corpus_storage.list, user_id)
+    return [StoredCorpusResponse(**vars(item)) for item in stored]
+
+
+@app.get(
+    "/v1/storage/{filename}",
+    tags=["storage"],
+    summary="Inspect an owned corpus archive",
+    response_model=StoredCorpusResponse,
+    responses=_STORAGE_RESPONSES,
+)
+async def get_stored_corpus(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> StoredCorpusResponse:
+    stored = await run_in_threadpool(corpus_storage.info, user_id, filename)
+    return StoredCorpusResponse(**vars(stored))
+
+
+@app.post(
+    "/v1/storage",
+    status_code=201,
+    response_model=StoredCorpusResponse,
+    tags=["storage"],
+    summary="Publish a completed conversion archive",
+    description=(
+        "Publish a succeeded legacy /convert job owned by the caller. The API fetches its "
+        "private stored artifact by job ID and validates the archive before publishing. "
+        "Server filesystem paths are not accepted."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        415: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        504: {"model": ErrorResponse},
+    },
+)
+async def publish_stored_corpus(
+    payload: StoragePublishRequest,
+    user_id: Annotated[str, Depends(require_user)],
+) -> StoredCorpusResponse:
+    filename, archive = await run_in_threadpool(
+        conversion_artifact_store.fetch, user_id, str(payload.job_id), payload.filename
+    )
+    validation = await run_in_threadpool(validator.validate, filename, archive)
+    if validation.get("valid") is not True:
+        raise HTTPException(status_code=422, detail="Conversion artifact failed corpus validation")
+    stored = await run_in_threadpool(corpus_storage.upload, user_id, filename, archive)
+    logger.info(
+        "Published corpus archive",
+        extra={
+            "event": "storage.publish",
+            "user_id": user_id,
+            "job_id": str(payload.job_id),
+            "archive_name": stored.filename,
+            "repo_id": stored.repo_id,
+        },
+    )
+    return StoredCorpusResponse(**vars(stored))
+
+
+@app.delete(
+    "/v1/storage/{filename}",
+    status_code=204,
+    tags=["storage"],
+    summary="Delete a stored corpus archive",
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def delete_stored_corpus(
+    filename: str,
+    user_id: Annotated[str, Depends(require_user)],
+) -> None:
+    await run_in_threadpool(corpus_storage.delete, user_id, filename)
+    logger.info(
+        "Deleted corpus archive",
+        extra={"event": "storage.delete", "user_id": user_id, "archive_name": filename},
+    )
+
+
+@app.get(
+    "/v1/storage/{filename}/download",
+    tags=["storage"],
+    summary="Download an owned corpus archive",
+    responses={200: {"content": {"application/octet-stream": {}}}, **_STORAGE_RESPONSES},
+)
+async def download_stored_corpus(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> StreamingResponse:
+    upstream, name = await run_in_threadpool(corpus_storage.open_download, user_id, filename)
+    quoted_name = quote(name)
+    disposition = (
+        f'attachment; filename="{name}"'
+        if quoted_name == name
+        else f"attachment; filename*=utf-8''{quoted_name}"
+    )
+    return StreamingResponse(
+        upstream.iter_bytes(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": disposition},
+        background=BackgroundTask(upstream.close),
     )
 
 

@@ -1,6 +1,9 @@
 """Wire models reflecting the corpora-core JSON response contract."""
 
-from typing import Literal
+from __future__ import annotations
+
+from typing import Any, Literal
+from uuid import UUID
 
 from corpora_schema_types import TextRange
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -63,6 +66,107 @@ class ValidationResponse(BaseModel):
     source_verified: bool | None = Field(
         default=None, description="CTEI source fidelity is outside archive validation."
     )
+
+
+class StoredCorpusResponse(BaseModel):
+    """Legacy-compatible metadata for an owned corpus archive."""
+
+    filename: str
+    size_bytes: int | None
+    repo_id: str
+    url: str
+
+
+class CorpusNodeTypeStat(BaseModel):
+    type: str
+    count: int
+    avg_slots: float
+    is_slot: bool
+
+
+class CorpusIndexResponse(BaseModel):
+    toc: Any = None
+    sections: dict[str, Any] | None
+    node_types: list[CorpusNodeTypeStat]
+
+
+class CorpusSectionPageResponse(BaseModel):
+    parent: str | None
+    levels: list[str]
+    items: list[dict[str, Any]]
+    total: int
+    offset: int
+    limit: int
+    next_offset: int | None
+
+
+class CorpusPassage(BaseModel):
+    node: int
+    ref: str
+    text: str
+    tokens: list[dict[str, Any]]
+
+
+class CorpusContentResponse(BaseModel):
+    ref: str | None
+    format: str
+    passages: list[CorpusPassage]
+    total: int
+    offset: int
+    limit: int
+    next_offset: int | None
+
+
+class CorpusNodeContext(BaseModel):
+    node: int
+    otype: str
+    ref: str
+
+
+class CorpusNodeDetailResponse(BaseModel):
+    node: int
+    otype: str
+    is_slot: bool
+    slot_type: str
+    first_slot: int | None
+    last_slot: int | None
+    section_ref: str
+    text: str
+    features: dict[str, Any]
+    annotation: dict[str, Any] | None
+    node_types: list[str]
+    context: list[CorpusNodeContext]
+    occurrences: int
+    occurrences_in_section: int
+
+
+class StoragePublishRequest(BaseModel):
+    """Publish a completed legacy conversion by ID, never by server path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: UUID = Field(description="Succeeded legacy /convert job owned by the caller.")
+    filename: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional flat .corpus or .cusx name for the published archive.",
+    )
+
+    @model_validator(mode="after")
+    def validate_filename(self) -> StoragePublishRequest:
+        if self.filename is None:
+            return self
+        if (
+            not self.filename
+            or len(self.filename.encode("utf-8")) > 255
+            or self.filename in {".", ".."}
+            or "/" in self.filename
+            or "\\" in self.filename
+            or any(ord(char) < 32 for char in self.filename)
+            or not self.filename.endswith((".corpus", ".cusx"))
+        ):
+            raise ValueError("Provide a plain .corpus or .cusx filename")
+        return self
 
 
 class IngestCreated(BaseModel):
@@ -227,7 +331,7 @@ class SpellDiagnostic(CoreModel):
         return TextRange(start=self.start, end=self.end)
 
     @model_validator(mode="after")
-    def validate_text_range(self) -> "SpellDiagnostic":
+    def validate_text_range(self) -> SpellDiagnostic:
         self.text_range()
         return self
 
