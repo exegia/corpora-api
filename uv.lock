@@ -410,8 +410,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "corpora-corpus-validate", git = "https://github.com/exegia/corpora-core.git?subdirectory=packages%2Fcorpus-validate&rev=3ed169adacf6bd10c2cdd1ce602d1dc1c637e367" },
-    { name = "corpora-schema-types", git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=3ed169adacf6bd10c2cdd1ce602d1dc1c637e367" },
+    { name = "corpora-corpus-validate", git = "https://github.com/exegia/corpora-core.git?subdirectory=packages%2Fcorpus-validate&rev=45fa716c1b7f8d1ebd8ec49f2844bb72e13d5eb8" },
+    { name = "corpora-schema-types", git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=45fa716c1b7f8d1ebd8ec49f2844bb72e13d5eb8" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "fastmcp", specifier = ">=4,<5" },
     { name = "httpx", specifier = ">=0.28,<1" },
@@ -431,7 +431,7 @@ dev = [
 [[package]]
 name = "corpora-corpus-validate"
 version = "0.0.0"
-source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=packages%2Fcorpus-validate&rev=3ed169adacf6bd10c2cdd1ce602d1dc1c637e367#3ed169adacf6bd10c2cdd1ce602d1dc1c637e367" }
+source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=packages%2Fcorpus-validate&rev=45fa716c1b7f8d1ebd8ec49f2844bb72e13d5eb8#45fa716c1b7f8d1ebd8ec49f2844bb72e13d5eb8" }
 dependencies = [
     { name = "context-fabric" },
     { name = "lxml" },
@@ -442,7 +442,7 @@ dependencies = [
 [[package]]
 name = "corpora-schema-types"
 version = "1.0.0"
-source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=3ed169adacf6bd10c2cdd1ce602d1dc1c637e367#3ed169adacf6bd10c2cdd1ce602d1dc1c637e367" }
+source = { git = "https://github.com/exegia/corpora-core.git?subdirectory=generated%2Fpython&rev=45fa716c1b7f8d1ebd8ec49f2844bb72e13d5eb8#45fa716c1b7f8d1ebd8ec49f2844bb72e13d5eb8" }
 dependencies = [
     { name = "jsonschema", extra = ["format-nongpl"] },
     { name = "pydantic" },

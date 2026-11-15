@@ -9,11 +9,16 @@ from typing import Any
 
 import yaml
 from corpus_validate import ArchiveReadNotFound, ArchiveTooLarge, refcompact, refdisplay, tfref
-from corpus_validate.reference import reference_archive
 from fastapi import HTTPException
 
-from corpora_api.storage import StoredCorpusNotFound, archive_name
+from corpora_api.corpus_process import CorpusProcessError, run_corpus
+from corpora_api.storage import archive_name
 from corpora_api.storage_detail import download_stored_archive
+
+
+def _corpus_id(filename: str) -> str:
+    stem = PurePosixPath(filename).stem
+    return filename if stem.endswith((".corpus", ".cusx")) else stem
 
 
 def reference(
@@ -34,14 +39,11 @@ def reference(
         parsed = tfref.parse(ref) if ref is not None and not compact else None
         if corpus is None and compact:
             slug = refcompact.slug_of(ref)
-            candidates = list(dict.fromkeys([slug, slug.replace("-", "_")]))
-            found = []
-            for candidate in candidates:
-                try:
-                    storage.info(user_id, candidate)
-                except StoredCorpusNotFound:
-                    continue
-                found.append(candidate)
+            found = [
+                item.filename
+                for item in storage.list(user_id)
+                if refcompact.corpus_slug(_corpus_id(item.filename)) == slug
+            ]
             if len(found) > 1:
                 raise HTTPException(status_code=409, detail="Compact corpus name is ambiguous")
             corpus = found[0] if found else slug
@@ -53,12 +55,12 @@ def reference(
                 return refdisplay.shortcode_payload(parsed, ref, url_template=template)
             raise tfref.ParseError("Reference names no corpus; provide corpus explicitly")
         filename = archive_name(corpus)
-        stem = PurePosixPath(filename).stem
-        corpus_id = filename if stem.endswith((".corpus", ".cusx")) else stem
+        corpus_id = _corpus_id(filename)
         data = download_stored_archive(storage, user_id, filename)
-        return reference_archive(
+        return run_corpus(
             data,
-            corpus_id,
+            "reference",
+            corpus_id=corpus_id,
             node=node,
             end_node=end_node,
             ref=ref,
@@ -66,6 +68,15 @@ def reference(
             shortcode=shortcode,
             url_template=url_template or os.getenv("REFERENCE_URL_TEMPLATE"),
         )
+    except CorpusProcessError as error:
+        if error.kind == "version":
+            raise HTTPException(
+                status_code=409, detail={"message": str(error), **error.attributes}
+            ) from error
+        status = {"parse": 400, "not_found": 404, "too_large": 413, "unavailable": 503}.get(
+            error.kind, 422
+        )
+        raise HTTPException(status_code=status, detail=str(error)) from error
     except tfref.VersionMismatch as error:
         raise HTTPException(
             status_code=409,
