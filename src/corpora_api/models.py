@@ -144,12 +144,6 @@ class AIUnitRange(BaseModel):
     start: int
     end: int
 
-    @model_validator(mode="after")
-    def ordered(self) -> AIUnitRange:
-        if self.end < self.start:
-            raise ValueError("range end must be >= start")
-        return self
-
 
 class AINodeScope(BaseModel):
     corpus: str

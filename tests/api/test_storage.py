@@ -142,6 +142,12 @@ def test_ai_scope_validation_uses_owned_real_archive(
         assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
 
 
+def test_ai_range_accepts_node_ids_in_reading_order() -> None:
+    from corpora_api.models import AIUnitRange
+
+    assert AIUnitRange(start=5, end=4).model_dump() == {"start": 5, "end": 4}
+
+
 def test_list_info_and_streamed_download_are_owner_scoped(store: dict[str, bytes]) -> None:
     with TestClient(app) as client:
         listed = client.get("/v1/storage", headers=headers("alice-token"))
