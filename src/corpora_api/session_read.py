@@ -23,6 +23,11 @@ class SessionBoundRead:
         self.connect = connect
 
     def read(self, verified_claims: Mapping[str, Any], download: Callable[[str], bytes]) -> bytes:
+        return self.read_with_connection(verified_claims, lambda owner, _db: download(owner))
+
+    def read_with_connection(
+        self, verified_claims: Mapping[str, Any], download: Callable[[str, Any], bytes]
+    ) -> bytes:
         try:
             owner = UUID(verified_claims["sub"])
             session = UUID(verified_claims["session_id"])
@@ -34,9 +39,10 @@ class SessionBoundRead:
         try:
             with self.connect() as db:
                 with db.transaction():
+                    db.execute("SELECT pg_catalog.set_config('statement_timeout','5000',true)")
                     params = (str(owner), str(session), expiry)
                     db.execute("SELECT public.corpora_stored_lock_session(%s,%s,%s)", params)
-                    data = download(str(owner))
+                    data = download(str(owner), db)
                     if not isinstance(data, bytes):
                         raise HTTPException(503, "Archive reader returned invalid data")
                     if len(data) > MAX_STORED_ARCHIVE_BYTES:
@@ -77,4 +83,43 @@ class SessionBoundRevisions:
 
         # The snapshot is exposed only after the lease's final session check.
         self.lease.read(verified_claims, download)
+        return snapshots[0]
+
+
+class SessionBoundTimedRevisions:
+    """Resolve metadata in the locked transaction, then run a timed download."""
+
+    def __init__(self, lease: SessionBoundRead, config: Any, timeout: float = 30.0) -> None:
+        self.lease, self.config, self.timeout = lease, config, timeout
+
+    def get(
+        self, verified_claims: Mapping[str, Any], filename: str, revision: str | None = None
+    ) -> Any:
+        from corpora_api.timed_revision_read import TimedRevisionReader
+
+        snapshots: list[Any] = []
+
+        def download(owner: str, db: Any) -> bytes:
+            config = self.config
+
+            class TransactionRegistry:
+                def _rpc(self, name: str, payload: dict[str, object]) -> object:
+                    if name != "corpora_stored_get":
+                        raise ValueError("unexpected registry operation")
+                    row = db.execute(
+                        "SELECT public.corpora_stored_get(%s,%s,%s)",
+                        (payload["p_owner"], payload["p_filename"], payload["p_revision"]),
+                    ).fetchone()
+                    return row[0] if row else None
+
+                def _config(self) -> tuple[str, dict[str, str]]:
+                    return config._config()
+
+            snapshot = TimedRevisionReader(TransactionRegistry(), self.timeout).get(
+                owner, filename, revision
+            )
+            snapshots.append(snapshot)
+            return snapshot.data
+
+        self.lease.read_with_connection(verified_claims, download)
         return snapshots[0]

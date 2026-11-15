@@ -47,7 +47,7 @@ def test_oversized_read_fails_without_returning_bytes():
     claims = {"sub": str(uuid4()), "session_id": str(uuid4()), "exp": 2_000_000_000}
     with pytest.raises(HTTPException) as error:
         guard.read(claims, lambda _owner: b"x" * (MAX_STORED_ARCHIVE_BYTES + 1))
-    assert error.value.status_code == 413 and db.calls == 1
+    assert error.value.status_code == 413 and db.calls == 2
 
 
 def test_revision_reader_binds_owner_and_checks_session_after_read():
@@ -63,8 +63,8 @@ def test_revision_reader_binds_owner_and_checks_session_after_read():
         def transaction(self):
             return nullcontext()
 
-        def execute(self, *_args):
-            events.append("session")
+        def execute(self, query, *_args):
+            events.append("timeout" if "set_config" in query else "session")
 
     owner, selected = str(uuid4()), str(uuid4())
     snapshot = SimpleNamespace(data=b"verified")
@@ -77,4 +77,4 @@ def test_revision_reader_binds_owner_and_checks_session_after_read():
     guarded = SessionBoundRevisions(SessionBoundRead(Database), SimpleNamespace(get=get))
     claims = {"sub": owner, "session_id": str(uuid4()), "exp": 2_000_000_000}
     assert guarded.get(claims, "sample.corpus", selected) is snapshot
-    assert events == ["session", "download", "session"]
+    assert events == ["timeout", "session", "download", "session"]
