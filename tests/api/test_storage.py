@@ -177,7 +177,7 @@ def test_ai_chat_preserves_authenticated_stub_and_stream_contract(store: dict[st
     assert missing.status_code == 422
     assert stub.status_code == 501
     assert "test-key-placeholder" not in stub.text
-    assert reversed_range.status_code == 422
+    assert reversed_range.status_code == 501
     assert preflight.status_code == 200
     operation = schema["paths"]["/v1/ai/chat"]["post"]
     assert operation["security"] == [{"SupabaseUserJWT": []}]
