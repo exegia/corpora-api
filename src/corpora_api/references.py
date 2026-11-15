@@ -18,7 +18,7 @@ from corpora_api.storage_detail import download_stored_archive
 
 def _corpus_id(filename: str) -> str:
     stem = PurePosixPath(filename).stem
-    return filename if stem.endswith((".corpus", ".cusx")) else stem
+    return filename if filename.endswith(".cusx") or stem.endswith((".corpus", ".cusx")) else stem
 
 
 def reference(
