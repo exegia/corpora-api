@@ -1,14 +1,18 @@
-"""Opt-in integration against a newly spawned, in-memory loopback database.
+"""Opt-in integration against an isolated loopback database.
 
 Set CORPORA_PGLITE_ROOT to a directory containing installed, pinned
 @electric-sql/pglite and @electric-sql/pglite-socket packages. This is a
 single-connection fixture and does not establish PostgreSQL concurrency safety.
+Alternatively set CORPORA_TEST_POSTGRES_BIN to run against a new PostgreSQL
+cluster, and CORPORA_TEST_POSTGRES_SHARE if its binaries need a share path.
 """
 
 from __future__ import annotations
 
 import os
 import select
+import shlex
+import socket
 import subprocess
 from pathlib import Path
 from uuid import uuid4
@@ -51,32 +55,66 @@ from corpora_api.linking_runtime import (
 )
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("CORPORA_PGLITE_ROOT"), reason="set CORPORA_PGLITE_ROOT for isolated PG fixture"
+    not (os.getenv("CORPORA_PGLITE_ROOT") or os.getenv("CORPORA_TEST_POSTGRES_BIN")),
+    reason="set CORPORA_PGLITE_ROOT or CORPORA_TEST_POSTGRES_BIN for isolated PG fixture",
 )
 
 
-def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
+def test_reference_route_checks_session_space_grants_and_history(monkeypatch, tmp_path):
     fixture_dir = Path(__file__).resolve().parents[1] / "fixtures"
-    process = subprocess.Popen(
-        ["node", str(fixture_dir / "linking_pglite_server.mjs")],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    binaries = os.getenv("CORPORA_TEST_POSTGRES_BIN")
+    process = None
+    cluster = tmp_path / "data"
+    if binaries:
+        init = [str(Path(binaries) / "initdb"), "-D", str(cluster), "-U", "postgres", "-A", "trust"]
+        if share := os.getenv("CORPORA_TEST_POSTGRES_SHARE"):
+            init.extend(["-L", share])
+        subprocess.run(init, check=True, capture_output=True, text=True, timeout=60)
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        options = shlex.join(["-h", "127.0.0.1", "-p", str(port)])
+        subprocess.run(
+            [
+                str(Path(binaries) / "pg_ctl"),
+                "-D",
+                str(cluster),
+                "-l",
+                str(tmp_path / "pg.log"),
+                "-o",
+                options,
+                "start",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    else:
+        process = subprocess.Popen(
+            ["node", str(fixture_dir / "linking_pglite_server.mjs")],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
     try:
-        assert process.stdout is not None
-        assert select.select([process.stdout], [], [], 30)[0], "isolated PostgreSQL did not start"
-        port = int(process.stdout.readline().strip())
-        assert 1 <= port <= 65535 and process.poll() is None
+        if process:
+            assert process.stdout is not None
+            assert select.select([process.stdout], [], [], 30)[0], (
+                "isolated PostgreSQL did not start"
+            )
+            port = int(process.stdout.readline().strip())
+            assert 1 <= port <= 65535 and process.poll() is None
         dsn = f"host=127.0.0.1 port={port} dbname=postgres user=postgres sslmode=disable"
         # PGlite multiplexes sessions over one connection; prepared statements
         # persist between clients there, unlike separate PostgreSQL sessions.
-        original_connect = psycopg.connect
+        if process:
+            original_connect = psycopg.connect
 
-        def connect(*args, **kwargs):
-            return original_connect(*args, prepare_threshold=None, **kwargs)
+            def connect(*args, **kwargs):
+                return original_connect(*args, prepare_threshold=None, **kwargs)
 
-        monkeypatch.setattr(psycopg, "connect", connect)
+            monkeypatch.setattr(psycopg, "connect", connect)
         with psycopg.connect(dsn, autocommit=True) as db:
             db.execute(
                 "CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS"
@@ -685,5 +723,14 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             assert client.get(f"{path}/{reference_id}", headers=a).status_code == 401
             assert client.get(f"{discovery_path}/{discovery_id}", headers=a).status_code == 401
     finally:
-        process.terminate()
-        process.wait(timeout=10)
+        if process:
+            process.terminate()
+            process.wait(timeout=10)
+        else:
+            subprocess.run(
+                [str(Path(binaries) / "pg_ctl"), "-D", str(cluster), "-m", "fast", "stop"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
