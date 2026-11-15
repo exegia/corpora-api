@@ -199,9 +199,15 @@ def render_cusx_jump(entry: SnapshotEntry) -> bytes:
     ):
         raise ValueError("jmp rendering requires one pinned source text selection")
     target = reference.target
-    segments = (target.package_id, target.revision, target.document_id)
+    segments = (
+        target.work_id,
+        target.edition_id,
+        target.package_id,
+        target.revision,
+        target.document_id,
+    )
     if any(segment is None or segment in ("", ".", "..") for segment in segments):
-        raise ValueError("destination requires a concrete package/revision/document")
+        raise ValueError("destination requires a concrete work/edition/package/revision/document")
     href = "x-corpora:/" + "/".join(quote(segment or "", safe="") for segment in segments)
     if target.locators:
         if len(target.locators) != 1 or not isinstance(target.locators[0], StructuralLocator):

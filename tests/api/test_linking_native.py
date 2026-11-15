@@ -2,9 +2,17 @@
 
 import io
 import zipfile
+from xml.etree import ElementTree
 
 import pytest
-from corpora_linking import Endpoint, StructuralLocator, TextLocator, TextSnapshot
+from corpora_linking import (
+    Endpoint,
+    Provenance,
+    Reference,
+    StructuralLocator,
+    TextLocator,
+    TextSnapshot,
+)
 
 from corpora_api.linking_cfi import (
     _dom,
@@ -22,6 +30,54 @@ from corpora_api.linking_cusx import (
 )
 from corpora_api.linking_html import extract_html_references_input, retrieve_html_selection
 from corpora_api.linking_pdf import sha256_revision
+from corpora_api.linking_publication import SnapshotEntry, render_cusx_jump
+
+
+def test_cusx_jump_encodes_complete_destination_identity():
+    source = Endpoint(
+        work_id="source",
+        edition_id="source-edition",
+        package_id="source-package",
+        revision="1",
+        document_id="source-document",
+        locators=(TextLocator(stream_id="body", start=0, end=4, exact="text"),),
+    )
+    target = Endpoint(
+        work_id="work/a",
+        edition_id="edition one",
+        package_id="shared",
+        revision="v1",
+        document_id="chapter",
+        locators=(StructuralLocator(anchor_id="verse/1"),),
+    )
+    reference = Reference(
+        source=source,
+        target=target,
+        provenance=Provenance(origin="manual", agent_id="user", method="fixture"),
+        review="approved",
+        publication="published",
+        resolution="resolved",
+    )
+
+    def href(value):
+        return ElementTree.fromstring(render_cusx_jump(SnapshotEntry(reference=value))).get(
+            "link-href"
+        )
+
+    first = href(reference)
+    assert first == "x-corpora:/work%2Fa/edition%20one/shared/v1/chapter#verse%2F1"
+    other_work = reference.model_copy(update={"target": target.model_copy(update={"work_id": "b"})})
+    other_edition = reference.model_copy(
+        update={"target": target.model_copy(update={"edition_id": "b"})}
+    )
+    assert href(other_work) != first
+    assert href(other_edition) != first
+    with pytest.raises(ValueError, match="edition/package/revision/document"):
+        href(
+            reference.model_copy(
+                update={"target": target.model_copy(update={"edition_id": None, "locators": ()})}
+            )
+        )
 
 
 def test_html_native_selectors_resolve_exact_text_and_reject_changed_asset():

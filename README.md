@@ -69,7 +69,9 @@ append-only history; selecting a work creates a pending working reference.
 Imported snapshot authority, version and provenance are unverified external claims;
 the local revision separately records the verified importing actor.
 Exchange routes inspect and import publication snapshots, export C-USX, and register
-conversion events without changing the existing `/convert` service. Scholarly
+conversion events without changing the existing `/convert` service. Exported
+`x-corpora:` jump targets encode work, edition, package, revision and document as
+separately escaped path segments, followed by an optional escaped anchor. Scholarly
 conversion events additionally require a trusted recognizer injected into the
 server runtime; environment configuration alone does not supply one.
 An optional isolated PostgreSQL authorization test starts a fresh in-memory

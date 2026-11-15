@@ -378,7 +378,9 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             jumps = [element for element in xml.iter("char") if element.get("style") == "jmp"]
             assert "".join(element.text for element in jumps) == quote
             assert {element.get("link-id") for element in jumps} == {f"urn:uuid:{cusx_id}"}
-            assert all(element.get("link-href", "").endswith("#verse") for element in jumps)
+            assert {element.get("link-href") for element in jumps} == {
+                "x-corpora:/cusx/e/p/1/doc#verse"
+            }
             assert (
                 client.get(f"{path}/{cusx_id}", headers=a).json()["history"][-1]["reference"][
                     "publication"
