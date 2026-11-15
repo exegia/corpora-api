@@ -140,6 +140,72 @@ class CorpusNodeDetailResponse(BaseModel):
     occurrences_in_section: int
 
 
+class AIUnitRange(BaseModel):
+    start: int
+    end: int
+
+
+class AINodeScope(BaseModel):
+    corpus: str
+    level: Literal["word", "passage", "section", "document", "corpus"]
+    node_id: int | None = None
+    node_type: str | None = None
+    label: str
+    unit_range: AIUnitRange | None = None
+    version: str
+    content_hash: str | None = None
+
+    @model_validator(mode="after")
+    def require_node(self) -> AINodeScope:
+        if self.level != "corpus" and self.node_id is None:
+            raise ValueError(f"{self.level}-level scope requires node_id")
+        return self
+
+
+class AIScopeRequest(BaseModel):
+    scope: AINodeScope
+
+
+class AIFinding(BaseModel):
+    node_id: int
+    node_type: str
+    rule: str
+    severity: Literal["error", "warn", "info"]
+    message: str
+    consequence: str
+    fixable: bool
+    unfixable_reason: str | None = None
+    suggestion_id: str | None = None
+
+
+class AIValidationResponse(BaseModel):
+    corpus: str
+    version: str
+    checked_nodes: int
+    findings: list[AIFinding]
+
+
+class AIProvider(BaseModel):
+    id: str
+    label: str
+    models: list[str]
+
+
+class AIProvidersResponse(BaseModel):
+    providers: list[AIProvider]
+
+
+class ReferenceCreate(BaseModel):
+    corpus: str
+    node: int = Field(ge=1)
+    end_node: int | None = Field(default=None, ge=1)
+    lang: str | None = None
+
+
+class ShortcodeCreate(ReferenceCreate):
+    url_template: str | None = None
+
+
 class StoragePublishRequest(BaseModel):
     """Publish a completed legacy conversion by ID, never by server path."""
 
