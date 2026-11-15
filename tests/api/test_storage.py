@@ -326,6 +326,7 @@ def test_references_use_real_corpus_and_enforce_owner(
                 archive.write(path, f"corpora/{path.relative_to(root)}")
     store[f"{ALICE}/first.corpus"] = stream.getvalue()
     store[f"{ALICE}/first.cusx.corpus"] = stream.getvalue()
+    store[f"{ALICE}/Mixed_Case.corpus"] = stream.getvalue()
     with TestClient(app) as client:
         created = client.post(
             "/v1/refs",
@@ -341,6 +342,16 @@ def test_references_use_real_corpus_and_enforce_owner(
         )
         compact = client.get(
             "/v1/refs/resolve", params={"ref": body["token"]}, headers=headers("alice-token")
+        )
+        mixed = client.post(
+            "/v1/refs",
+            json={"corpus": "Mixed_Case", "node": 1},
+            headers=headers("alice-token"),
+        )
+        mixed_resolved = client.get(
+            "/v1/refs/resolve",
+            params={"ref": mixed.json()["token"]},
+            headers=headers("alice-token"),
         )
         double_suffix = client.post(
             "/v1/refs",
@@ -379,6 +390,8 @@ def test_references_use_real_corpus_and_enforce_owner(
         unauth = client.post("/v1/refs", json={"corpus": "first", "node": 1})
         schema = client.get("/v1/openapi.json").json()
     assert resolved.json()["nodes"] == compact.json()["nodes"] == [1, 2]
+    assert mixed_resolved.status_code == 200
+    assert mixed_resolved.json()["ref"] == mixed.json()["ref"]
     assert double_suffix.json()["ref"] == "first.cusx.corpus@2.3/Mini!word1"
     assert double_resolved.status_code == 200
     assert from_ref.json()["ref"] == body["ref"]
