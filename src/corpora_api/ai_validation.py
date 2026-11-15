@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -16,6 +17,10 @@ def validate_scope(
     storage: Any, jobs: Any, owner: str, request: AINodeScope
 ) -> dict[str, Any] | JSONResponse:
     if request.corpus.startswith("job:"):
+        try:
+            UUID(request.corpus[4:])
+        except ValueError as error:
+            raise HTTPException(422, "Expected job:<UUID>") from error
         _, data = jobs.fetch(owner, request.corpus[4:])
     else:
         data = download_stored_archive(storage, owner, request.corpus)
