@@ -10,7 +10,7 @@ from typing import Literal
 from uuid import UUID
 
 import psycopg
-from corpora_linking import Endpoint, Provenance, Reference
+from corpora_linking import Endpoint, Provenance, Reference, ScholarlyCitationMention
 from corpora_linking.models import NonEmpty, Value
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import Field, ValidationError
@@ -51,6 +51,17 @@ class BrowserSelectionRequest(Value):
     start_utf16: int = Field(ge=0, strict=True)
     end_path: tuple[int, ...]
     end_utf16: int = Field(ge=0, strict=True)
+
+
+class DiscoveryRequest(Value):
+    source: Endpoint
+    mention: ScholarlyCitationMention
+    event_id: UUID
+    reason: NonEmpty
+
+
+class WorkChoice(Decision):
+    work_id: NonEmpty | None = None
 
 
 @lru_cache(maxsize=1)
@@ -228,3 +239,72 @@ def browser_selection(space_id: UUID, body: BrowserSelectionRequest, request: Re
                 end_utf16=body.end_utf16,
             )
         return {"endpoint": endpoint, "text": runtime.resolver(store).retrieve(endpoint)}
+
+
+@router.post("/{space_id}/discoveries")
+def register_discovery(space_id: UUID, body: DiscoveryRequest, request: Request):
+    with _operation(request, space_id) as (runtime, store):
+        from corpora_linking import SnapshotCatalog, identify_scholarly_citation
+
+        from .linking_postgres_discoveries import PostgreSQLDiscoveryStore
+
+        snapshot = runtime.snapshot(store, body.source)
+        discovery = identify_scholarly_citation(
+            snapshot,
+            body.mention,
+            SnapshotCatalog(entries=runtime.inventory.catalog),
+            provenance=Provenance(
+                origin="automatic", agent_id=store.actor_id, method="submitted-scholarly-span"
+            ),
+        )
+        return PostgreSQLDiscoveryStore(store).register(
+            discovery, snapshot, event_id=body.event_id, reason=body.reason
+        )
+
+
+@router.get("/{space_id}/discoveries/{discovery_id}")
+def discovery_history(space_id: UUID, discovery_id: UUID, request: Request):
+    with _operation(request, space_id) as (_, store):
+        from .linking_postgres_discoveries import PostgreSQLDiscoveryStore
+
+        return {"history": PostgreSQLDiscoveryStore(store).history(discovery_id)}
+
+
+@router.post("/{space_id}/discoveries/{discovery_id}/{action}")
+def discovery_decision(
+    space_id: UUID,
+    discovery_id: UUID,
+    action: Literal["identify", "reject", "select"],
+    body: WorkChoice,
+    request: Request,
+):
+    with _operation(request, space_id) as (runtime, store):
+        from corpora_linking import SnapshotCatalog
+
+        from .linking_postgres_discoveries import PostgreSQLDiscoveryStore
+
+        discoveries = PostgreSQLDiscoveryStore(store)
+        if action == "select":
+            if body.work_id is None:
+                raise HTTPException(422, "Choose an identified work")
+            return discoveries.select_work(
+                discovery_id,
+                body.work_id,
+                expected_version=body.expected_version,
+                reason=body.reason,
+            )
+        if action == "reject":
+            return discoveries.reject(
+                discovery_id, expected_version=body.expected_version, reason=body.reason
+            )
+        discovery = discoveries.get(discovery_id)
+        if discovery is None:
+            raise HTTPException(404, "Citation discovery not found")
+        snapshot = runtime.snapshot(store, discovery.source.model_copy(update={"locators": ()}))
+        return discoveries.refresh_identification(
+            discovery_id,
+            snapshot,
+            SnapshotCatalog(entries=runtime.inventory.catalog),
+            expected_version=body.expected_version,
+            reason=body.reason,
+        )

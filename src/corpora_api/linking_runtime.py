@@ -91,6 +91,17 @@ class LinkingRuntime:
     def store(self, space_id: UUID, token: str) -> PostgreSQLReferenceStore:
         return PostgreSQLReferenceStore(self.dsn, space_id=space_id, token=token)
 
+    def snapshot(self, store: PostgreSQLReferenceStore, source: Endpoint) -> TextSnapshot:
+        with psycopg.connect(store.dsn) as db:
+            actor = store._authorize(db, None)
+            store._check_access(db, actor, source)
+            matches = [
+                snapshot for snapshot in self.inventory.snapshots if snapshot.endpoint == source
+            ]
+            if len(matches) != 1:
+                raise ValueError("source snapshot unavailable or ambiguous")
+            return matches[0]
+
     def resolver(self, store: PostgreSQLReferenceStore) -> "AuthorizedInventoryResolver":
         return AuthorizedInventoryResolver(store, self.inventory)
 

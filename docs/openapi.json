@@ -1386,6 +1386,35 @@
         "title": "DiagnosticReport",
         "type": "object"
       },
+      "DiscoveryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "mention": {
+            "$ref": "#/components/schemas/ScholarlyCitationMention"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Endpoint"
+          }
+        },
+        "required": [
+          "source",
+          "mention",
+          "event_id",
+          "reason"
+        ],
+        "title": "DiscoveryRequest",
+        "type": "object"
+      },
       "Endpoint": {
         "additionalProperties": false,
         "properties": {
@@ -2563,6 +2592,36 @@
         "title": "SaveLink",
         "type": "object"
       },
+      "ScholarlyCitationMention": {
+        "additionalProperties": false,
+        "description": "Recognizer-supplied exact span and bibliographic lookup text.\n\nA passage request is optional and retains the recognizer's explicit scheme.\nA name or page number is never an authority for an exact target selection.",
+        "properties": {
+          "cited_name": {
+            "minLength": 1,
+            "title": "Cited Name",
+            "type": "string"
+          },
+          "passage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CitationLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection": {
+            "$ref": "#/components/schemas/TextLocator"
+          }
+        },
+        "required": [
+          "selection",
+          "cited_name"
+        ],
+        "title": "ScholarlyCitationMention",
+        "type": "object"
+      },
       "ShortcodeCreate": {
         "properties": {
           "corpus": {
@@ -3284,6 +3343,44 @@
           "checks"
         ],
         "title": "ValidationResponse",
+        "type": "object"
+      },
+      "WorkChoice": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_unresolved_target": {
+            "default": false,
+            "title": "Allow Unresolved Target",
+            "type": "boolean"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "work_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Id"
+          }
+        },
+        "required": [
+          "expected_version",
+          "reason"
+        ],
+        "title": "WorkChoice",
         "type": "object"
       }
     },
@@ -4753,6 +4850,207 @@
           }
         ],
         "summary": "Browser Selection",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/discoveries": {
+      "post": {
+        "operationId": "register_discovery_v1_linking__space_id__discoveries_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Register Discovery",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/discoveries/{discovery_id}": {
+      "get": {
+        "operationId": "discovery_history_v1_linking__space_id__discoveries__discovery_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discovery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Discovery Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Discovery History",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/discoveries/{discovery_id}/{action}": {
+      "post": {
+        "operationId": "discovery_decision_v1_linking__space_id__discoveries__discovery_id___action__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discovery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Discovery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "enum": [
+                "identify",
+                "reject",
+                "select"
+              ],
+              "title": "Action",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkChoice"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Discovery Decision",
         "tags": [
           "linking"
         ]

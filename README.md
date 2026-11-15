@@ -62,6 +62,8 @@ The same authority can retrieve exact selections, map browser DOM ranges, export
 audited reference snapshots, and record publication or withdrawal decisions.
 Publication events record an acknowledgment or withdrawal intent; they do not
 assert that an artifact was delivered or removed remotely.
+Discovery routes retain submitted citation evidence and reviewer decisions as
+append-only history; selecting a work creates a pending working reference.
 An optional isolated PostgreSQL authorization test starts a fresh in-memory
 PGlite server on a loopback port. It does not connect to or modify a Supabase
 project, and its single connection does not establish concurrency guarantees:

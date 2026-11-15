@@ -15,7 +15,15 @@ from uuid import uuid4
 
 import psycopg
 import pytest
-from corpora_linking import CatalogEntry, Endpoint, Provenance, Reference, TextLocator, TextSnapshot
+from corpora_linking import (
+    CatalogEntry,
+    Endpoint,
+    Provenance,
+    Reference,
+    ScholarlyCitationMention,
+    TextLocator,
+    TextSnapshot,
+)
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
@@ -102,7 +110,7 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
         )
         scopes = {
             endpoint_scope(e)[0]: endpoint_scope(e)[1]
-            for e in evidence_endpoints((reference, html_endpoint))
+            for e in evidence_endpoints((reference, html_endpoint, Endpoint(work_id="other")))
         }
         with psycopg.connect(dsn) as db:
             db.execute("INSERT INTO auth.users VALUES (%s),(%s)", (creator, reviewer))
@@ -259,6 +267,98 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 headers=a,
             )
             assert reopened.status_code == 200 and reopened.json()["version"] == 6
+            discovery_path = f"/v1/linking/{space}/discoveries"
+            mention = ScholarlyCitationMention(
+                selection=TextLocator(
+                    stream_id="body", start=0, end=5, exact="Quote", suffix=" tail"
+                ),
+                cited_name="Quote",
+            )
+            discovery_body = {
+                "source": base.model_dump(mode="json"),
+                "mention": mention.model_dump(mode="json"),
+                "event_id": str(uuid4()),
+                "reason": "discovered",
+            }
+            registered = client.post(discovery_path, json=discovery_body, headers=a)
+            assert registered.status_code == 200, registered.text
+            assert registered.json()["discovery"]["work_identification"]["status"] == "unresolved"
+            assert (
+                client.post(discovery_path, json=discovery_body, headers=a).json()
+                == registered.json()
+            )
+            changed = client.post(
+                discovery_path,
+                json={
+                    **discovery_body,
+                    "mention": {**discovery_body["mention"], "cited_name": "Other"},
+                },
+                headers=a,
+            )
+            assert changed.status_code == 409
+            discovery_id = registered.json()["discovery"]["id"]
+            updated_inventory = inventory.model_copy(
+                update={
+                    "catalog": (
+                        CatalogEntry(work_id="essay", names=("Essay",)),
+                        CatalogEntry(work_id="book", names=("Quote",)),
+                        CatalogEntry(work_id="other", names=("Quote",)),
+                    )
+                }
+            )
+            app_module.app.state.linking_runtime = LinkingRuntime(
+                dsn=server_dsn, inventory=updated_inventory
+            )
+            identified = client.post(
+                f"{discovery_path}/{discovery_id}/identify",
+                json={"expected_version": 1, "reason": "catalog"},
+                headers=a,
+            )
+            assert identified.status_code == 200 and identified.json()["version"] == 2, (
+                identified.text
+            )
+            choose = {"expected_version": 2, "reason": "review", "work_id": "book"}
+            assert (
+                client.post(
+                    f"{discovery_path}/{discovery_id}/select", json=choose, headers=a
+                ).status_code
+                == 403
+            )
+            chosen = client.post(f"{discovery_path}/{discovery_id}/select", json=choose, headers=b)
+            assert chosen.status_code == 200 and chosen.json()["version"] == 3, chosen.text
+            assert (
+                client.post(
+                    f"{discovery_path}/{discovery_id}/select", json=choose, headers=b
+                ).status_code
+                == 409
+            )
+            discovery_history = client.get(f"{discovery_path}/{discovery_id}", headers=a)
+            assert [row["action"] for row in discovery_history.json()["history"]] == [
+                "register",
+                "identify",
+                "select",
+            ]
+            selected_id = chosen.json()["selected_reference_id"]
+            assert client.get(f"{path}/{selected_id}", headers=a).status_code == 200
+            second = client.post(
+                discovery_path, json={**discovery_body, "event_id": str(uuid4())}, headers=a
+            )
+            assert second.status_code == 200, second.text
+            second_id = second.json()["discovery"]["id"]
+            rejected = client.post(
+                f"{discovery_path}/{second_id}/reject",
+                json={"expected_version": 1, "reason": "reject"},
+                headers=b,
+            )
+            assert rejected.status_code == 200 and rejected.json()["version"] == 2
+            assert (
+                client.post(
+                    f"{discovery_path}/{second_id}/select",
+                    json={"expected_version": 2, "reason": "invalid", "work_id": "book"},
+                    headers=b,
+                ).status_code
+                == 422
+            )
             with psycopg.connect(dsn) as db:
                 db.execute(
                     "DELETE FROM reference_working.resource_access "
@@ -266,9 +366,11 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                     (space, reviewer),
                 )
             assert client.get(f"{path}/{reference_id}", headers=b).status_code == 403
+            assert client.get(f"{discovery_path}/{discovery_id}", headers=b).status_code == 403
             with psycopg.connect(dsn) as db:
                 db.execute("DELETE FROM auth.sessions WHERE id=%s", (creator_session,))
             assert client.get(f"{path}/{reference_id}", headers=a).status_code == 401
+            assert client.get(f"{discovery_path}/{discovery_id}", headers=a).status_code == 401
     finally:
         process.terminate()
         process.wait(timeout=10)
