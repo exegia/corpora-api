@@ -40,6 +40,7 @@ class AssetRecord(Value):
     format: Literal["pdf", "epub", "html", "cusx"]
     data: bytes
     checksum: NonEmpty | None = None
+    asset_id: NonEmpty | None = None
 
     @model_validator(mode="after")
     def pinned(self) -> "AssetRecord":
@@ -315,6 +316,13 @@ class AuthorizedInventoryResolver:
 
     @staticmethod
     def _native(asset: AssetRecord, request: Endpoint) -> str:
+        # Native locator IDs describe a server-owned asset, not a caller label.
+        identified = (PdfLocator, EpubLocator, HtmlTextLocator, HtmlRangeLocator)
+        for locator in request.locators:
+            if isinstance(locator, identified) and (
+                asset.asset_id is None or locator.asset_id != asset.asset_id
+            ):
+                raise ValueError("native asset ID does not match trusted inventory")
         if asset.format == "cusx":
             from .linking_cusx import retrieve_cusx_selection
 

@@ -52,7 +52,9 @@ Every operation rechecks the verified session, space membership and exact
 resource grants; clients cannot supply the inventory or database path. The
 legacy schema in `tests/fixtures/reference-linking-proposal.sql` is an **offline
 test proposal**, not a migration. Production requires an approved schema and
-an authoritative inventory and entitlement provider. Native PDF selection
+an authoritative inventory and entitlement provider. Native HTML, EPUB and PDF locators require an
+explicit server-controlled `asset_id` in their inventory record; absent or
+mismatched IDs do not resolve. Native PDF selection
 resolution additionally requires the optional `linking-pdf` extra; PyMuPDF is
 available under AGPL or commercial terms.
 The server adapter and offline schema fixture are derived from `corpora-py`
