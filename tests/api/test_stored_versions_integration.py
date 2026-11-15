@@ -68,9 +68,7 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
         for path in root.rglob("*"):
             if path.is_file():
                 archive.write(path, "corpora/" + path.relative_to(root).as_posix())
-        archive.writestr(
-            "manifest.yml", "name: Original\nversion: 1.0\nwritten_date: 2024-01-02\n"
-        )
+        archive.writestr("manifest.yml", "name: Original\nversion: 1.0\nwritten_date: 2024-01-02\n")
         archive.writestr("toc.yml", "version: v1.0\ndocuments: []\n")
     data = output.getvalue()
     with httpx.Client(timeout=30) as client:
