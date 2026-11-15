@@ -144,18 +144,30 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 client.get(f"/v1/linking/{other}/references/{reference_id}", headers=a).status_code
                 == 403
             )
-            rejected = client.post(
-                f"{path}/{reference_id}/reject",
-                json={"expected_version": 1, "reason": "reviewed"},
+            resolved = client.post(
+                f"{path}/{reference_id}/resolve",
+                json={"expected_version": 1, "reason": "resolve"},
+                headers=a,
+            )
+            assert resolved.status_code == 200 and resolved.json()["version"] == 2, resolved.text
+            approved = client.post(
+                f"{path}/{reference_id}/approve",
+                json={"expected_version": 2, "reason": "reviewed"},
                 headers=b,
             )
-            assert rejected.status_code == 200 and rejected.json()["version"] == 2
+            assert approved.status_code == 200 and approved.json()["version"] == 3, approved.text
+            invalid = client.post(
+                f"{path}/{reference_id}/reopen",
+                json={"expected_version": 3, "reason": "invalid transition"},
+                headers=b,
+            )
+            assert invalid.status_code == 422
             assert (
                 client.post(path, json={**body, "expected_version": 1}, headers=a).status_code
                 == 409
             )
             history = client.get(f"{path}/{reference_id}", headers=a)
-            assert [row["version"] for row in history.json()["history"]] == [1, 2]
+            assert [row["version"] for row in history.json()["history"]] == [1, 2, 3]
             with psycopg.connect(dsn) as db:
                 db.execute(
                     "DELETE FROM reference_working.resource_access "
