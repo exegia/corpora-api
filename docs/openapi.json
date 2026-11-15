@@ -402,6 +402,7 @@
         "type": "object"
       },
       "AIChatUnitRange": {
+        "description": "Node IDs follow corpus reading order, not necessarily numeric order.",
         "properties": {
           "end": {
             "title": "End",
