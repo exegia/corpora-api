@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from corpora_api import app as app_module
 from corpora_api.app import app
 from corpora_api.ingest import build_plain_graph
-from corpora_api.ingest_store import IngestStore
+from corpora_api.ingest_store import IngestStore, IngestStoreError
 from corpora_api.ingest_worker import run_docling_worker
 
 ALICE = "b9a94f14-dfc2-4699-ab8c-77378136f2b4"
@@ -78,6 +78,48 @@ def store(
 
 def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_ambiguous_job_response_preserves_graph(store, committed):
+    artifacts, jobs, _transport = store
+    job = str(uuid.uuid4())
+    graph = json.dumps(build_plain_graph("source.txt", b"durable text").to_wire()).encode()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/storage/v1/object/jobs/"):
+            if request.method == "POST":
+                artifacts[request.url.path] = request.content
+                return httpx.Response(201)
+            if request.method == "DELETE":
+                artifacts.pop(request.url.path, None)
+                return httpx.Response(204)
+            if request.method == "GET":
+                value = artifacts.get(request.url.path)
+                if value is not None:
+                    return httpx.Response(200, content=value)
+                return httpx.Response(404)
+        if request.url.path == "/rest/v1/conversion_jobs":
+            if request.method == "POST":
+                row = json.loads(request.content)
+                if committed:
+                    jobs[row["id"]] = row
+                # A gateway error does not prove whether the row committed.
+                return httpx.Response(503)
+            if request.method == "GET":
+                return httpx.Response(200, json=[jobs[job]])
+        raise AssertionError("Unexpected request")
+
+    adapter = IngestStore(httpx.Client(transport=httpx.MockTransport(respond)))
+    with pytest.raises(IngestStoreError):
+        adapter.save(ALICE, job, "source.txt", "Source", graph)
+    assert artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job}.graph.json"] == graph
+    if committed:
+        assert adapter.status(ALICE, job)["download_ready"] is True
+        downloaded, _filename = adapter.download(ALICE, job)
+        assert downloaded == graph
+    else:
+        assert job not in jobs
 
 
 def test_upload_poll_download_survives_store_recreation_and_isolates_owner(

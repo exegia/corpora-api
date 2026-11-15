@@ -119,7 +119,9 @@ class IngestStore:
             json=row,
         )
         if response.status_code not in (200, 201, 204):
-            self._request("DELETE", object_url, headers=self._headers(key))
+            # A gateway error can arrive after the row committed. Deleting here
+            # could leave that durable row pointing at a missing graph. A later
+            # reconciliation process must handle genuinely unreferenced objects.
             raise IngestStoreError(f"Ingestion job store returned {response.status_code}")
 
     def get(self, owner: str, job_id: str) -> dict[str, Any]:
