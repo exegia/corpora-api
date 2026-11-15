@@ -3738,6 +3738,99 @@
         ]
       }
     },
+    "/v1/storage/{filename}/versions": {
+      "get": {
+        "description": "Return archive history or the packaged manifest's initial version.",
+        "operationId": "get_stored_corpus_versions_v1_storage__filename__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "filename",
+            "required": true,
+            "schema": {
+              "title": "Filename",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Stored Corpus Versions V1 Storage  Filename  Versions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Read a corpus version history",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
     "/v1/validate": {
       "post": {
         "description": "Upload a .corpus, .zip, .ctei, or .cusx archive of at most 3 MB. A verified Supabase user token is required. Text-Fabric archives run real Text-Fabric and Context-Fabric load cycles; invalid supported archives return 200 with valid=false and reasons. The path field is the uploaded filename. Server paths, loaded corpus names, and legacy conversion job IDs are not accepted by this hosted endpoint.",

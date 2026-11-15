@@ -775,6 +775,19 @@ async def get_stored_corpus_manifest(
 
 
 @app.get(
+    "/v1/storage/{filename}/versions",
+    tags=["storage"],
+    summary="Read a corpus version history",
+    description="Return archive history or the packaged manifest's initial version.",
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_stored_corpus_versions(
+    filename: str, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await _read_stored_corpus_view(filename, user_id, "versions")
+
+
+@app.get(
     "/v1/storage/{filename}/index",
     tags=["storage"],
     summary="Read a corpus section index",
