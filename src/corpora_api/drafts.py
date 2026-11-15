@@ -20,6 +20,7 @@ from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.validation import MAX_VALIDATION_ARCHIVE_BYTES
 
 BUCKET = "corpus-ai-drafts"
+MAX_DRAFT_VIEW_RESPONSE_BYTES = 4_000_000
 
 
 class DraftHead(BaseModel):
@@ -168,7 +169,11 @@ class DraftStore:
             raise HTTPException(
                 status_code=status, detail="Working draft view is unavailable"
             ) from error
-        return {"draft": self._info(head), "data": content}
+        result = {"draft": self._info(head), "data": content}
+        encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > MAX_DRAFT_VIEW_RESPONSE_BYTES:
+            raise HTTPException(status_code=413, detail="Working draft view exceeds response limit")
+        return result
 
     def create(self, owner: str, job_id: str, jobs: Any, validator: Any) -> dict[str, Any]:
         try:

@@ -18,8 +18,29 @@ from corpora_api import app as app_module
 from corpora_api import drafts as drafts_module
 from corpora_api.app import app
 from corpora_api.auth import UserAuthError
-from corpora_api.drafts import DraftStore
+from corpora_api.drafts import DraftHead, DraftStore
 from corpora_api.validation import ValidationBridge
+
+
+def test_draft_view_limits_the_complete_response_envelope(monkeypatch):
+    owner, document, revision = (str(uuid4()) for _ in range(3))
+    head = DraftHead(
+        document_id=document,
+        owner=owner,
+        corpus=f"draft:{document}",
+        bucket="corpus-ai-drafts",
+        object_key=f"{owner}/ai/{document}/{revision}.corpus",
+        revision=revision,
+        digest="sha256:" + "a" * 64,
+        version="1." + "0" * 101_000,
+    )
+    store = DraftStore()
+    monkeypatch.setattr(store, "resolve", lambda *_: head)
+    monkeypatch.setattr(store, "_download", lambda *_: b"archive")
+    monkeypatch.setattr(drafts_module, "run_corpus", lambda *_, **__: {"text": "x" * 3_899_000})
+    with pytest.raises(HTTPException) as caught:
+        store.read(owner, document, "node", node=1)
+    assert caught.value.status_code == 413
 
 
 def test_concurrent_draft_creation_reuses_the_same_immutable_object(monkeypatch):
