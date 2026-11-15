@@ -159,6 +159,11 @@ class DraftListResponse(BaseModel):
     next_offset: int | None
 
 
+class DraftReadResponse(BaseModel):
+    draft: DraftInfo
+    data: dict[str, Any]
+
+
 class AIUnitRange(BaseModel):
     start: int
     end: int

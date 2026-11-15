@@ -77,6 +77,7 @@ from corpora_api.models import (
     DraftCreateRequest,
     DraftInfo,
     DraftListResponse,
+    DraftReadResponse,
     ErrorResponse,
     IngestCreated,
     IngestJobStatus,
@@ -838,6 +839,102 @@ async def download_working_draft(
             "ETag": f'"{head.digest}"',
             "X-Draft-Revision": str(head.revision),
         },
+    )
+
+
+async def _read_draft(
+    draft_id: str, response: Response, user_id: str, view: str, **params: Any
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return await run_in_threadpool(draft_store.read, user_id, draft_id, view, **params)
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}/manifest",
+    tags=["ai"],
+    response_model=DraftReadResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def read_draft_manifest(
+    draft_id: str, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await _read_draft(draft_id, response, user_id, "manifest")
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}/index",
+    tags=["ai"],
+    response_model=DraftReadResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def read_draft_index(
+    draft_id: str, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await _read_draft(draft_id, response, user_id, "index")
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}/versions",
+    tags=["ai"],
+    response_model=DraftReadResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def read_draft_versions(
+    draft_id: str, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    return await _read_draft(draft_id, response, user_id, "versions")
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}/nodes/{node}",
+    tags=["ai"],
+    response_model=DraftReadResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def read_draft_node(
+    draft_id: str, node: int, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    if node < 1:
+        raise HTTPException(status_code=422, detail="Expected a positive node ID")
+    return await _read_draft(draft_id, response, user_id, "node", node=node)
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}/sections",
+    tags=["ai"],
+    response_model=DraftReadResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def read_draft_sections(
+    draft_id: str,
+    response: Response,
+    user_id: Annotated[str, Depends(require_user)],
+    parent: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    return await _read_draft(
+        draft_id, response, user_id, "sections", parent=parent, offset=offset, limit=limit
+    )
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}/content",
+    tags=["ai"],
+    response_model=DraftReadResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def read_draft_content(
+    draft_id: str,
+    response: Response,
+    user_id: Annotated[str, Depends(require_user)],
+    ref: str | None = None,
+    fmt: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    return await _read_draft(
+        draft_id, response, user_id, "content", ref=ref, fmt=fmt, offset=offset, limit=limit
     )
 
 

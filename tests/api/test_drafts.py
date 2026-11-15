@@ -187,6 +187,16 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
         listed = api.get("/v1/ai/drafts", headers=own_headers)
         info = api.get(f"/v1/ai/drafts/{first['id']}", headers=own_headers)
         exported = api.get(f"/v1/ai/drafts/{first['id']}/archive", headers=own_headers)
+        views = {
+            view: api.get(f"/v1/ai/drafts/{first['id']}/{view}", headers=own_headers)
+            for view in ("manifest", "index", "versions", "nodes/1", "sections", "content")
+        }
+        foreign_view = api.get(f"/v1/ai/drafts/{first['id']}/manifest", headers=foreign_headers)
+        missing_node = api.get(f"/v1/ai/drafts/{first['id']}/nodes/999", headers=own_headers)
+        invalid_node = api.get(f"/v1/ai/drafts/{first['id']}/nodes/0", headers=own_headers)
+        invalid_limit = api.get(
+            f"/v1/ai/drafts/{first['id']}/sections?limit=201", headers=own_headers
+        )
         other = api.get(f"/v1/ai/drafts/{first['id']}", headers=foreign_headers)
         unauthenticated = api.get("/v1/ai/drafts")
     assert created.json() == first
@@ -196,6 +206,16 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
     assert exported.headers["cache-control"] == "private, no-store"
     assert exported.headers["etag"] == f'"{first["digest"]}"'
     assert exported.headers["x-draft-revision"] == first["revision"]
+    assert all(value.status_code == 200 for value in views.values())
+    assert all(value.json()["draft"]["revision"] == first["revision"] for value in views.values())
+    assert views["manifest"].json()["data"]["name"] == "Mini"
+    assert views["nodes/1"].json()["data"]["node"] == 1
+    assert foreign_view.status_code == 404
+    assert (missing_node.status_code, invalid_node.status_code, invalid_limit.status_code) == (
+        404,
+        422,
+        422,
+    )
     assert (other.status_code, foreign_create.status_code, unauthenticated.status_code) == (
         404,
         404,

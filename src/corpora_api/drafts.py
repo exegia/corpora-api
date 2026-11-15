@@ -16,6 +16,7 @@ from corpus_validate import read_archive
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.validation import MAX_VALIDATION_ARCHIVE_BYTES
 
 BUCKET = "corpus-ai-drafts"
@@ -156,6 +157,18 @@ class DraftStore:
             "drafts": [self._info(head) for head in heads[:limit]],
             "next_offset": offset + limit if len(heads) > limit else None,
         }
+
+    def read(self, owner: str, draft_id: str, view: str, **params: Any) -> dict[str, Any]:
+        head = self.resolve(owner, draft_id)
+        data = self._download(head)
+        try:
+            content = run_corpus(data, "view", view=view, **params)
+        except CorpusProcessError as error:
+            status = {"not_found": 404, "too_large": 413, "unavailable": 503}.get(error.kind, 422)
+            raise HTTPException(
+                status_code=status, detail="Working draft view is unavailable"
+            ) from error
+        return {"draft": self._info(head), "data": content}
 
     def create(self, owner: str, job_id: str, jobs: Any, validator: Any) -> dict[str, Any]:
         try:
