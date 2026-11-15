@@ -66,6 +66,8 @@ Publication events record an acknowledgment or withdrawal intent; they do not
 assert that an artifact was delivered or removed remotely.
 Discovery routes retain submitted citation evidence and reviewer decisions as
 append-only history; selecting a work creates a pending working reference.
+Imported snapshot authority, version and provenance are unverified external claims;
+the local revision separately records the verified importing actor.
 Exchange routes inspect and import publication snapshots, export C-USX, and register
 conversion events without changing the existing `/convert` service. Scholarly
 conversion events additionally require a trusted recognizer injected into the

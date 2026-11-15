@@ -139,6 +139,8 @@ class LinkingRuntime:
             if len(matches) != 1 or original.locators or converted.locators:
                 raise ValueError("conversion requires an available whole asset")
             asset = matches[0]
+            if asset.asset_id is None or asset_id != asset.asset_id:
+                raise ValueError("native asset ID does not match trusted inventory")
             if asset.format == "pdf":
                 from .linking_pymupdf import extract_pymupdf_references_input
 

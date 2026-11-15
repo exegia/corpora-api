@@ -78,7 +78,11 @@ class ConversionEventRegistry:
             ).fetchone()
             if prior:
                 event = ConversionEvent.model_validate_json(prior[0])
-                if event.input_digest != digest:
+                if (
+                    event.input_digest != digest
+                    or event.actor_id != self.store.actor_id
+                    or event.reason != reason
+                ):
                     raise VersionConflictError(
                         "conversion event identity reused with changed input, detector or output"
                     )

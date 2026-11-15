@@ -188,8 +188,10 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 cusx_snapshot,
             ),
             assets=(
-                AssetRecord(endpoint=html_endpoint, format="html", data=html),
-                AssetRecord(endpoint=original, format="html", data=conversion_data),
+                AssetRecord(endpoint=html_endpoint, format="html", data=html, asset_id="html"),
+                AssetRecord(
+                    endpoint=original, format="html", data=conversion_data, asset_id="convert-html"
+                ),
                 AssetRecord(
                     endpoint=cusx_endpoint,
                     format="cusx",
@@ -221,8 +223,9 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
             )
             db.execute(
                 "INSERT INTO reference_working.memberships "
-                "VALUES (%s,%s,'contribute'),(%s,%s,'review'),(%s,%s,'publish')",
-                (space, creator, space, reviewer, space, reviewer),
+                "VALUES (%s,%s,'contribute'),(%s,%s,'review'),(%s,%s,'publish'),"
+                "(%s,%s,'contribute')",
+                (space, creator, space, reviewer, space, reviewer, space, reviewer),
             )
             db.execute(
                 "INSERT INTO auth.sessions VALUES (%s,%s,NULL),(%s,%s,NULL)",
@@ -295,7 +298,7 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 client.post(
                     conversion_url, json={**conversion_body, "asset_id": "forged"}, headers=a
                 ).status_code
-                == 409
+                == 422
             )
             assert (
                 client.post(
@@ -303,6 +306,21 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 ).status_code
                 == 403
             )
+            assert (
+                client.post(
+                    conversion_url,
+                    json={**conversion_body, "asset_id": "forged", "event_id": str(uuid4())},
+                    headers=a,
+                ).status_code
+                == 422
+            )
+            assert (
+                client.post(
+                    conversion_url, json={**conversion_body, "reason": "changed reason"}, headers=a
+                ).status_code
+                == 409
+            )
+            assert client.post(conversion_url, json=conversion_body, headers=b).status_code == 409
             scholarly_url = f"/v1/linking/{space}/scholarly-conversion-events"
             scholarly_body = {
                 key: value for key, value in conversion_body.items() if key != "event_id"
@@ -408,6 +426,15 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 f"/v1/linking/{space}/browser-selection", json=browser_body, headers=a
             )
             assert browser.status_code == 200 and browser.json()["text"] == "A word", browser.text
+            forged_browser = client.post(
+                f"/v1/linking/{space}/browser-selection",
+                json={**browser_body, "asset_id": "forged"},
+                headers=a,
+            )
+            assert forged_browser.status_code == 422
+            forged_native = browser.json()["endpoint"]
+            forged_native["locators"][0]["asset_id"] = "forged"
+            assert client.post(selection_path, json=forged_native, headers=a).status_code == 422
             broken = client.post(
                 f"/v1/linking/{space}/browser-selection",
                 json={**browser_body, "captured_nodes": []},
@@ -490,6 +517,12 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 imported_state.status_code == 200
                 and imported_state.json()["history"][-1]["reference"]["review"] == "pending"
             ), imported_state.text
+            imported_revision = imported_state.json()["history"][-1]
+            assert imported_revision["actor_id"] == str(creator)
+            assert imported_revision["reference"]["provenance"]["agent_id"] == "forged"
+            assert imported_revision["reference"]["resolution"] == "unresolved"
+            assert imported_revision["reference"]["publication"] == "draft"
+            assert "unverified claimed authority=upstream" in imported_revision["reason"]
             assert (
                 client.post(f"/v1/linking/{space}/import", json=import_body, headers=a).status_code
                 == 409

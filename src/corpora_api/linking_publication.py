@@ -172,7 +172,8 @@ class SnapshotPublicationAdapter:
             incoming,
             expected_version=None,
             reason=(
-                f"{reason}; imported authority={decision.authority_id}; upstream_version={upstream}"
+                f"{reason}; unverified claimed authority={decision.authority_id}; "
+                f"claimed upstream_version={upstream}"
             ),
         )
 

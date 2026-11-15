@@ -58,10 +58,14 @@ class PostgreSQLConversionEventRegistry:
                 if row:
                     prior = ConversionEvent.model_validate(row[0])
                     self.store._check_access(db, actor, prior)
-                    if prior.input_digest != digest:
+                    if (
+                        prior.input_digest != digest
+                        or prior.actor_id != str(actor)
+                        or prior.reason != reason
+                    ):
                         raise VersionConflictError(
                             "conversion event identity reused "
-                            "with changed input, detector or output"
+                            "with changed input, actor, reason, detector or output"
                         )
                     return prior
                 event = ConversionEvent(
