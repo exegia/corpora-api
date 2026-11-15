@@ -104,12 +104,33 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                     ),
                 )
 
+            def create(
+                db, principal=owner, session_id=session, expiry=None, filename="created.corpus"
+            ):
+                return db.execute(
+                    "SELECT public.corpora_stored_session_create(%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        principal,
+                        session_id,
+                        int(time.time()) + 60 if expiry is None else expiry,
+                        filename,
+                        str(uuid4()),
+                        digest,
+                        "v1.0",
+                    ),
+                )
+
             # No grant is applied by the migration; lack of access fails closed.
             with (
                 psycopg.connect(service) as db,
                 pytest.raises(psycopg.errors.InsufficientPrivilege),
             ):
                 publish(db)
+            with (
+                psycopg.connect(service) as db,
+                pytest.raises(psycopg.errors.InsufficientPrivilege),
+            ):
+                create(db)
             with psycopg.connect(dsn, autocommit=True) as db:
                 db.execute((root / "tests/fixtures/stored-session-grant-proposal.sql").read_text())
             with (
@@ -127,6 +148,11 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                     pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
                 ):
                     publish(db, principal, session_id, expiry)
+                with (
+                    psycopg.connect(service) as db,
+                    pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
+                ):
+                    create(db, principal, session_id, expiry)
             for role in ("anon", "authenticated"):
                 browser = psycopg.conninfo.make_conninfo(dsn, options=f"-c role={role}")
                 with (
@@ -134,6 +160,11 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                     pytest.raises(psycopg.errors.InsufficientPrivilege),
                 ):
                     publish(db)
+                with (
+                    psycopg.connect(browser) as db,
+                    pytest.raises(psycopg.errors.InsufficientPrivilege),
+                ):
+                    create(db)
 
             with psycopg.connect(dsn, autocommit=True) as db:
                 db.execute(
@@ -146,6 +177,11 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                 pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
             ):
                 publish(db)
+            with (
+                psycopg.connect(service) as db,
+                pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
+            ):
+                create(db)
             with psycopg.connect(dsn, autocommit=True) as db:
                 db.execute("UPDATE auth.sessions SET not_after=NULL WHERE id=%s", (session,))
 
@@ -201,6 +237,57 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                     == 1
                 )
 
+            # Creation may wait on the session row itself. If the token expires
+            # during that wait, the newly inserted head must also roll back.
+            create_expiry, create_outcome, create_ready = (
+                int(time.time()) + 3,
+                [],
+                threading.Event(),
+            )
+
+            def expired_creator():
+                try:
+                    with psycopg.connect(service) as db:
+                        create_ready.set()
+                        create(db, expiry=create_expiry, filename="expired-create.corpus")
+                    create_outcome.append("created")
+                except psycopg.errors.RaiseException as error:
+                    create_outcome.append(str(error).splitlines()[0])
+
+            with psycopg.connect(dsn) as blocker:
+                blocker.execute("SELECT id FROM auth.sessions WHERE id=%s FOR UPDATE", (session,))
+                waiting = threading.Thread(target=expired_creator)
+                waiting.start()
+                try:
+                    assert create_ready.wait(10)
+                    with psycopg.connect(dsn, autocommit=True) as db:
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            if db.execute(
+                                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity "
+                                "WHERE %s = ANY(pg_blocking_pids(pid)))",
+                                (blocker.info.backend_pid,),
+                            ).fetchone()[0]:
+                                break
+                            time.sleep(0.05)
+                        else:
+                            pytest.fail("creation did not wait for the session row")
+                    while time.time() <= create_expiry:
+                        time.sleep(0.05)
+                finally:
+                    blocker.commit()
+                    waiting.join(20)
+            assert not waiting.is_alive() and create_outcome == ["AUTH_SESSION_INVALID"]
+            with psycopg.connect(service) as db:
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM public.corpora_stored_heads "
+                        "WHERE owner=%s AND filename=%s",
+                        (owner, "expired-create.corpus"),
+                    ).fetchone()[0]
+                    == 0
+                )
+
             ready, release, errors, outcome, writer_pid = (
                 threading.Event(),
                 threading.Event(),
@@ -213,10 +300,11 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                 try:
                     with psycopg.connect(service) as db:
                         writer_pid.append(db.info.backend_pid)
-                        publish(db)
+                        create(db)
                         ready.set()
                         if not release.wait(15):
                             raise TimeoutError("writer was not released")
+                        publish(db)
                     outcome.append("published")
                 except Exception as error:
                     errors.append(error)
@@ -259,7 +347,28 @@ def test_session_guard_blocks_revocation_until_publication_commits():
                 pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
             ):
                 publish(db, expected=next_revision, revision=str(uuid4()))
+            with (
+                psycopg.connect(service) as db,
+                pytest.raises(psycopg.errors.RaiseException, match="AUTH_SESSION_INVALID"),
+            ):
+                create(db, filename="after-logout.corpus")
             with psycopg.connect(service) as db:
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM public.corpora_stored_heads "
+                        "WHERE owner=%s AND filename=%s",
+                        (owner, "created.corpus"),
+                    ).fetchone()[0]
+                    == 1
+                )
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM public.corpora_stored_heads "
+                        "WHERE owner=%s AND filename=%s",
+                        (owner, "after-logout.corpus"),
+                    ).fetchone()[0]
+                    == 0
+                )
                 assert (
                     str(
                         db.execute(

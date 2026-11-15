@@ -39,17 +39,30 @@ def test_guard_rejects_real_logged_out_supabase_session(monkeypatch):
         _, foreign = signup()
         initial, published, second = str(uuid4()), str(uuid4()), str(uuid4())
         digest, name = "sha256:" + "a" * 64, "session.corpus"
-        create = client.post(
-            url + "/rest/v1/rpc/corpora_stored_create",
-            headers=service_headers,
-            json={
-                "p_owner": claims["sub"],
-                "p_filename": name,
-                "p_revision": initial,
-                "p_digest": digest,
-                "p_version": "v1.0",
-            },
+        create_endpoint = url + "/rest/v1/rpc/corpora_stored_session_create"
+        create_payload = {
+            "p_owner": claims["sub"],
+            "p_session": claims["session_id"],
+            "p_token_exp": claims["exp"],
+            "p_filename": name,
+            "p_revision": initial,
+            "p_digest": digest,
+            "p_version": "v1.0",
+        }
+        browser_create = client.post(
+            create_endpoint,
+            headers={"apikey": anon, "Authorization": "Bearer " + token},
+            json=create_payload,
         )
+        assert browser_create.status_code in (401, 403, 404)
+        wrong_create = client.post(
+            create_endpoint,
+            headers=service_headers,
+            json={**create_payload, "p_session": foreign["session_id"]},
+        )
+        assert wrong_create.status_code >= 400
+        assert wrong_create.json().get("message") == "AUTH_SESSION_INVALID"
+        create = client.post(create_endpoint, headers=service_headers, json=create_payload)
         assert create.status_code in (200, 204)
         payload = {
             "p_owner": claims["sub"],
@@ -88,6 +101,13 @@ def test_guard_rejects_real_logged_out_supabase_session(monkeypatch):
         assert (
             blocked.status_code >= 400 and blocked.json().get("message") == "AUTH_SESSION_INVALID"
         )
+        blocked_create = client.post(
+            create_endpoint,
+            headers=service_headers,
+            json={**create_payload, "p_filename": "after-logout.corpus", "p_revision": second},
+        )
+        assert blocked_create.status_code >= 400
+        assert blocked_create.json().get("message") == "AUTH_SESSION_INVALID"
         head = client.get(
             url + "/rest/v1/corpora_stored_heads",
             headers=service_headers,
