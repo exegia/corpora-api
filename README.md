@@ -45,6 +45,28 @@ findings and rejecting stale version or content hashes.
 Corpus detail, reference, and scope reads run the native loader in a separate
 short-lived process per request so its state cannot cross server worker threads.
 
+The three `/v1/linking/{space_id}/references` operations are disabled by default.
+They require a server-controlled `LINKING_DATABASE_URL`, `LINKING_INVENTORY`
+file, `LINKING_ENABLED=true`, and the existing Supabase JWT configuration.
+Every operation rechecks the verified session, space membership and exact
+resource grants; clients cannot supply the inventory or database path. The
+legacy schema in `tests/fixtures/reference-linking-proposal.sql` is an **offline
+test proposal**, not a migration. Production requires an approved schema and
+an authoritative inventory and entitlement provider. Native PDF selection
+resolution additionally requires the optional `linking-pdf` extra; PyMuPDF is
+available under AGPL or commercial terms.
+The server adapter and offline schema fixture are derived from `corpora-py`
+revision `663eec793b384bca22afbb065678573e21ed5b97`; the shared reference
+models and resolver are provided by `corpora-linking`.
+An optional isolated PostgreSQL authorization test starts a fresh in-memory
+PGlite server on a loopback port. It does not connect to or modify a Supabase
+project, and its single connection does not establish concurrency guarantees:
+
+```bash
+npm install --prefix /tmp/corpora-pglite --ignore-scripts @electric-sql/pglite@0.5.16 @electric-sql/pglite-socket@0.2.19
+CORPORA_PGLITE_ROOT=/tmp/corpora-pglite uv run pytest tests/api/test_linking_pglite.py
+```
+
 
 The authenticated `/v1/refs` endpoints create and resolve versioned
 Text-Fabric references and compact tokens from stored corpora. Resolution

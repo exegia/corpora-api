@@ -781,6 +781,57 @@
         "title": "Body_validate_corpus_upload_v1_validate_post",
         "type": "object"
       },
+      "CitationLocator": {
+        "additionalProperties": false,
+        "description": "An unresolved address request, never proof of an exact passage.",
+        "properties": {
+          "kind": {
+            "const": "citation",
+            "default": "citation",
+            "title": "Kind",
+            "type": "string"
+          },
+          "profile": {
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          },
+          "reading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reading"
+          },
+          "scheme_id": {
+            "minLength": 1,
+            "title": "Scheme Id",
+            "type": "string"
+          },
+          "scheme_version": {
+            "minLength": 1,
+            "title": "Scheme Version",
+            "type": "string"
+          },
+          "value": {
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "profile",
+          "scheme_id",
+          "scheme_version"
+        ],
+        "title": "CitationLocator",
+        "type": "object"
+      },
       "CorpusContentResponse": {
         "properties": {
           "format": {
@@ -1127,6 +1178,32 @@
         "title": "CorpusSectionPageResponse",
         "type": "object"
       },
+      "Decision": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_unresolved_target": {
+            "default": false,
+            "title": "Allow Unresolved Target",
+            "type": "boolean"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "reason"
+        ],
+        "title": "Decision",
+        "type": "object"
+      },
       "Diagnostic": {
         "additionalProperties": true,
         "properties": {
@@ -1240,6 +1317,187 @@
         "title": "DiagnosticReport",
         "type": "object"
       },
+      "Endpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "edition_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edition Id"
+          },
+          "locators": {
+            "default": [],
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "citation": "#/components/schemas/CitationLocator",
+                  "epub": "#/components/schemas/EpubLocator",
+                  "epub-resource": "#/components/schemas/EpubResourceLocator",
+                  "html-range": "#/components/schemas/HtmlRangeLocator",
+                  "html-text": "#/components/schemas/HtmlTextLocator",
+                  "pdf": "#/components/schemas/PdfLocator",
+                  "structural": "#/components/schemas/StructuralLocator",
+                  "text": "#/components/schemas/TextLocator"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/PdfLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubResourceLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlTextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlRangeLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/StructuralLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/CitationLocator"
+                }
+              ]
+            },
+            "title": "Locators",
+            "type": "array"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "work_id": {
+            "minLength": 1,
+            "title": "Work Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "title": "Endpoint",
+        "type": "object"
+      },
+      "EpubLocator": {
+        "additionalProperties": false,
+        "description": "Native resource path and opaque CFI; this core does not parse EPUB CFI.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "cfi": {
+            "minLength": 1,
+            "title": "Cfi",
+            "type": "string"
+          },
+          "href": {
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "kind": {
+            "const": "epub",
+            "default": "epub",
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "asset_id",
+          "href",
+          "cfi"
+        ],
+        "title": "EpubLocator",
+        "type": "object"
+      },
+      "EpubResourceLocator": {
+        "additionalProperties": false,
+        "description": "An EPUB resource only, without invented fragment or CFI precision.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "href": {
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "kind": {
+            "const": "epub-resource",
+            "default": "epub-resource",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "href"
+        ],
+        "title": "EpubResourceLocator",
+        "type": "object"
+      },
       "ErrorResponse": {
         "properties": {
           "detail": {
@@ -1264,6 +1522,124 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HtmlRangeLocator": {
+        "additionalProperties": false,
+        "description": "Range spanning pinned parsed HTML text nodes; Unicode scalar node offsets.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "end_offset": {
+            "minimum": 0.0,
+            "title": "End Offset",
+            "type": "integer"
+          },
+          "end_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "End Path",
+            "type": "array"
+          },
+          "kind": {
+            "const": "html-range",
+            "default": "html-range",
+            "title": "Kind",
+            "type": "string"
+          },
+          "parser": {
+            "const": "beautifulsoup-html.parser/v1",
+            "default": "beautifulsoup-html.parser/v1",
+            "title": "Parser",
+            "type": "string"
+          },
+          "parser_version": {
+            "minLength": 1,
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "start_offset": {
+            "minimum": 0.0,
+            "title": "Start Offset",
+            "type": "integer"
+          },
+          "start_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "Start Path",
+            "type": "array"
+          },
+          "text": {
+            "$ref": "#/components/schemas/TextLocator"
+          }
+        },
+        "required": [
+          "asset_id",
+          "parser_version",
+          "start_path",
+          "start_offset",
+          "end_path",
+          "end_offset",
+          "text"
+        ],
+        "title": "HtmlRangeLocator",
+        "type": "object"
+      },
+      "HtmlTextLocator": {
+        "additionalProperties": false,
+        "description": "Unicode selection in one text node of a pinned, explicitly parsed DOM.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "html-text",
+            "default": "html-text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "node_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "Node Path",
+            "type": "array"
+          },
+          "parser": {
+            "const": "beautifulsoup-html.parser/v1",
+            "default": "beautifulsoup-html.parser/v1",
+            "title": "Parser",
+            "type": "string"
+          },
+          "parser_version": {
+            "minLength": 1,
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "text": {
+            "$ref": "#/components/schemas/TextLocator"
+          }
+        },
+        "required": [
+          "asset_id",
+          "parser_version",
+          "node_path",
+          "text"
+        ],
+        "title": "HtmlTextLocator",
         "type": "object"
       },
       "IngestCreated": {
@@ -1550,6 +1926,188 @@
         "title": "LanguageRequest",
         "type": "object"
       },
+      "PdfLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "coordinates": {
+            "const": "unrotated-cropbox-top-left-points",
+            "default": "unrotated-cropbox-top-left-points",
+            "title": "Coordinates",
+            "type": "string"
+          },
+          "kind": {
+            "const": "pdf",
+            "default": "pdf",
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "minimum": 1.0,
+            "title": "Page",
+            "type": "integer"
+          },
+          "quads": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PdfQuad"
+            },
+            "title": "Quads",
+            "type": "array"
+          },
+          "rectangles": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PdfRectangle"
+            },
+            "title": "Rectangles",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "asset_id",
+          "page"
+        ],
+        "title": "PdfLocator",
+        "type": "object"
+      },
+      "PdfPoint": {
+        "additionalProperties": false,
+        "properties": {
+          "x": {
+            "minimum": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "PdfPoint",
+        "type": "object"
+      },
+      "PdfQuad": {
+        "additionalProperties": false,
+        "description": "Clockwise polygon in unrotated CropBox-relative top-left points.",
+        "properties": {
+          "points": {
+            "maxItems": 4,
+            "minItems": 4,
+            "prefixItems": [
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              },
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              },
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              },
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              }
+            ],
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "title": "PdfQuad",
+        "type": "object"
+      },
+      "PdfRectangle": {
+        "additionalProperties": false,
+        "properties": {
+          "x0": {
+            "minimum": 0.0,
+            "title": "X0",
+            "type": "number"
+          },
+          "x1": {
+            "exclusiveMinimum": 0.0,
+            "title": "X1",
+            "type": "number"
+          },
+          "y0": {
+            "minimum": 0.0,
+            "title": "Y0",
+            "type": "number"
+          },
+          "y1": {
+            "exclusiveMinimum": 0.0,
+            "title": "Y1",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "PdfRectangle",
+        "type": "object"
+      },
+      "Provenance": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "method": {
+            "minLength": 1,
+            "title": "Method",
+            "type": "string"
+          },
+          "origin": {
+            "enum": [
+              "automatic",
+              "manual"
+            ],
+            "title": "Origin",
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "agent_id",
+          "method"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
       "PurposeField": {
         "additionalProperties": true,
         "properties": {
@@ -1733,6 +2291,75 @@
         "title": "PurposeRequest",
         "type": "object"
       },
+      "Reference": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "publication": {
+            "default": "draft",
+            "enum": [
+              "draft",
+              "published",
+              "withdrawn"
+            ],
+            "title": "Publication",
+            "type": "string"
+          },
+          "relationship": {
+            "default": "core:cites",
+            "minLength": 1,
+            "title": "Relationship",
+            "type": "string"
+          },
+          "resolution": {
+            "default": "unresolved",
+            "enum": [
+              "resolved",
+              "ambiguous",
+              "unresolved",
+              "unavailable"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          },
+          "review": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ],
+            "title": "Review",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "0.1.0",
+            "default": "0.1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Endpoint"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "provenance"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
       "ReferenceCreate": {
         "properties": {
           "corpus": {
@@ -1773,6 +2400,37 @@
           "node"
         ],
         "title": "ReferenceCreate",
+        "type": "object"
+      },
+      "SaveLink": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/Reference"
+          }
+        },
+        "required": [
+          "reference",
+          "reason"
+        ],
+        "title": "SaveLink",
         "type": "object"
       },
       "ShortcodeCreate": {
@@ -2099,6 +2757,27 @@
         "title": "StoredCorpusResponse",
         "type": "object"
       },
+      "StructuralLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor_id": {
+            "minLength": 1,
+            "title": "Anchor Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "structural",
+            "default": "structural",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "anchor_id"
+        ],
+        "title": "StructuralLocator",
+        "type": "object"
+      },
       "StructureRequest": {
         "examples": [
           {
@@ -2295,6 +2974,71 @@
           "after"
         ],
         "title": "TextEdit",
+        "type": "object"
+      },
+      "TextLocator": {
+        "additionalProperties": false,
+        "description": "Zero-based half-open scalar offsets in a named, immutable text stream.",
+        "properties": {
+          "end": {
+            "exclusiveMinimum": 0.0,
+            "title": "End",
+            "type": "integer"
+          },
+          "exact": {
+            "minLength": 1,
+            "title": "Exact",
+            "type": "string"
+          },
+          "kind": {
+            "const": "text",
+            "default": "text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "normalization": {
+            "default": "preserve",
+            "enum": [
+              "preserve",
+              "NFC"
+            ],
+            "title": "Normalization",
+            "type": "string"
+          },
+          "offset_unit": {
+            "const": "unicode-scalar",
+            "default": "unicode-scalar",
+            "title": "Offset Unit",
+            "type": "string"
+          },
+          "prefix": {
+            "default": "",
+            "title": "Prefix",
+            "type": "string"
+          },
+          "start": {
+            "minimum": 0.0,
+            "title": "Start",
+            "type": "integer"
+          },
+          "stream_id": {
+            "minLength": 1,
+            "title": "Stream Id",
+            "type": "string"
+          },
+          "suffix": {
+            "default": "",
+            "title": "Suffix",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stream_id",
+          "start",
+          "end",
+          "exact"
+        ],
+        "title": "TextLocator",
         "type": "object"
       },
       "ValidationError": {
@@ -3822,6 +4566,208 @@
         "summary": "Detect or select language",
         "tags": [
           "language"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/references": {
+      "post": {
+        "operationId": "save_link_v1_linking__space_id__references_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveLink"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Save Link",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/references/{reference_id}": {
+      "get": {
+        "operationId": "reference_history_v1_linking__space_id__references__reference_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Reference History",
+        "tags": [
+          "linking"
+        ]
+      }
+    },
+    "/v1/linking/{space_id}/references/{reference_id}/{action}": {
+      "post": {
+        "operationId": "reference_decision_v1_linking__space_id__references__reference_id___action__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "space_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Space Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "enum": [
+                "resolve",
+                "approve",
+                "reject",
+                "reopen"
+              ],
+              "title": "Action",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Decision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Reference Decision",
+        "tags": [
+          "linking"
         ]
       }
     },

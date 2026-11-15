@@ -60,6 +60,7 @@ from corpora_api.ingest_worker import (
     IngestWorkerUnavailable,
     run_docling_worker,
 )
+from corpora_api.linking_api import router as linking_router
 from corpora_api.models import (
     AIChatErrorInfo,
     AIChatEvent,
@@ -130,6 +131,7 @@ def user_auth_path(path: str) -> bool:
         or path == "/v1/ai/providers"
         or path == "/v1/ai/validate"
         or path == "/v1/ai/chat"
+        or path.startswith("/v1/linking/")
         or path == "/v1/refs"
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
@@ -156,6 +158,7 @@ app = FastAPI(
         {"url": "http://localhost:8000", "description": "Local API"},
     ],
 )
+app.include_router(linking_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
@@ -201,7 +204,10 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     request.state.user_claims = claims
     context_token = current_user_id.set(claims["sub"])
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path.startswith("/v1/linking/"):
+            response.headers["Cache-Control"] = "private, no-store"
+        return response
     finally:
         current_user_id.reset(context_token)
 
