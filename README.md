@@ -38,6 +38,11 @@ Ingestion uses the existing private `conversion_jobs` PostgREST table and result
 
 Storage uses `STORAGE_BACKEND=huggingface` by default, matching the current legacy `/storage` deployment. Set `HF_STORAGE_REPO`, `HF_STORAGE_REPO_TYPE` (`bucket`, `model`, `dataset`, or `space`), and `HF_TOKEN` for private reads. Hub publishing and deletion require a separate, write-scoped `HF_STORAGE_WRITE_TOKEN`; the read token is never used for writes. Publishing uses a conditional Hub commit to prevent concurrent overwrites. Hub buckets remain readable but do not support publishing because their upload API has no equivalent conditional commit. `STORAGE_BACKEND=supabase` uses the existing private `SUPABASE_STORAGE_BUCKET` with `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` or `PROJECT_REF`. A verified Supabase user JWT is required on every storage route. Publishing accepts only a completed `/convert` `job_id` owned by the caller; the API fetches and revalidates its private stored archive. It never accepts a server path. Hub archives are shared, while Supabase objects are addressed only at `{verified-user-id}/{filename}`. A delete is audit-logged with the verified user ID. List and inspect return the legacy `filename`, `size_bytes`, `repo_id`, and `url` fields, and download streams bytes without staging on the API server. Manifest, index, section, content, node, and version-history reads fetch only the verified owner's archive, read it with the packaged Context-Fabric cache, and keep no cross-request cache. Missing configuration returns 503, a missing archive or reference returns 404, corrupt archives return 422, and an upstream storage failure returns 502.
 
+The authenticated `/v1/refs` endpoints create and resolve versioned
+Text-Fabric references and compact tokens from stored corpora. Resolution
+rejects stale versions and ambiguous compact corpus names; access follows the
+configured storage backend's rules.
+
 ## Local development
 
 Requirements: Python 3.13+, uv, Git for the pinned core schema package, Rust 1.91+ to build the core executables, Node.js 22.23.4+ for docs. PDF conversion also needs Poppler and Tesseract.

@@ -16,14 +16,8 @@ class StoredArchiveStorage(Protocol):
     def open_download(self, user_id: str, filename: str) -> tuple[httpx.Response, str]: ...
 
 
-def read_stored_archive_view(
-    storage: StoredArchiveStorage,
-    user_id: str,
-    filename: str,
-    view: str,
-    **params: Any,
-) -> dict[str, Any]:
-    """Fetch by verified owner, bound the bytes, and delegate read-only parsing."""
+def download_stored_archive(storage: StoredArchiveStorage, user_id: str, filename: str) -> bytes:
+    """Fetch an authorized archive while bounding the response size."""
     response, _stored_name = storage.open_download(user_id, filename)
     chunks: list[bytes] = []
     size = 0
@@ -41,6 +35,19 @@ def read_stored_archive_view(
     finally:
         response.close()
 
+    return b"".join(chunks)
+
+
+def read_stored_archive_view(
+    storage: StoredArchiveStorage,
+    user_id: str,
+    filename: str,
+    view: str,
+    **params: Any,
+) -> dict[str, Any]:
+    """Fetch by verified owner, bound the bytes, and delegate read-only parsing."""
+    data = download_stored_archive(storage, user_id, filename)
+
     try:
         from corpus_validate import ArchiveReadNotFound, ArchiveTooLarge, read_archive
     except ImportError as error:
@@ -49,7 +56,7 @@ def read_stored_archive_view(
         ) from error
 
     try:
-        return read_archive(b"".join(chunks), view, **params)
+        return read_archive(data, view, **params)
     except HTTPException:
         raise
     except ArchiveReadNotFound as error:

@@ -140,6 +140,17 @@ class CorpusNodeDetailResponse(BaseModel):
     occurrences_in_section: int
 
 
+class ReferenceCreate(BaseModel):
+    corpus: str
+    node: int = Field(ge=1)
+    end_node: int | None = Field(default=None, ge=1)
+    lang: str | None = None
+
+
+class ShortcodeCreate(ReferenceCreate):
+    url_template: str | None = None
+
+
 class StoragePublishRequest(BaseModel):
     """Publish a completed legacy conversion by ID, never by server path."""
 
