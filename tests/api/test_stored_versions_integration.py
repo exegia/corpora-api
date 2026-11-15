@@ -69,7 +69,7 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
             if path.is_file():
                 archive.write(path, "corpora/" + path.relative_to(root).as_posix())
         archive.writestr(
-            "manifest.yml", "name: Original\nversion: '1.0'\nwritten_date: 2024-01-02\n"
+            "manifest.yml", "name: Original\nversion: 1.0\nwritten_date: 2024-01-02\n"
         )
         archive.writestr("toc.yml", "version: v1.0\ndocuments: []\n")
     data = output.getvalue()
@@ -109,8 +109,29 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
         with pytest.raises(HTTPException) as foreign_import:
             importer.import_archive(other, "mini.corpus")
         assert foreign_import.value.status_code == 404
+
+        rpc = store._rpc
+
+        def lose_import_response(name, payload):
+            value = rpc(name, payload)
+            if name == "corpora_stored_import":
+                raise HTTPException(503, "Simulated lost response")
+            return value
+
+        monkeypatch.setattr(store, "_rpc", lose_import_response)
+        with pytest.raises(HTTPException) as lost:
+            importer.import_archive(owner, "mini.corpus")
+        assert lost.value.status_code == 503
+        monkeypatch.setattr(store, "_rpc", rpc)
         initial = importer.import_archive(owner, "mini.corpus")
         assert store.get(owner, "mini.corpus").data == data
+        assert importer.import_archive(owner, "mini.corpus") == initial
+        # An overwrite changes the source version even when its bytes match;
+        # it must not be mistaken for a retry of the original import.
+        assert client.put(object_url, headers=headers, content=data).status_code == 200
+        with pytest.raises(HTTPException) as replacement:
+            importer.import_archive(owner, "mini.corpus")
+        assert replacement.value.status_code == 409
         race_url = f"{url}/storage/v1/object/{bucket}/{owner}/race.corpus"
         assert client.post(race_url, headers=headers, content=data).status_code in (200, 201)
         stage = store.stage

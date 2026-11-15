@@ -7,8 +7,9 @@ at cutover: the source lock covers import, not future legacy writes or deletes.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -16,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.storage import SupabaseCorpusStorage
 from corpora_api.storage_detail import download_stored_archive
-from corpora_api.stored_revisions import Revision, StoredRevisions
+from corpora_api.stored_revisions import RegistryConflict, Revision, StoredRevisions
 from corpora_api.validation import ValidationBridge
 
 
@@ -55,28 +56,51 @@ class StoredArchiveImporter:
             manifest = run_corpus(archive, "view", view="manifest")
         except CorpusProcessError as error:
             raise HTTPException(503, "Source archive manifest is unavailable") from error
-        version = manifest.get("version")
-        if not isinstance(version, str) or not re.fullmatch(r"v?1\.\d+", version):
+        # YAML may decode an unquoted version such as 1.0 as a number. Core's
+        # transformer uses the same string conversion when checking versions.
+        version = str(manifest.get("version", ""))
+        if not re.fullmatch(r"v?1\.\d+", version):
             raise HTTPException(422, "Source archive version cannot be edited")
+        digest = "sha256:" + hashlib.sha256(archive).hexdigest()
+        # A retry after a lost commit response must target exactly the same
+        # immutable object, and must not mistake a different source for it.
+        revision = uuid5(
+            NAMESPACE_URL,
+            json.dumps(
+                ["corpora-stored-import", owner, filename, str(stamp.id), stamp.version, digest]
+            ),
+        )
         fact = Revision(
             owner=owner,
             filename=filename,
-            revision=uuid4(),
-            digest="sha256:" + hashlib.sha256(archive).hexdigest(),
+            revision=revision,
+            digest=digest,
             version=version,
         )
         self.revisions.stage(fact, archive)
-        self.revisions._rpc(
-            "corpora_stored_import",
-            {
-                "p_owner": owner,
-                "p_bucket": bucket,
-                "p_filename": filename,
-                "p_source_id": str(stamp.id),
-                "p_source_version": stamp.version,
-                "p_revision": str(fact.revision),
-                "p_digest": fact.digest,
-                "p_version": version,
-            },
-        )
+        try:
+            self.revisions._rpc(
+                "corpora_stored_import",
+                {
+                    "p_owner": owner,
+                    "p_bucket": bucket,
+                    "p_filename": filename,
+                    "p_source_id": str(stamp.id),
+                    "p_source_version": stamp.version,
+                    "p_revision": str(fact.revision),
+                    "p_digest": fact.digest,
+                    "p_version": version,
+                },
+            )
+        except RegistryConflict as error:
+            if error.reason != "duplicate":
+                raise
+            try:
+                existing = self.revisions.get(owner, filename, str(revision))
+            except HTTPException as lookup_error:
+                if lookup_error.status_code == 404:
+                    raise error from lookup_error
+                raise
+            if existing.fact != fact or existing.data != archive:
+                raise error
         return fact

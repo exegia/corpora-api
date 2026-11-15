@@ -25,6 +25,12 @@ BUCKET = "corpus-stored-revisions"
 MAX_REGISTRY_RESPONSE = 65_536
 
 
+class RegistryConflict(HTTPException):
+    def __init__(self, reason: str) -> None:
+        super().__init__(409, "Stored revision is unavailable")
+        self.reason = reason
+
+
 class Revision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     owner: UUID
@@ -91,13 +97,9 @@ class StoredRevisions:
                         value = None
                     message = value.get("message") if isinstance(value, dict) else None
                     code = value.get("code") if isinstance(value, dict) else None
-                    status = (
-                        404
-                        if message == "ARCHIVE_NOT_FOUND"
-                        else 409
-                        if message == "ARCHIVE_CONFLICT" or code == "23505"
-                        else 503
-                    )
+                    if message == "ARCHIVE_CONFLICT" or code == "23505":
+                        raise RegistryConflict("duplicate" if code == "23505" else "stale")
+                    status = 404 if message == "ARCHIVE_NOT_FOUND" else 503
                     raise HTTPException(status, "Stored revision is unavailable")
                 return json.loads(data) if data else None
         except HTTPException:
