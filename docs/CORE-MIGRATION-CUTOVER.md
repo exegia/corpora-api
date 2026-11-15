@@ -12,6 +12,26 @@ behavioral parity, approval of a deviation, or permission to switch production r
 - A present entry means only that the HTTP method and target path appear in that schema. Authentication, request and response compatibility, state, and deployed behavior remain unverified by this comparison.
 - Missing means the target method and path were not in the observed schema. This inventory is not a live status feed; rerun the comparison before making decisions.
 
+## Public health and capabilities observations
+
+On 2026-11-15 at approximately 08:58 UTC, unauthenticated HTTPS GET requests to
+`api.exegia.co` returned:
+
+| Legacy | `/v1` target | Observation |
+| --- | --- | --- |
+| `/health` | `/v1/health` | Both returned HTTP 200 and `{"status":"ok"}`. |
+| `/capabilities` | `/v1/capabilities` | Both returned HTTP 200 with `hub_writable: false`; legacy returned `auth_required: false`, while `/v1` returned `auth_required: true`. |
+
+These values describe two deployments at that moment, not a general parity
+result. The inspected legacy implementation derives `auth_required` from its
+`AUTH_REQUIRED` setting, while the current API derives it from the presence of
+`CORPORA_API_TOKEN`. Those settings govern different authentication boundaries:
+the latter describes the service token, not whether user-scoped endpoints require
+a Supabase identity. The differing value must be considered before routing the
+legacy capabilities endpoint or changing clients. This observation does not
+verify authentication failures, protected endpoints, deployment configuration,
+or behavior after a route change.
+
 | Ticket | Method | Legacy path | Target path | Schema observation |
 | --- | --- | --- | --- | --- |
 | 03 | `GET` | `/capabilities` | `/v1/capabilities` | Present; behavior unverified |
