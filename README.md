@@ -107,6 +107,8 @@ Fumapress AI chat is included with a request-size cap, an eight-message cap, and
 
 The root `Dockerfile.vercel` builds a pinned commit of `corpora-core`, its three Rust executables, the converter packages, OCR system tools, and pinned dictionaries. Vercel selects its container runtime from this file. Set `CORPORA_API_TOKEN` on the API project before public deployment. The docs site is a separate Vercel project with root directory `docs` and Astro preset. Its domain is `docs.exegia.co`, with the generated API reference at `/api`.
 
+For the frozen endpoint inventory and the routing verification and rollback process, see the [core migration cutover guide](docs/CORE-MIGRATION-CUTOVER.md).
+
 The checked-in OpenAPI spec targets `https://api.exegia.co`; every operation path begins with `/v1/`. Vercel routes only that prefix from the existing `corpora-py` project to the new container service, preserving the older API's other endpoints. The docs and API deployments can be released independently, but the OpenAPI export must stay in sync with the Python app.
 
 ## Repository conventions
