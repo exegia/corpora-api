@@ -1,11 +1,22 @@
 """A failed native worker cannot crash the API or expose stderr."""
 
+import json
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+from corpora_api import corpus_process
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
+
+
+def test_worker_output_limit_counts_encoded_bytes_and_returns_no_partial_json(monkeypatch):
+    monkeypatch.setattr(corpus_process, "MAX_CORPUS_WORKER_RESPONSE_BYTES", 45)
+    assert json.loads(corpus_process._bounded_response({"result": {"value": "ok"}})) == {
+        "result": {"value": "ok"}
+    }
+    result = json.loads(corpus_process._bounded_response({"result": {"value": "😀" * 15}}))
+    assert result == {"error": "too_large", "message": "Corpus result exceeds limit"}
 
 
 @pytest.mark.parametrize("failure", ["crash", "timeout", "invalid-json"])
