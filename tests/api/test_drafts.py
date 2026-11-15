@@ -43,6 +43,62 @@ def test_draft_view_limits_the_complete_response_envelope(monkeypatch):
     assert caught.value.status_code == 413
 
 
+def test_large_draft_node_returns_413_with_real_corpus(monkeypatch, tmp_path):
+    from corpus_validate import validate_archive
+
+    owner, document, revision = (str(uuid4()) for _ in range(3))
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={
+            "otype": {1: "word", 2: "book"},
+            "book": {2: "Mini"},
+            "text": {1: "x" * 2_400_000},
+        },
+        edgeFeatures={"oslots": {2: {1}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "text": {"valueType": "str"},
+            "otext": {
+                "sectionTypes": "book",
+                "sectionFeatures": "book",
+                "fmt:text-orig-full": "{text}",
+            },
+        },
+    )
+    assert ContextFabric(locations=str(root), silent="deep").loadAll(silent="deep")
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    data = stream.getvalue()
+    assert len(data) < 3_000_000 and validate_archive(data, "draft.corpus")["valid"]
+    head = DraftHead(
+        document_id=document,
+        owner=owner,
+        corpus=f"draft:{document}",
+        bucket="corpus-ai-drafts",
+        object_key=f"{owner}/ai/{document}/{revision}.corpus",
+        revision=revision,
+        digest="sha256:" + "a" * 64,
+        version="1.0",
+    )
+    draft_store = DraftStore()
+    monkeypatch.setattr(draft_store, "resolve", lambda *_: head)
+    monkeypatch.setattr(draft_store, "_download", lambda *_: data)
+    monkeypatch.setattr(app_module, "draft_store", draft_store)
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: {"sub": owner})
+    with TestClient(app) as client:
+        response = client.get(
+            f"/v1/ai/drafts/{document}/nodes/1", headers={"Authorization": "Bearer token"}
+        )
+    assert response.status_code == 413 and len(response.content) < 1_000
+
+
 def test_concurrent_draft_creation_reuses_the_same_immutable_object(monkeypatch):
     owner, job = str(uuid4()), str(uuid4())
     barrier = threading.Barrier(2)
