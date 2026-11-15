@@ -14,10 +14,11 @@ import httpx
 import pytest
 import yaml
 from cfabric import Fabric as ContextFabric
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from tf.fabric import Fabric
 
+from corpora_api.app import bearer_auth
 from corpora_api.storage import SupabaseCorpusStorage
 from corpora_api.stored_history import stored_history
 from corpora_api.stored_import import StoredArchiveImporter
@@ -38,6 +39,8 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
     anon, service = os.environ["ANON_KEY"], os.environ["SERVICE_ROLE_KEY"]
     monkeypatch.setenv("SUPABASE_URL", url)
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", service)
+    monkeypatch.setenv("SUPABASE_JWKS_URL", url + "/auth/v1/.well-known/jwks.json")
+    monkeypatch.setenv("SUPABASE_JWT_ISSUER", url + "/auth/v1")
     core_src = str(Path(os.environ["CORPORA_CORE_TEST_ROOT"]) / "packages/corpus-validate/src")
     monkeypatch.setenv("PYTHONPATH", core_src + os.pathsep + os.environ.get("PYTHONPATH", ""))
     root = tmp_path / "tf"
@@ -226,24 +229,28 @@ def test_edit_and_restore_real_stored_archive(tmp_path, monkeypatch):
             )
 
         app = FastAPI()
-
-        @app.middleware("http")
-        async def simulated_identity(request: Request, call_next):
-            # Local Auth issued these tokens; this test substitutes token
-            # verification and exercises the owner-scoped service and storage.
-            credential = request.headers.get("Authorization", "")
-            if credential == "Bearer " + owner_token:
-                request.state.user_id = owner
-            elif credential == "Bearer " + other_token:
-                request.state.user_id = other
-            return await call_next(request)
-
+        app.middleware("http")(bearer_auth)
         app.include_router(stored_version_router(store))
         with TestClient(app) as http:
             path = "/v1/storage/mini.corpus"
             owner_headers = {"Authorization": "Bearer " + owner_token}
             other_headers = {"Authorization": "Bearer " + other_token}
             assert http.get(path + "/versions").status_code == 401
+            assert (
+                http.get(
+                    path + "/versions", headers={"Authorization": "Bearer invalid"}
+                ).status_code
+                == 401
+            )
+            token_header, token_payload, token_signature = owner_token.split(".")
+            wrong_signature = ("A" if token_signature[0] != "A" else "B") + token_signature[1:]
+            forged = ".".join((token_header, token_payload, wrong_signature))
+            assert (
+                http.get(
+                    path + "/versions", headers={"Authorization": "Bearer " + forged}
+                ).status_code
+                == 401
+            )
             assert http.get(path + "/versions", headers=other_headers).status_code == 404
             history_response = http.get(path + "/versions", headers=owner_headers)
             assert history_response.status_code == 200
