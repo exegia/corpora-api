@@ -44,6 +44,19 @@ def test_html_native_selectors_resolve_exact_text_and_reject_changed_asset():
     conversion = extract_html_references_input(
         data, original=source, converted=converted, asset_id="html"
     )
+    from corpora_api.linking_runtime import AssetRecord, AuthorizedInventoryResolver
+
+    asset = AssetRecord(endpoint=source, format="html", data=data, asset_id="html")
+    valid = conversion.mappings[0].original
+    assert AuthorizedInventoryResolver._native(asset, valid) == valid.locators[0].text.exact
+    locator = valid.locators[0].model_copy(update={"asset_id": "forged"})
+    forged = valid.model_copy(update={"locators": (locator,)})
+    with pytest.raises(ValueError, match="asset ID"):
+        AuthorizedInventoryResolver._native(asset, forged)
+    with pytest.raises(ValueError, match="asset ID"):
+        AuthorizedInventoryResolver._native(
+            AssetRecord(endpoint=source, format="html", data=data), valid
+        )
     for mapping in conversion.mappings:
         assert (
             retrieve_html_selection(data, mapping.original) == mapping.converted.locators[0].exact
