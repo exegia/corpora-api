@@ -162,12 +162,23 @@ def test_ai_chat_preserves_authenticated_stub_and_stream_contract(store: dict[st
             json={"scope": {**scope, "unit_range": {"start": 5, "end": 4}}, "message": "hello"},
             headers={**headers("alice-token"), **provider},
         )
+        preflight = client.options(
+            "/v1/ai/chat",
+            headers={
+                "Origin": "https://docs.exegia.co",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "authorization,content-type,x-ai-provider,x-ai-api-key,x-ai-model"
+                ),
+            },
+        )
         schema = client.get("/v1/openapi.json").json()
     assert unauthorized.status_code == 401
     assert missing.status_code == 422
     assert stub.status_code == 501
     assert "test-key-placeholder" not in stub.text
     assert reversed_range.status_code == 422
+    assert preflight.status_code == 200
     operation = schema["paths"]["/v1/ai/chat"]["post"]
     assert operation["security"] == [{"SupabaseUserJWT": []}]
     assert {"403", "423", "501", "503"} <= operation["responses"].keys()

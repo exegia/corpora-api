@@ -160,7 +160,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-AI-Provider",
+        "X-AI-Api-Key",
+        "X-AI-Model",
+    ],
 )
 
 
