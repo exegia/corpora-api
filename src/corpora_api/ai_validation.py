@@ -23,13 +23,18 @@ def validate_scope(
         return run_corpus(data, "scope", scope=request.model_dump())
     except CorpusProcessError as error:
         if error.kind == "stale":
+            reason = (
+                "Scoped text has changed"
+                if str(error) == "Scoped text has changed"
+                else "Corpus version has changed"
+            )
             return JSONResponse(
                 status_code=409,
                 content={
                     "code": "stale",
-                    "reason": str(error),
+                    "reason": reason,
                     "retryable": False,
-                    **error.attributes,
+                    "current_version": error.attributes.get("current_version"),
                 },
             )
         status = {"too_large": 413, "unavailable": 503}.get(error.kind, 422)
