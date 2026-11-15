@@ -9,7 +9,12 @@ from uuid import UUID
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from corpora_api.corpus_process import CorpusProcessError, run_corpus
+from corpora_api.corpus_process import (
+    SAFE_SCOPE_ERRORS,
+    CorpusProcessError,
+    run_corpus,
+    safe_scope_node_type,
+)
 from corpora_api.models import AINodeScope
 from corpora_api.storage import StorageError, StoredCorpusNotFound
 from corpora_api.storage_detail import download_stored_archive
@@ -47,6 +52,20 @@ def validate_scope(
             node = error.attributes.get("node")
             if type(node) is int and node in nodes:
                 raise HTTPException(422, f"Unknown node {node}") from error
+        if error.kind == "invalid_scope":
+            detail = error.attributes.get("detail")
+            if isinstance(detail, str) and detail in SAFE_SCOPE_ERRORS:
+                raise HTTPException(422, detail) from error
+        if error.kind == "scope_type_mismatch":
+            actual = error.attributes.get("actual")
+            if (
+                request.node_id is not None
+                and request.node_type is not None
+                and safe_scope_node_type(actual)
+            ):
+                raise HTTPException(
+                    422, f"Node {request.node_id} has type {actual!r}, not {request.node_type!r}"
+                ) from error
         if error.kind == "stale":
             reason = (
                 "Scoped text has changed"

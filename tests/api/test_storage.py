@@ -290,6 +290,16 @@ def test_ai_scope_validation_uses_owned_real_archive(
             json={"scope": {**scope, "node_id": 2147483647}},
             headers=headers("alice-token"),
         )
+        wrong_type = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "node_type": "__nonexistent_type__"}},
+            headers=headers("alice-token"),
+        )
+        wrong_level = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "level": "section"}},
+            headers=headers("alice-token"),
+        )
         unauthorized = client.get("/v1/ai/providers")
         schema = client.get("/v1/openapi.json").json()
     assert [item["id"] for item in providers.json()["providers"]] == [
@@ -323,6 +333,10 @@ def test_ai_scope_validation_uses_owned_real_archive(
     assert stale.json()["code"] == "stale"
     assert unknown_node.status_code == 422
     assert unknown_node.json() == {"detail": "Unknown node 2147483647"}
+    assert wrong_type.status_code == 422
+    assert wrong_type.json() == {"detail": "Node 1 has type 'word', not '__nonexistent_type__'"}
+    assert wrong_level.status_code == 422
+    assert wrong_level.json() == {"detail": "A structural scope requires a non-slot node"}
     for path, method in (("/v1/ai/providers", "get"), ("/v1/ai/validate", "post")):
         assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
 

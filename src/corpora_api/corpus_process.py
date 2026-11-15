@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import subprocess
 import sys
 from dataclasses import asdict
@@ -35,6 +36,39 @@ class CorpusProcessError(Exception):
 class UnknownScopeNode(Exception):
     def __init__(self, node: int):
         self.node = node
+
+
+class InvalidScopeSelection(Exception):
+    def __init__(self, detail: str):
+        self.detail = detail
+
+
+class ScopeNodeTypeMismatch(Exception):
+    def __init__(self, actual: str):
+        self.actual = actual
+
+
+SAFE_SCOPE_ERRORS = frozenset(
+    {
+        "Corpus scope cannot carry a node, node type, or unit range",
+        "Word scope requires a slot node",
+        "A structural scope requires a non-slot node",
+        "Section scope requires a declared section type",
+        "Document scope requires the outermost declared section type",
+        "Only passage scope accepts a unit range",
+        "Passage endpoints must be structural nodes of the same type",
+        "Passage has ambiguous enclosing sections",
+        "Passage range requires an enclosing declared section",
+        "Passage range crosses a section boundary",
+        "Passage endpoints must be contained in their section",
+        "Passage endpoints are reversed in document order",
+        "Passage anchor must contain the range or be its first unit",
+    }
+)
+
+
+def safe_scope_node_type(value: object) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[\w.-]{1,128}", value))
 
 
 def run_corpus(data: bytes, operation: str, **kwargs: Any) -> dict[str, Any]:
@@ -99,12 +133,26 @@ def _main() -> None:
                 for node in nodes:
                     if node is not None and str(error) == f"Unknown node {node}":
                         raise UnknownScopeNode(node) from error
+                detail = str(error)
+                if detail in SAFE_SCOPE_ERRORS:
+                    raise InvalidScopeSelection(detail) from error
+                if scope.node_id is not None and scope.node_type is not None:
+                    prefix = f"Node {scope.node_id} has type '"
+                    suffix = f"', not {scope.node_type!r}"
+                    if detail.startswith(prefix) and detail.endswith(suffix):
+                        actual = detail[len(prefix) : -len(suffix)]
+                        if safe_scope_node_type(actual):
+                            raise ScopeNodeTypeMismatch(actual) from error
                 raise
         else:
             raise ValueError("Unsupported corpus operation")
         response = {"result": value}
     except UnknownScopeNode as error:
         response = {"error": "unknown_scope_node", "attributes": {"node": error.node}}
+    except InvalidScopeSelection as error:
+        response = {"error": "invalid_scope", "attributes": {"detail": error.detail}}
+    except ScopeNodeTypeMismatch as error:
+        response = {"error": "scope_type_mismatch", "attributes": {"actual": error.actual}}
     except StaleScope as error:
         response = {
             "error": "stale",
