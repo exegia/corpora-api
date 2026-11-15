@@ -6,11 +6,13 @@ import io
 import json
 import sys
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from tf.fabric import Fabric
 
 from corpora_api import app as app_module
 from corpora_api.app import app
@@ -78,6 +80,66 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
 
 def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_ai_scope_validation_uses_owned_real_archive(
+    store: dict[str, bytes], tmp_path: Path
+) -> None:
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={
+            "otype": {1: "word", 2: "word", 3: "book"},
+            "book": {3: "Mini"},
+            "text": {1: "A", 2: "B"},
+        },
+        edgeFeatures={"oslots": {3: {1, 2}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "text": {"valueType": "str"},
+            "otext": {
+                "sectionTypes": "book",
+                "sectionFeatures": "book",
+                "fmt:text-orig-full": "{text}",
+            },
+        },
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    scope = {"corpus": "first", "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
+    with TestClient(app) as client:
+        providers = client.get("/v1/ai/providers", headers=headers("alice-token"))
+        valid = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+        foreign = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("bob-token")
+        )
+        stale = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "version": "old"}},
+            headers=headers("alice-token"),
+        )
+        unauthorized = client.get("/v1/ai/providers")
+        schema = client.get("/v1/openapi.json").json()
+    assert [item["id"] for item in providers.json()["providers"]] == [
+        "anthropic",
+        "openai",
+        "google",
+    ]
+    assert valid.status_code == 200, valid.text
+    assert valid.json() == {"corpus": "first", "version": "1.0", "checked_nodes": 1, "findings": []}
+    assert (foreign.status_code, stale.status_code, unauthorized.status_code) == (404, 409, 401)
+    assert stale.json()["code"] == "stale"
+    for path, method in (("/v1/ai/providers", "get"), ("/v1/ai/validate", "post")):
+        assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
 
 
 def test_list_info_and_streamed_download_are_owner_scoped(store: dict[str, bytes]) -> None:
