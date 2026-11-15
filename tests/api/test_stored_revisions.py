@@ -68,3 +68,35 @@ def test_stage_readback_and_published_registry_facts(monkeypatch):
         store.get(owner, "one.corpus", revision)
     assert error.value.status_code == 503
     assert requests[-1][1].endswith("corpora_stored_get")
+
+
+def test_history_rejects_foreign_duplicate_and_oversized_registry_pages(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "http://example.test")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+    owner = str(uuid4())
+    fact = {
+        "owner": owner,
+        "filename": "one.corpus",
+        "revision": str(uuid4()),
+        "digest": "sha256:" + "a" * 64,
+        "version": "v1.0",
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+    response = [fact, dict(fact)]
+    store = StoredRevisions(
+        httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response)))
+    )
+    with pytest.raises(HTTPException) as duplicate:
+        store.history(owner, "one.corpus", 1)
+    assert duplicate.value.status_code == 503
+    response[:] = [{**fact, "owner": str(uuid4())}]
+    with pytest.raises(HTTPException) as foreign:
+        store.history(owner, "one.corpus", 1)
+    assert foreign.value.status_code == 503
+    response[:] = [fact] * 3
+    with pytest.raises(HTTPException) as oversized:
+        store.history(owner, "one.corpus", 1)
+    assert oversized.value.status_code == 503
+    with pytest.raises(HTTPException) as invalid:
+        store.history(owner, "one.corpus", 101)
+    assert invalid.value.status_code == 422

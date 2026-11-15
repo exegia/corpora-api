@@ -11,6 +11,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import quote
 from uuid import UUID
 
@@ -38,6 +39,22 @@ class Revision(BaseModel):
     revision: UUID
     digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     version: str = Field(min_length=1, max_length=128)
+
+
+class HistoryFact(Revision):
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class HistoryCursor:
+    created_at: datetime
+    revision: UUID
+
+
+@dataclass(frozen=True)
+class HistoryPage:
+    entries: list[HistoryFact]
+    next_cursor: HistoryCursor | None
 
 
 @dataclass(frozen=True)
@@ -146,6 +163,53 @@ class StoredRevisions:
         except (ValidationError, ValueError) as error:
             raise HTTPException(503, "Stored revision registry returned invalid data") from error
         return Snapshot(fact, self._download(fact))
+
+    def history(
+        self, owner: str, filename: str, limit: int, cursor: HistoryCursor | None = None
+    ) -> HistoryPage:
+        """Enumerate registry facts; object availability and legacy history need separate checks."""
+        owner, filename, _ = self._identity(owner, filename)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise HTTPException(422, "Invalid history page size")
+        if cursor is not None and (
+            not isinstance(cursor, HistoryCursor)
+            or not isinstance(cursor.created_at, datetime)
+            or cursor.created_at.utcoffset() is None
+            or not isinstance(cursor.revision, UUID)
+        ):
+            raise HTTPException(422, "Invalid history cursor")
+        value = self._rpc(
+            "corpora_stored_history",
+            {
+                "p_owner": owner,
+                "p_filename": filename,
+                "p_limit": limit,
+                "p_before": cursor.created_at.isoformat() if cursor else None,
+                "p_before_revision": str(cursor.revision) if cursor else None,
+            },
+        )
+        try:
+            if not isinstance(value, list) or len(value) > limit + 1:
+                raise ValueError("invalid history page")
+            entries = [HistoryFact.model_validate(row) for row in value]
+            boundary = (cursor.created_at, cursor.revision.int) if cursor else None
+            for entry in entries:
+                if (
+                    str(entry.owner) != owner
+                    or entry.filename != filename
+                    or entry.created_at.utcoffset() is None
+                ):
+                    raise ValueError("invalid history identity")
+                key = (entry.created_at, entry.revision.int)
+                if boundary is not None and key >= boundary:
+                    raise ValueError("invalid history order")
+                boundary = key
+        except (ValidationError, ValueError, TypeError) as error:
+            raise HTTPException(503, "Stored revision registry returned invalid history") from error
+        more = len(entries) > limit
+        entries = entries[:limit]
+        next_cursor = HistoryCursor(entries[-1].created_at, entries[-1].revision) if more else None
+        return HistoryPage(entries, next_cursor)
 
     def stage(self, fact: Revision, data: bytes) -> None:
         self._identity(str(fact.owner), fact.filename, str(fact.revision))
