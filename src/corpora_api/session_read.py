@@ -8,7 +8,7 @@ this helper does not verify JWT signatures or select a storage backend.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -50,3 +50,31 @@ class SessionBoundRead:
             if getattr(error, "sqlstate", None) == "P0001" and primary == "AUTH_SESSION_INVALID":
                 raise HTTPException(401, "Verified session is unavailable") from error
             raise HTTPException(503, "Session-bound archive read is unavailable") from error
+
+
+class RevisionReader(Protocol):
+    """The registry adapter must bind owner, filename, revision and object digest."""
+
+    def get(self, owner: str, filename: str, revision: str | None = None) -> Any: ...
+
+
+class SessionBoundRevisions:
+    """Compose the session lease with the bounded, verified revision reader."""
+
+    def __init__(self, lease: SessionBoundRead, revisions: RevisionReader) -> None:
+        self.lease = lease
+        self.revisions = revisions
+
+    def get(
+        self, verified_claims: Mapping[str, Any], filename: str, revision: str | None = None
+    ) -> Any:
+        snapshots: list[Any] = []
+
+        def download(owner: str) -> bytes:
+            snapshot = self.revisions.get(owner, filename, revision)
+            snapshots.append(snapshot)
+            return snapshot.data
+
+        # The snapshot is exposed only after the lease's final session check.
+        self.lease.read(verified_claims, download)
+        return snapshots[0]
