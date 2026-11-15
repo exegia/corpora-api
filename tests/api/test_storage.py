@@ -17,6 +17,7 @@ from tf.fabric import Fabric
 from corpora_api import app as app_module
 from corpora_api.app import app
 from corpora_api.auth import UserAuthError
+from corpora_api.conversion_artifacts import ConversionArtifactStore
 from corpora_api.storage import (
     CorpusStorage,
     HubCorpusStorage,
@@ -125,7 +126,7 @@ def test_large_node_response_is_rejected_for_owned_archive(store, tmp_path):
 
 
 def test_ai_scope_validation_uses_owned_real_archive(
-    store: dict[str, bytes], tmp_path: Path
+    store: dict[str, bytes], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "tf"
     root.mkdir()
@@ -155,6 +156,36 @@ def test_ai_scope_validation_uses_owned_real_archive(
             if path.is_file():
                 archive.write(path, f"corpora/{path.relative_to(root)}")
     store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    job = "b85f991a-8aaf-4f48-b26e-a9ef63e6a7f4"
+    downloads = []
+
+    def conversion_backend(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/rest/v1/conversion_jobs":
+            assert request.url.params["id"] == f"eq.{job}"
+            if request.url.params["owner"] != f"eq.{ALICE}":
+                return httpx.Response(200, json=[])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": job,
+                        "owner": ALICE,
+                        "status": "succeeded",
+                        "result_key": f"conversion-jobs/{job}.corpus",
+                        "validation": {"valid": True},
+                    }
+                ],
+            )
+        assert request.url.path == f"/storage/v1/object/jobs/conversion-jobs/{job}.corpus"
+        downloads.append(True)
+        return httpx.Response(200, content=stream.getvalue())
+
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
+    monkeypatch.setattr(
+        app_module,
+        "conversion_artifact_store",
+        ConversionArtifactStore(httpx.Client(transport=httpx.MockTransport(conversion_backend))),
+    )
     scope = {"corpus": "first", "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
     with TestClient(app) as client:
         providers = client.get("/v1/ai/providers", headers=headers("alice-token"))
@@ -170,6 +201,13 @@ def test_ai_scope_validation_uses_owned_real_archive(
             "/v1/ai/validate",
             json={"scope": {**scope, "level": "section", "node_id": 4}},
             headers=headers("bob-token"),
+        )
+        job_scope = {**scope, "corpus": "job:" + job}
+        job_result = client.post(
+            "/v1/ai/validate", json={"scope": job_scope}, headers=headers("alice-token")
+        )
+        foreign_job = client.post(
+            "/v1/ai/validate", json={"scope": job_scope}, headers=headers("bob-token")
         )
         foreign = client.post(
             "/v1/ai/validate", json={"scope": scope}, headers=headers("bob-token")
@@ -189,6 +227,14 @@ def test_ai_scope_validation_uses_owned_real_archive(
     assert providers.json()["gateway"] == "vercel-ai-gateway"
     assert valid.status_code == 200, valid.text
     assert valid.json() == {"corpus": "first", "version": "1.0", "checked_nodes": 1, "findings": []}
+    assert job_result.status_code == 200, job_result.text
+    assert job_result.json() == {
+        "corpus": "job:" + job,
+        "version": "1.0",
+        "checked_nodes": 1,
+        "findings": [],
+    }
+    assert foreign_job.status_code == 404 and downloads == [True]
     assert finding.status_code == 200, finding.text
     located = finding.json()["findings"]
     assert len(located) == 1
