@@ -24,7 +24,7 @@ def test_registry_atomic_history_owner_and_concurrent_writers():
     binaries = Path(os.environ["CORPORA_TEST_POSTGRES_BIN"])
     migration = (
         Path(__file__).resolve().parents[2]
-        / "supabase/migrations/20261115160000_stored_archive_revision_registry.sql"
+        / "supabase/migrations/20261115154949_stored_archive_revision_registry.sql"
     )
     with tempfile.TemporaryDirectory(prefix="stored-registry-", dir="/tmp") as temporary:
         cluster = Path(temporary) / "data"
