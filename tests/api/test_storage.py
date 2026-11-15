@@ -102,6 +102,26 @@ def test_ai_scope_rejects_invalid_job_ids_before_storage(store, monkeypatch, cor
     assert not calls
 
 
+@pytest.mark.parametrize(
+    "corpus", ["../mini", "alice/mini", "/tmp/mini", "https://host/mini", "mini\\file", " mini"]
+)
+def test_ai_scope_rejects_invalid_archive_ids_before_storage(store, monkeypatch, corpus):
+    calls = []
+    monkeypatch.setattr(
+        app_module,
+        "corpus_storage",
+        SimpleNamespace(open_download=lambda *args: calls.append(args)),
+    )
+    scope = {"corpus": corpus, "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+    assert result.status_code == 422
+    assert result.json() == {"detail": "Expected a flat corpus archive ID, not a path or URL"}
+    assert not calls
+
+
 def test_large_node_response_is_rejected_for_owned_archive(store, tmp_path):
     from cfabric import Fabric as ContextFabric
     from corpus_validate import validate_archive

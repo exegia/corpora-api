@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import UUID
 
@@ -11,6 +12,8 @@ from fastapi.responses import JSONResponse
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.models import AINodeScope
 from corpora_api.storage_detail import download_stored_archive
+
+_ARCHIVE_ID = re.compile(r"^[\w][\w .-]*$", re.UNICODE)
 
 
 def validate_scope(
@@ -23,6 +26,10 @@ def validate_scope(
             raise HTTPException(422, "Expected job:<UUID>") from error
         _, data = jobs.fetch(owner, request.corpus[4:])
     else:
+        if not request.corpus.startswith("draft:") and (
+            not _ARCHIVE_ID.fullmatch(request.corpus) or request.corpus != request.corpus.strip()
+        ):
+            raise HTTPException(422, "Expected a flat corpus archive ID, not a path or URL")
         data = download_stored_archive(storage, owner, request.corpus)
     try:
         return run_corpus(data, "scope", scope=request.model_dump())
