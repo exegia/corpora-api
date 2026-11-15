@@ -21,6 +21,7 @@ from corpora_api.conversion_artifacts import ConversionArtifactStore
 from corpora_api.storage import (
     CorpusStorage,
     HubCorpusStorage,
+    StorageError,
     StoredCorpusNotFound,
     SupabaseCorpusStorage,
 )
@@ -120,6 +121,34 @@ def test_ai_scope_rejects_invalid_archive_ids_before_storage(store, monkeypatch,
     assert result.status_code == 422
     assert result.json() == {"detail": "Expected a flat corpus archive ID, not a path or URL"}
     assert not calls
+
+
+@pytest.mark.parametrize("failure", ["open", "stream"])
+def test_ai_scope_storage_failure_is_sanitized_and_returns_503(store, monkeypatch, failure):
+    closed = []
+
+    class BrokenStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"partial"
+            raise httpx.ReadError("sensitive upstream detail")
+
+        def close(self):
+            closed.append(True)
+
+    def open_download(_owner, _name):
+        if failure == "open":
+            raise StorageError("sensitive upstream detail")
+        return httpx.Response(200, stream=BrokenStream()), "first.corpus"
+
+    monkeypatch.setattr(app_module, "corpus_storage", SimpleNamespace(open_download=open_download))
+    scope = {"corpus": "first", "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+    assert result.status_code == 503
+    assert result.json() == {"detail": "Corpus storage is unavailable"}
+    assert closed == ([True] if failure == "stream" else [])
 
 
 def test_large_node_response_is_rejected_for_owned_archive(store, tmp_path):

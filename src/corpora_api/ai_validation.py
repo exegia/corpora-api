@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.models import AINodeScope
+from corpora_api.storage import StorageError, StoredCorpusNotFound
 from corpora_api.storage_detail import download_stored_archive
 
 _ARCHIVE_ID = re.compile(r"^[\w][\w .-]*$", re.UNICODE)
@@ -30,7 +31,12 @@ def validate_scope(
             not _ARCHIVE_ID.fullmatch(request.corpus) or request.corpus != request.corpus.strip()
         ):
             raise HTTPException(422, "Expected a flat corpus archive ID, not a path or URL")
-        data = download_stored_archive(storage, owner, request.corpus)
+        try:
+            data = download_stored_archive(storage, owner, request.corpus)
+        except StoredCorpusNotFound:
+            raise
+        except StorageError as error:
+            raise HTTPException(503, "Corpus storage is unavailable") from error
     try:
         return run_corpus(data, "scope", scope=request.model_dump())
     except CorpusProcessError as error:
