@@ -591,6 +591,13 @@ def test_reference_route_checks_session_space_grants_and_history(monkeypatch):
                 client.post(discovery_path, json=discovery_body, headers=a).json()
                 == registered.json()
             )
+            assert (
+                client.post(
+                    discovery_path, json={**discovery_body, "reason": "changed"}, headers=a
+                ).status_code
+                == 409
+            )
+            assert client.post(discovery_path, json=discovery_body, headers=b).status_code == 409
             changed = client.post(
                 discovery_path,
                 json={

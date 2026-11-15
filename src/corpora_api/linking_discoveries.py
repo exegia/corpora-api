@@ -134,9 +134,16 @@ class SQLiteDiscoveryStore:
                 (self.authority_id, str(event_id)),
             ).fetchone()
             if prior:
-                if prior[0] != digest:
-                    raise VersionConflictError("discovery event reused with changed evidence")
-                return DiscoveryRevision.model_validate_json(prior[1])
+                original = DiscoveryRevision.model_validate_json(prior[1])
+                if (
+                    prior[0] != digest
+                    or original.actor_id != self.store.actor_id
+                    or original.reason != reason
+                ):
+                    raise VersionConflictError(
+                        "discovery event reused with changed evidence, actor or reason"
+                    )
+                return original
             if db.execute(
                 "SELECT 1 FROM linking_discovery_revisions WHERE discovery_id = ?",
                 (str(discovery.id),),
