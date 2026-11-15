@@ -216,11 +216,7 @@ class AIProvidersResponse(BaseModel):
 
 
 class AIChatUnitRange(AIUnitRange):
-    @model_validator(mode="after")
-    def ordered(self) -> AIChatUnitRange:
-        if self.end < self.start:
-            raise ValueError("range end must be >= start")
-        return self
+    """Node IDs follow corpus reading order, not necessarily numeric order."""
 
 
 class AIChatNodeScope(AINodeScope):
