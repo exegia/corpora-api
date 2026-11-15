@@ -82,17 +82,21 @@ def _main() -> None:
         if len(current) > MAX_STORED_ARCHIVE_BYTES:
             raise VersionProcessError("too_large")
         with contextlib.redirect_stdout(sys.stderr):
+            from corpus_validate import ArchiveTooLarge
             from corpus_validate.version_edit import prepare_edit, prepare_restore
 
-            if request["operation"] == "edit" and selected is None:
-                prepared = prepare_edit(current, **request["args"])
-            elif request["operation"] == "restore" and isinstance(selected, str):
-                selected_data = base64.b64decode(selected, validate=True)
-                if len(selected_data) > MAX_STORED_ARCHIVE_BYTES:
-                    raise VersionProcessError("too_large")
-                prepared = prepare_restore(current, selected_data, **request["args"])
-            else:
-                raise ValueError("invalid operation")
+            try:
+                if request["operation"] == "edit" and selected is None:
+                    prepared = prepare_edit(current, **request["args"])
+                elif request["operation"] == "restore" and isinstance(selected, str):
+                    selected_data = base64.b64decode(selected, validate=True)
+                    if len(selected_data) > MAX_STORED_ARCHIVE_BYTES:
+                        raise VersionProcessError("too_large")
+                    prepared = prepare_restore(current, selected_data, **request["args"])
+                else:
+                    raise ValueError("invalid operation")
+            except ArchiveTooLarge as error:
+                raise VersionProcessError("too_large") from error
         response = {
             "archive": base64.b64encode(prepared.archive).decode("ascii"),
             "version": prepared.version,
