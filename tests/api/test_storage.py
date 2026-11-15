@@ -134,6 +134,7 @@ def test_ai_scope_validation_uses_owned_real_archive(
         "openai",
         "google",
     ]
+    assert providers.json()["gateway"] == "vercel-ai-gateway"
     assert valid.status_code == 200, valid.text
     assert valid.json() == {"corpus": "first", "version": "1.0", "checked_nodes": 1, "findings": []}
     assert (foreign.status_code, stale.status_code, unauthorized.status_code) == (404, 409, 401)
@@ -146,6 +147,36 @@ def test_ai_range_accepts_node_ids_in_reading_order() -> None:
     from corpora_api.models import AIUnitRange
 
     assert AIUnitRange(start=5, end=4).model_dump() == {"start": 5, "end": 4}
+
+
+def test_ai_chat_preserves_authenticated_stub_and_stream_contract(store: dict[str, bytes]) -> None:
+    scope = {"corpus": "first", "level": "word", "node_id": 1, "label": "word", "version": "1"}
+    body = {"scope": scope, "message": "hello"}
+    provider = {"X-AI-Provider": "openai", "X-AI-Api-Key": "test-key-placeholder"}
+    with TestClient(app) as client:
+        unauthorized = client.post("/v1/ai/chat", json=body, headers=provider)
+        missing = client.post("/v1/ai/chat", json=body, headers=headers("alice-token"))
+        stub = client.post("/v1/ai/chat", json=body, headers={**headers("alice-token"), **provider})
+        reversed_range = client.post(
+            "/v1/ai/chat",
+            json={"scope": {**scope, "unit_range": {"start": 5, "end": 4}}, "message": "hello"},
+            headers={**headers("alice-token"), **provider},
+        )
+        schema = client.get("/v1/openapi.json").json()
+    assert unauthorized.status_code == 401
+    assert missing.status_code == 422
+    assert stub.status_code == 501
+    assert "test-key-placeholder" not in stub.text
+    assert reversed_range.status_code == 422
+    operation = schema["paths"]["/v1/ai/chat"]["post"]
+    assert operation["security"] == [{"SupabaseUserJWT": []}]
+    assert {"403", "423", "501", "503"} <= operation["responses"].keys()
+    event_schema = operation["responses"]["200"]["content"]["text/event-stream"]["schema"]
+    names = [item["$ref"].rsplit("/", 1)[-1] for item in event_schema["anyOf"]]
+    assert names == [
+        f"AIChat{kind}Event" for kind in ("Token", "Tool", "Suggestion", "Done", "Error")
+    ]
+    assert all(name in schema["components"]["schemas"] for name in names)
 
 
 def test_list_info_and_streamed_download_are_owner_scoped(store: dict[str, bytes]) -> None:

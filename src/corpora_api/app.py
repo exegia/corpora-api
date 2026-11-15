@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
 from corpora_schema_types import GraphValidationError
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -61,6 +61,9 @@ from corpora_api.ingest_worker import (
     run_docling_worker,
 )
 from corpora_api.models import (
+    AIChatErrorInfo,
+    AIChatEvent,
+    AIChatRequest,
     AIProvider,
     AIProvidersResponse,
     AIScopeRequest,
@@ -126,6 +129,7 @@ def user_auth_path(path: str) -> bool:
         or path.startswith("/v1/storage/")
         or path == "/v1/ai/providers"
         or path == "/v1/ai/validate"
+        or path == "/v1/ai/chat"
         or path == "/v1/refs"
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
@@ -775,6 +779,42 @@ async def ai_providers(_user_id: Annotated[str, Depends(require_user)]) -> AIPro
             AIProvider(id="google", label="Google", models=["gemini-3-pro", "gemini-3-flash"]),
         ]
     )
+
+
+@app.post(
+    "/v1/ai/chat",
+    tags=["ai"],
+    responses={
+        200: {
+            "model": AIChatEvent,
+            "description": "SSE events: token, tool, suggestion, done or error.",
+            "content": {
+                "text/event-stream": {
+                    "schema": {
+                        "anyOf": [
+                            {"$ref": f"#/components/schemas/AIChat{kind}Event"}
+                            for kind in ("Token", "Tool", "Suggestion", "Done", "Error")
+                        ]
+                    }
+                }
+            },
+        },
+        401: {"model": ErrorResponse},
+        403: {"model": AIChatErrorInfo, "description": "Caller lacks corpus rights"},
+        423: {"model": AIChatErrorInfo, "description": "Corpus is published and locked"},
+        501: {"description": "Chat is not implemented"},
+        503: {"model": AIChatErrorInfo, "description": "Model or provider unavailable"},
+    },
+)
+async def ai_chat(
+    request: AIChatRequest,
+    _user_id: Annotated[str, Depends(require_user)],
+    x_ai_provider: Annotated[str, Header(description="Gateway provider slug")],
+    x_ai_api_key: Annotated[str, Header(description="Request-scoped provider API key")],
+    x_ai_model: Annotated[str | None, Header(description="Optional model override")] = None,
+) -> None:
+    """Describe the legacy streaming contract without starting a model request."""
+    raise HTTPException(status_code=501, detail="AI chat is not implemented")
 
 
 @app.post(
