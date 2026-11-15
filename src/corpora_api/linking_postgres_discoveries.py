@@ -79,8 +79,14 @@ class PostgreSQLDiscoveryStore(SQLiteDiscoveryStore):
                 if row:
                     original = DiscoveryRevision.model_validate(row[1])
                     self.store._check_access(db, actor, original)
-                    if row[0] != digest:
-                        raise VersionConflictError("discovery event reused with changed evidence")
+                    if (
+                        row[0] != digest
+                        or original.actor_id != str(actor)
+                        or original.reason != reason
+                    ):
+                        raise VersionConflictError(
+                            "discovery event reused with changed evidence, actor or reason"
+                        )
                     return original
                 _lock_event(db, self.store, "discovery", discovery.id)
                 exists = db.execute(
