@@ -140,6 +140,25 @@ class CorpusNodeDetailResponse(BaseModel):
     occurrences_in_section: int
 
 
+class DraftCreateRequest(BaseModel):
+    job_id: str
+
+
+class DraftInfo(BaseModel):
+    id: str
+    corpus: str
+    revision: str
+    digest: str
+    version: str
+    state: Literal["draft", "locked", "published"]
+    archive_url: str
+
+
+class DraftListResponse(BaseModel):
+    drafts: list[DraftInfo]
+    next_offset: int | None
+
+
 class AIUnitRange(BaseModel):
     start: int
     end: int
