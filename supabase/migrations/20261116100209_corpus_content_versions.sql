@@ -46,6 +46,7 @@ CREATE TABLE public.corpora_corpus_write_ops (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     UNIQUE (id, corpus_id),
+    UNIQUE (id, corpus_id, worker_claim),
     CHECK ((expected_sequence = 0) = (expected_parent_sha IS NULL)),
     CHECK ((state = 'admitted' AND worker_claim IS NULL AND claimed_at IS NULL)
         OR (state <> 'admitted' AND worker_claim IS NOT NULL AND claimed_at IS NOT NULL))
@@ -55,6 +56,25 @@ CREATE TABLE public.corpora_corpus_write_ops (
 -- racing an external write whose result was lost.
 CREATE UNIQUE INDEX corpora_corpus_write_ops_one_active
     ON public.corpora_corpus_write_ops (corpus_id) WHERE state IN ('admitted', 'executing', 'uncertain');
+
+-- A receipt records a trusted readback, not permanent Hub retention or privacy.
+CREATE TABLE public.corpora_corpus_staged_inputs (
+    operation_id uuid PRIMARY KEY,
+    corpus_id uuid NOT NULL,
+    worker_claim uuid NOT NULL,
+    repo_id text NOT NULL,
+    repo_type text NOT NULL CHECK (repo_type IN ('dataset', 'model')),
+    input_format text NOT NULL CHECK (input_format IN ('zip', 'corpus')),
+    input_sha256 text NOT NULL CHECK (input_sha256 ~ '^[0-9a-f]{64}$'),
+    archive_size bigint NOT NULL CHECK (archive_size > 0 AND archive_size <= 3000000),
+    requested_base_sha text NOT NULL CHECK (requested_base_sha ~ '^[0-9a-f]{40}$'),
+    stage_sha text NOT NULL CHECK (stage_sha ~ '^[0-9a-f]{40}$' AND stage_sha <> requested_base_sha),
+    stage_ref text NOT NULL CHECK (stage_ref = 'corpora-stage-' || operation_id::text),
+    stage_path text NOT NULL CHECK (stage_path = '.corpora-staging/' || operation_id::text || '/' || worker_claim::text || '.' || input_format),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (operation_id, corpus_id, worker_claim)
+        REFERENCES public.corpora_corpus_write_ops(id, corpus_id, worker_claim) ON DELETE RESTRICT
+);
 
 CREATE TABLE public.corpora_corpus_versions (
     corpus_id uuid NOT NULL REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,
@@ -94,6 +114,11 @@ BEGIN
     IF NOT FOUND OR request_row.state NOT IN ('executing', 'uncertain')
        OR NEW.sequence <> request_row.expected_sequence + 1
        OR NEW.parent_sha IS DISTINCT FROM request_row.expected_parent_sha
+       OR NOT EXISTS (
+           SELECT 1 FROM public.corpora_corpus_staged_inputs s
+           WHERE s.operation_id = NEW.operation_id AND s.corpus_id = NEW.corpus_id
+             AND s.worker_claim = request_row.worker_claim
+       )
        OR (NEW.sequence = 1 AND NOT EXISTS (
            SELECT 1 FROM public.corpora_corpus_bootstrap b WHERE b.corpus_id = NEW.corpus_id
        )) THEN
@@ -146,6 +171,36 @@ CREATE TRIGGER corpora_corpus_heads_no_delete BEFORE DELETE
 CREATE TRIGGER corpora_corpus_bootstrap_immutable BEFORE UPDATE OR DELETE
     ON public.corpora_corpus_bootstrap FOR EACH ROW
     EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+CREATE TRIGGER corpora_corpus_staged_inputs_immutable BEFORE UPDATE OR DELETE
+    ON public.corpora_corpus_staged_inputs FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+
+CREATE FUNCTION public.corpora_corpus_validate_staged_input()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+    -- Match the trusted recorder's metadata-before-operation lock order so an
+    -- operation cannot leave executing while its receipt is being inserted.
+    PERFORM 1 FROM public.corpora_corpus_metadata WHERE id = NEW.corpus_id FOR UPDATE;
+    PERFORM 1 FROM public.corpora_corpus_write_ops WHERE id = NEW.operation_id FOR UPDATE;
+    IF NOT EXISTS (
+        SELECT 1 FROM public.corpora_corpus_write_ops o
+        JOIN public.corpora_corpus_metadata m ON m.id = o.corpus_id
+        LEFT JOIN public.corpora_corpus_bootstrap b ON b.corpus_id = o.corpus_id
+        WHERE o.id = NEW.operation_id AND o.corpus_id = NEW.corpus_id
+          AND o.worker_claim = NEW.worker_claim AND o.state = 'executing'
+          AND o.input_sha256 = NEW.input_sha256 AND o.input_format = NEW.input_format
+          AND m.hf_repo_id = NEW.repo_id AND m.hf_repo_type = NEW.repo_type
+          AND NEW.requested_base_sha = CASE WHEN o.expected_sequence = 0
+                                            THEN b.commit_sha ELSE o.expected_parent_sha END
+    ) THEN
+        RAISE EXCEPTION 'CORPUS_STAGE_RECEIPT_INVALID';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER corpora_corpus_validate_staged_input BEFORE INSERT
+    ON public.corpora_corpus_staged_inputs FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_validate_staged_input();
 
 CREATE FUNCTION public.corpora_corpus_validate_provision()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
@@ -316,16 +371,17 @@ ALTER TABLE public.corpora_corpus_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_heads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_bootstrap ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_provision_ops ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+ALTER TABLE public.corpora_corpus_staged_inputs ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.corpora_corpus_staged_inputs, public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads FROM PUBLIC, anon, authenticated, service_role;
 
 -- Deliberately read-only until a reviewed admission/finalization boundary is
 -- installed. The raw tables are not a safe public write interface.
-GRANT SELECT ON public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+GRANT SELECT ON public.corpora_corpus_staged_inputs, public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads TO service_role;
 REVOKE ALL ON FUNCTION public.corpora_corpus_validate_version(),
     public.corpora_corpus_validate_head(), public.corpora_corpus_preserve_history(),
     public.corpora_corpus_validate_operation(), public.corpora_corpus_validate_finalized_version(),
     public.corpora_corpus_validate_provision(), public.corpora_corpus_validate_bootstrap(),
-    public.corpora_corpus_bootstrap_finalized()
+    public.corpora_corpus_bootstrap_finalized(), public.corpora_corpus_validate_staged_input()
     FROM PUBLIC, anon, authenticated, service_role;

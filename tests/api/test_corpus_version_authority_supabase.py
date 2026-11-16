@@ -30,6 +30,7 @@ def test_content_version_constraints_and_privileges():
             "corpora_corpus_bootstrap",
             "corpora_corpus_provision_ops",
             "corpora_corpus_write_ops",
+            "corpora_corpus_staged_inputs",
             "corpora_corpus_versions",
             "corpora_corpus_heads",
         ):
@@ -211,10 +212,28 @@ def test_content_version_constraints_and_privileges():
                     "UPDATE public.corpora_corpus_write_ops SET state='executing' WHERE id=%s",
                     (op1,),
                 )
+            claim1 = str(uuid4())
             db.execute(
                 "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
                 "WHERE id=%s",
-                (str(uuid4()), op1),
+                (claim1, op1),
+            )
+            db.execute(
+                "INSERT INTO public.corpora_corpus_staged_inputs "
+                "(operation_id,corpus_id,worker_claim,repo_id,repo_type,input_format,"
+                "input_sha256,archive_size,requested_base_sha,stage_sha,stage_ref,stage_path) "
+                "VALUES (%s,%s,%s,%s,'dataset','zip',%s,100,%s,%s,%s,%s)",
+                (
+                    op1,
+                    corpus,
+                    claim1,
+                    "fixture/corpus-" + corpus,
+                    "a" * 64,
+                    "9" * 40,
+                    "8" * 40,
+                    "corpora-stage-" + op1,
+                    ".corpora-staging/" + op1 + "/" + claim1 + ".zip",
+                ),
             )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
@@ -267,10 +286,28 @@ def test_content_version_constraints_and_privileges():
                     "UPDATE public.corpora_corpus_write_ops SET state='failed' WHERE id=%s", (op1,)
                 )
             operation(op2, corpus, 1, "b" * 40)
+            claim2 = str(uuid4())
             db.execute(
                 "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
                 "WHERE id=%s",
-                (str(uuid4()), op2),
+                (claim2, op2),
+            )
+            db.execute(
+                "INSERT INTO public.corpora_corpus_staged_inputs "
+                "(operation_id,corpus_id,worker_claim,repo_id,repo_type,input_format,"
+                "input_sha256,archive_size,requested_base_sha,stage_sha,stage_ref,stage_path) "
+                "VALUES (%s,%s,%s,%s,'dataset','zip',%s,100,%s,%s,%s,%s)",
+                (
+                    op2,
+                    corpus,
+                    claim2,
+                    "fixture/corpus-" + corpus,
+                    "a" * 64,
+                    "b" * 40,
+                    "8" * 40,
+                    "corpora-stage-" + op2,
+                    ".corpora-staging/" + op2 + "/" + claim2 + ".zip",
+                ),
             )
             with pytest.raises(psycopg.IntegrityError):
                 db.execute(
@@ -325,6 +362,7 @@ def test_content_version_constraints_and_privileges():
                 "corpora_corpus_bootstrap",
                 "corpora_corpus_provision_ops",
                 "corpora_corpus_write_ops",
+                "corpora_corpus_staged_inputs",
                 "corpora_corpus_versions",
                 "corpora_corpus_heads",
             ):
@@ -344,6 +382,7 @@ def test_content_version_constraints_and_privileges():
             for table in (
                 "corpora_corpus_heads",
                 "corpora_corpus_versions",
+                "corpora_corpus_staged_inputs",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_bootstrap",
                 "corpora_corpus_provision_ops",
@@ -356,6 +395,7 @@ def test_content_version_constraints_and_privileges():
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_operation()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_finalized_version()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_provision()")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_staged_input()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_bootstrap()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_bootstrap_finalized()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_metadata_stamp()")

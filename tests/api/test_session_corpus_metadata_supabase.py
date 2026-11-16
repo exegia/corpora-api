@@ -16,6 +16,7 @@ import pytest
 from fastapi import HTTPException
 
 from corpora_api.auth import verify_user_token
+from corpora_api.corpus_hub_stage import StagedCorpusArchive
 from corpora_api.corpus_metadata import (
     CorpusMetadataConflict,
     CorpusMetadataError,
@@ -28,6 +29,7 @@ from corpora_api.corpus_provision_finalize import (
 )
 from corpora_api.corpus_save_claim import CorpusSaveClaimer
 from corpora_api.corpus_save_finalize import CorpusSaveFinalizer, TrustedCandidateAttestation
+from corpora_api.corpus_stage_receipt import CorpusStageReceiptRecorder
 from corpora_api.session_corpus_metadata import (
     SessionBoundCorpusMetadata,
     SessionBoundMetadataTransaction,
@@ -107,6 +109,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "GRANT INSERT (corpus_id,operation_id,worker_claim,commit_sha) "
                 "ON public.corpora_corpus_bootstrap TO service_role"
             )
+            db.execute("GRANT INSERT ON public.corpora_corpus_staged_inputs TO service_role")
             assert not db.execute(
                 "SELECT has_column_privilege('service_role',"
                 "'public.corpora_corpus_write_ops','id','INSERT')"
@@ -433,6 +436,23 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
                 "WHERE id=%s",
                 (test_save_claim, test_save_op),
+            )
+            db.execute(
+                "INSERT INTO public.corpora_corpus_staged_inputs "
+                "(operation_id,corpus_id,worker_claim,repo_id,repo_type,input_format,"
+                "input_sha256,archive_size,requested_base_sha,stage_sha,stage_ref,stage_path) "
+                "VALUES (%s,%s,%s,%s,'dataset','zip',%s,100,%s,%s,%s,%s)",
+                (
+                    test_save_op,
+                    provision_corpus,
+                    test_save_claim,
+                    "fixture-org/corpus-" + provision_corpus,
+                    "a" * 64,
+                    "9" * 40,
+                    "8" * 40,
+                    "corpora-stage-" + test_save_op,
+                    ".corpora-staging/" + test_save_op + "/" + test_save_claim + ".zip",
+                ),
             )
             with db.transaction():
                 db.execute(
@@ -979,12 +999,36 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             finalizer = CorpusSaveFinalizer(
                 lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
             )
+            stage_recorder = CorpusStageReceiptRecorder(
+                lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
+            )
+
+            def stage_for(claim):
+                return StagedCorpusArchive(
+                    claim.corpus_id,
+                    claim.operation_id,
+                    claim.claim_id,
+                    claim.repo_id,
+                    claim.repo_type,
+                    claim.input_format,
+                    100,
+                    claim.input_sha256,
+                    claim.hub_parent_sha,
+                    "corpora-stage-" + str(claim.operation_id),
+                    "8" * 40,
+                    f".corpora-staging/{claim.operation_id}/{claim.claim_id}.{claim.input_format}",
+                )
+
             uncertain_claim = claimer.claim(race_op)
             assert uncertain_claim is not None
+            uncertain_stage = stage_for(uncertain_claim)
+            assert stage_recorder.record_trusted(uncertain_stage) == uncertain_stage
             db.execute(
                 "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s",
                 (race_op,),
             )
+            with pytest.raises(CorpusMetadataConflict):
+                stage_recorder.record_trusted(uncertain_stage)
             with pytest.raises(CorpusMetadataConflict, match="reconciliation"):
                 finalizer.finalize_trusted(candidate_for(uncertain_claim, "f" * 40))
             assert db.execute(
@@ -992,6 +1036,102 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             ).fetchone() == ("uncertain",)
             # Synthetic assertions exercise database mechanics, not actual Hub verification.
             first_candidate = candidate_for(winners[0], "b" * 40)
+            with pytest.raises(CorpusMetadataConflict, match="staged input"):
+                finalizer.finalize_trusted(first_candidate)
+            first_stage = stage_for(winners[0])
+            direct_insert = (
+                "INSERT INTO public.corpora_corpus_staged_inputs "
+                "(operation_id,corpus_id,worker_claim,repo_id,repo_type,input_format,"
+                "input_sha256,archive_size,requested_base_sha,stage_sha,stage_ref,stage_path) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            )
+            wrong_claim_id = uuid4()
+            for bad in (
+                replace(first_stage, archive_sha256="f" * 64),
+                replace(
+                    first_stage,
+                    input_format="corpus",
+                    stage_path=f".corpora-staging/{first_stage.operation_id}/{first_stage.claim_id}.corpus",
+                ),
+                replace(first_stage, requested_base_sha="7" * 40),
+                replace(
+                    first_stage,
+                    claim_id=wrong_claim_id,
+                    stage_path=f".corpora-staging/{first_stage.operation_id}/{wrong_claim_id}.zip",
+                ),
+                replace(first_stage, stage_ref="incorrect"),
+                replace(first_stage, stage_path="incorrect"),
+            ):
+                with pytest.raises(psycopg.Error):
+                    db.execute(
+                        direct_insert,
+                        (
+                            str(bad.operation_id),
+                            str(bad.corpus_id),
+                            str(bad.claim_id),
+                            bad.repo_id,
+                            bad.repo_type,
+                            bad.input_format,
+                            bad.archive_sha256,
+                            bad.archive_size,
+                            bad.requested_base_sha,
+                            bad.stage_sha,
+                            bad.stage_ref,
+                            bad.stage_path,
+                        ),
+                    )
+
+            class FailStageTransaction:
+                def __enter__(self):
+                    self.db = psycopg.connect(dsn, autocommit=True)
+                    return self
+
+                def __exit__(self, exc_type, exc, traceback):
+                    self.db.close()
+
+                def transaction(self):
+                    return self.db.transaction()
+
+                def execute(self, query, *args):
+                    result = self.db.execute(query, *args)
+                    if query.startswith("INSERT INTO public.corpora_corpus_staged_inputs"):
+                        raise OSError("simulated connection loss")
+                    return result
+
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusStageReceiptRecorder(
+                    FailStageTransaction, assume_service_role=True
+                ).record_trusted(first_stage)
+            assert (
+                db.execute(
+                    "SELECT 1 FROM public.corpora_corpus_staged_inputs WHERE operation_id=%s",
+                    (str(first_stage.operation_id),),
+                ).fetchone()
+                is None
+            )
+            for bad in (
+                replace(first_stage, archive_sha256="f" * 64),
+                replace(first_stage, requested_base_sha="7" * 40),
+                replace(first_stage, repo_id="fixture-org/wrong"),
+            ):
+                with pytest.raises(CorpusMetadataConflict):
+                    stage_recorder.record_trusted(bad)
+            stage_barrier = threading.Barrier(2)
+
+            def record_same_stage(_):
+                stage_barrier.wait(timeout=10)
+                return stage_recorder.record_trusted(first_stage)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                assert list(pool.map(record_same_stage, range(2))) == [first_stage, first_stage]
+            assert stage_recorder.record_trusted(first_stage) == first_stage
+            with pytest.raises(CorpusMetadataConflict):
+                stage_recorder.record_trusted(replace(first_stage, stage_sha="7" * 40))
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "DELETE FROM public.corpora_corpus_staged_inputs WHERE operation_id=%s",
+                    (str(first_stage.operation_id),),
+                )
             with pytest.raises(CorpusMetadataConflict):
                 finalizer.finalize_trusted(replace(first_candidate, claim_id=uuid4()))
             with pytest.raises(CorpusMetadataConflict):
@@ -1032,10 +1172,12 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             next_claim = claimer.claim(next_op)
             assert next_claim is not None
+            stage_recorder.record_trusted(stage_for(next_claim))
             assert next_claim.hub_parent_sha == "b" * 40
             next_version = finalizer.finalize_trusted(candidate_for(next_claim, "c" * 40))
             assert next_version.sequence == 2
             assert finalizer.finalize_trusted(first_candidate) == versions[0]
+            assert stage_recorder.record_trusted(first_stage) == first_stage
 
             competing_op = str(uuid4())
             admission.admit(
@@ -1049,6 +1191,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             competing_claim = claimer.claim(competing_op)
             assert competing_claim is not None
+            stage_recorder.record_trusted(stage_for(competing_claim))
             competing_barrier = threading.Barrier(2)
 
             def finalize_different(sha):
@@ -1148,6 +1291,12 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             ).fetchone() == ("admitted", None)
             recovered_claim = claimer.claim(rollback_claim_op)
             assert recovered_claim is not None
+            recovered_stage = stage_for(recovered_claim)
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusStageReceiptRecorder(
+                    LostClaimResponse, assume_service_role=True
+                ).record_trusted(recovered_stage)
+            assert stage_recorder.record_trusted(recovered_stage) == recovered_stage
             lost_candidate = candidate_for(recovered_claim, "d" * 40)
             with pytest.raises(CorpusMetadataError, match="reconcile"):
                 CorpusSaveFinalizer(LostClaimResponse, assume_service_role=True).finalize_trusted(
@@ -1168,6 +1317,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
 
             finalize_claim = claimer.claim(rollback_finalize_op)
             assert finalize_claim is not None
+            stage_recorder.record_trusted(stage_for(finalize_claim))
             rollback_candidate = candidate_for(finalize_claim, "e" * 40)
 
             class TerminateFinalizeConnection(TerminateClaimConnection):
@@ -1209,6 +1359,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             for table in (
                 "corpora_corpus_heads",
                 "corpora_corpus_versions",
+                "corpora_corpus_staged_inputs",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_bootstrap",
                 "corpora_corpus_provision_ops",
@@ -1220,6 +1371,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "corpora_corpus_preserve_history",
                 "corpora_corpus_validate_operation",
                 "corpora_corpus_validate_finalized_version",
+                "corpora_corpus_validate_staged_input",
                 "corpora_corpus_validate_provision",
                 "corpora_corpus_validate_bootstrap",
                 "corpora_corpus_bootstrap_finalized",

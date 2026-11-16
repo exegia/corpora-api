@@ -116,11 +116,13 @@ and other compression methods; expanding that support remains required before
 wiring it for archives using those methods.
 An unwired Hub staging adapter creates a separate operation-specific branch,
 writes the validated input archive and reads it back by immutable commit SHA
-with a bounded stream and digest check. Its in-memory receipt is not durable;
-the operation's database row still cannot recover a stage receipt after a
-crash. Remote calls lack an end-to-end deadline and errors require
-reconciliation. A restricted staging claim and persisted receipt, safe
-dispatcher, cleanup policy and Hub parent verification are still required.
+with a bounded stream and digest check. An unwired recorder can persist the
+trusted receipt for the exact claim; the database requires a receipt before a
+version can be finalized. The recorder does not verify Hub contents itself,
+and a saved receipt does not guarantee future privacy or availability. Remote
+calls lack an end-to-end deadline, and interrupted work requires reconciliation.
+A separate staging claim, safe dispatcher, cleanup policy and Hub parent
+verification are still required.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted

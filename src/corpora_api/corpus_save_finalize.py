@@ -158,6 +158,19 @@ class CorpusSaveFinalizer:
                         # path; a database claim cannot stop a remote request.
                         if op["state"] != "executing":
                             raise CorpusMetadataConflict("Corpus save requires reconciliation")
+                        if not db.execute(
+                            "SELECT 1 FROM public.corpora_corpus_staged_inputs "
+                            "WHERE operation_id=%s::uuid AND corpus_id=%s::uuid "
+                            "AND worker_claim=%s::uuid AND input_sha256=%s AND input_format=%s",
+                            (
+                                str(candidate.operation_id),
+                                str(candidate.corpus_id),
+                                str(candidate.claim_id),
+                                candidate.input_sha256,
+                                candidate.input_format,
+                            ),
+                        ).fetchone():
+                            raise CorpusMetadataConflict("Corpus save has no staged input receipt")
                         raw_head = db.execute(
                             "SELECT sequence,commit_sha FROM public.corpora_corpus_heads "
                             "WHERE corpus_id=%s::uuid FOR UPDATE",
