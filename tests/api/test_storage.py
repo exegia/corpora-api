@@ -17,9 +17,11 @@ from tf.fabric import Fabric
 from corpora_api import app as app_module
 from corpora_api.app import app
 from corpora_api.auth import UserAuthError
+from corpora_api.conversion_artifacts import ConversionArtifactStore
 from corpora_api.storage import (
     CorpusStorage,
     HubCorpusStorage,
+    StorageError,
     StoredCorpusNotFound,
     SupabaseCorpusStorage,
 )
@@ -82,6 +84,73 @@ def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.mark.parametrize("corpus", ["job:", "job:not-a-uuid"])
+def test_ai_scope_rejects_invalid_job_ids_before_storage(store, monkeypatch, corpus):
+    calls = []
+    monkeypatch.setattr(
+        app_module,
+        "conversion_artifact_store",
+        SimpleNamespace(fetch=lambda *args: calls.append(args)),
+    )
+    scope = {"corpus": corpus, "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+        unsigned = client.post("/v1/ai/validate", json={"scope": scope})
+    assert result.status_code == 422 and result.json() == {"detail": "Expected job:<UUID>"}
+    assert unsigned.status_code == 401
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "corpus", ["../mini", "alice/mini", "/tmp/mini", "https://host/mini", "mini\\file", " mini"]
+)
+def test_ai_scope_rejects_invalid_archive_ids_before_storage(store, monkeypatch, corpus):
+    calls = []
+    monkeypatch.setattr(
+        app_module,
+        "corpus_storage",
+        SimpleNamespace(open_download=lambda *args: calls.append(args)),
+    )
+    scope = {"corpus": corpus, "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+    assert result.status_code == 422
+    assert result.json() == {"detail": "Expected a flat corpus archive ID, not a path or URL"}
+    assert not calls
+
+
+@pytest.mark.parametrize("failure", ["open", "stream"])
+def test_ai_scope_storage_failure_is_sanitized_and_returns_503(store, monkeypatch, failure):
+    closed = []
+
+    class BrokenStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"partial"
+            raise httpx.ReadError("sensitive upstream detail")
+
+        def close(self):
+            closed.append(True)
+
+    def open_download(_owner, _name):
+        if failure == "open":
+            raise StorageError("sensitive upstream detail")
+        return httpx.Response(200, stream=BrokenStream()), "first.corpus"
+
+    monkeypatch.setattr(app_module, "corpus_storage", SimpleNamespace(open_download=open_download))
+    scope = {"corpus": "first", "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+    assert result.status_code == 503
+    assert result.json() == {"detail": "Corpus storage is unavailable"}
+    assert closed == ([True] if failure == "stream" else [])
+
+
 def test_large_node_response_is_rejected_for_owned_archive(store, tmp_path):
     from cfabric import Fabric as ContextFabric
     from corpus_validate import validate_archive
@@ -125,17 +194,17 @@ def test_large_node_response_is_rejected_for_owned_archive(store, tmp_path):
 
 
 def test_ai_scope_validation_uses_owned_real_archive(
-    store: dict[str, bytes], tmp_path: Path
+    store: dict[str, bytes], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "tf"
     root.mkdir()
     assert Fabric(locations=str(root), silent="deep").save(
         nodeFeatures={
-            "otype": {1: "word", 2: "word", 3: "book"},
+            "otype": {1: "word", 2: "word", 3: "book", 4: "book"},
             "book": {3: "Mini"},
             "text": {1: "A", 2: "B"},
         },
-        edgeFeatures={"oslots": {3: {1, 2}}},
+        edgeFeatures={"oslots": {3: {1}, 4: {2}}},
         metaData={
             "otype": {"valueType": "str"},
             "oslots": {"valueType": "str"},
@@ -155,11 +224,58 @@ def test_ai_scope_validation_uses_owned_real_archive(
             if path.is_file():
                 archive.write(path, f"corpora/{path.relative_to(root)}")
     store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    job = "b85f991a-8aaf-4f48-b26e-a9ef63e6a7f4"
+    downloads = []
+
+    def conversion_backend(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/rest/v1/conversion_jobs":
+            assert request.url.params["id"] == f"eq.{job}"
+            if request.url.params["owner"] != f"eq.{ALICE}":
+                return httpx.Response(200, json=[])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": job,
+                        "owner": ALICE,
+                        "status": "succeeded",
+                        "result_key": f"conversion-jobs/{job}.corpus",
+                        "validation": {"valid": True},
+                    }
+                ],
+            )
+        assert request.url.path == f"/storage/v1/object/jobs/conversion-jobs/{job}.corpus"
+        downloads.append(True)
+        return httpx.Response(200, content=stream.getvalue())
+
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
+    monkeypatch.setattr(
+        app_module,
+        "conversion_artifact_store",
+        ConversionArtifactStore(httpx.Client(transport=httpx.MockTransport(conversion_backend))),
+    )
     scope = {"corpus": "first", "level": "word", "node_id": 1, "label": "word", "version": "1.0"}
     with TestClient(app) as client:
         providers = client.get("/v1/ai/providers", headers=headers("alice-token"))
         valid = client.post(
             "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+        finding = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "level": "section", "node_id": 4}},
+            headers=headers("alice-token"),
+        )
+        foreign_finding = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "level": "section", "node_id": 4}},
+            headers=headers("bob-token"),
+        )
+        job_scope = {**scope, "corpus": "job:" + job}
+        job_result = client.post(
+            "/v1/ai/validate", json={"scope": job_scope}, headers=headers("alice-token")
+        )
+        foreign_job = client.post(
+            "/v1/ai/validate", json={"scope": job_scope}, headers=headers("bob-token")
         )
         foreign = client.post(
             "/v1/ai/validate", json={"scope": scope}, headers=headers("bob-token")
@@ -167,6 +283,21 @@ def test_ai_scope_validation_uses_owned_real_archive(
         stale = client.post(
             "/v1/ai/validate",
             json={"scope": {**scope, "version": "old"}},
+            headers=headers("alice-token"),
+        )
+        unknown_node = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "node_id": 2147483647}},
+            headers=headers("alice-token"),
+        )
+        wrong_type = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "node_type": "__nonexistent_type__"}},
+            headers=headers("alice-token"),
+        )
+        wrong_level = client.post(
+            "/v1/ai/validate",
+            json={"scope": {**scope, "level": "section"}},
             headers=headers("alice-token"),
         )
         unauthorized = client.get("/v1/ai/providers")
@@ -179,8 +310,35 @@ def test_ai_scope_validation_uses_owned_real_archive(
     assert providers.json()["gateway"] == "vercel-ai-gateway"
     assert valid.status_code == 200, valid.text
     assert valid.json() == {"corpus": "first", "version": "1.0", "checked_nodes": 1, "findings": []}
+    assert job_result.status_code == 200, job_result.text
+    assert job_result.json() == {
+        "corpus": "job:" + job,
+        "version": "1.0",
+        "checked_nodes": 1,
+        "findings": [],
+    }
+    assert foreign_job.status_code == 404 and downloads == [True]
+    assert foreign_job.json() == {"detail": "Corpus not found"}
+    assert finding.status_code == 200, finding.text
+    located = finding.json()["findings"]
+    assert len(located) == 1
+    assert (located[0]["node_id"], located[0]["node_type"], located[0]["rule"]) == (
+        4,
+        "book",
+        "FEATURE_MISSING",
+    )
+    assert located[0]["severity"] == "error" and not located[0]["fixable"]
+    assert "book" in located[0]["message"]
+    assert foreign_finding.status_code == 404 and "findings" not in foreign_finding.json()
     assert (foreign.status_code, stale.status_code, unauthorized.status_code) == (404, 409, 401)
+    assert foreign.json() == {"detail": "Corpus not found"}
     assert stale.json()["code"] == "stale"
+    assert unknown_node.status_code == 422
+    assert unknown_node.json() == {"detail": "Unknown node 2147483647"}
+    assert wrong_type.status_code == 422
+    assert wrong_type.json() == {"detail": "Node 1 has type 'word', not '__nonexistent_type__'"}
+    assert wrong_level.status_code == 422
+    assert wrong_level.json() == {"detail": "A structural scope requires a non-slot node"}
     for path, method in (("/v1/ai/providers", "get"), ("/v1/ai/validate", "post")):
         assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
 
