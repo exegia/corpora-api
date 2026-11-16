@@ -59,9 +59,8 @@ specific Hub commit and point-in-time private visibility before streaming a
 bounded file. It uses server-only `HF_CORPUS_READ_TOKEN` and does not forward
 that token to redirected CDN hosts. It does not establish corpus readiness,
 authenticate sessions, guarantee continuous privacy or provide a total request
-deadline. Routes must hold a verified live-session guard for the entire stream
-and provide a trusted revision before enabling it. Real private Hub access and
-the hosted runtime are unverified.
+deadline. Routes need a reviewed start-time session admission check and a trusted
+revision before enabling it. The hosted runtime is unverified.
 
 An additional unwired async transfer adapter applies one deadline across the
 metadata lookup, Hub verification, file transfer and sink backpressure. It uses

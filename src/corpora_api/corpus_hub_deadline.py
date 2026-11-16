@@ -1,8 +1,8 @@
 """Unwired, deadline-bound transfer from an owner-authorized private Hub repo.
 
-The caller must keep the verified session live throughout this operation. The
-sink must be trusted, nonblocking, and cancellation-cooperative. Bytes already
-delivered to the sink cannot be recalled when a later error occurs.
+The caller must verify the session and authorize admission before this operation;
+this adapter does not perform that check. The sink must be trusted, nonblocking,
+and cancellation-cooperative. Bytes already delivered cannot be recalled.
 The deadline allows up to 0.1 seconds each for response and client cleanup;
 those bounds assume cooperative HTTPX transports.
 """
