@@ -22,6 +22,10 @@ from corpora_api.corpus_metadata import (
     CorpusMetadataNotFound,
     CorpusMetadataStore,
 )
+from corpora_api.corpus_provision_finalize import (
+    CorpusProvisionFinalizer,
+    TrustedBootstrapAttestation,
+)
 from corpora_api.corpus_save_claim import CorpusSaveClaimer
 from corpora_api.corpus_save_finalize import CorpusSaveFinalizer, TrustedCandidateAttestation
 from corpora_api.session_corpus_metadata import (
@@ -98,6 +102,10 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             db.execute(
                 "GRANT INSERT (id,corpus_id,actor_id,session_id,repo_id,repo_type), "
                 "UPDATE (state,worker_claim) ON public.corpora_corpus_provision_ops TO service_role"
+            )
+            db.execute(
+                "GRANT INSERT (corpus_id,operation_id,worker_claim,commit_sha) "
+                "ON public.corpora_corpus_bootstrap TO service_role"
             )
             assert not db.execute(
                 "SELECT has_column_privilege('service_role',"
@@ -326,6 +334,133 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             with pytest.raises(CorpusMetadataConflict):
                 provision_admission.claim(users[0][0], provision_corpus)
+            provision_finalizer = CorpusProvisionFinalizer(
+                lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
+            )
+            provision_candidate = TrustedBootstrapAttestation(
+                winning_claim.corpus_id,
+                winning_claim.operation_id,
+                winning_claim.claim_id,
+                winning_claim.repo_id,
+                winning_claim.repo_type,
+                "9" * 40,
+            )
+            for bad in (
+                replace(provision_candidate, claim_id=uuid4()),
+                replace(provision_candidate, corpus_id=uuid4()),
+                replace(provision_candidate, repo_id="fixture-org/wrong"),
+            ):
+                with pytest.raises(CorpusMetadataConflict):
+                    provision_finalizer.finalize_trusted(bad)
+            with pytest.raises(CorpusMetadataError):
+                provision_finalizer.finalize_trusted(replace(provision_candidate, commit_sha="bad"))
+
+            class FailProvisionCompletion:
+                def __enter__(self):
+                    self.db = psycopg.connect(dsn, autocommit=True)
+                    return self
+
+                def __exit__(self, exc_type, exc, traceback):
+                    self.db.close()
+
+                def transaction(self):
+                    return self.db.transaction()
+
+                def execute(self, query, *args):
+                    if query.startswith("UPDATE public.corpora_corpus_provision_ops"):
+                        raise OSError("simulated completion failure")
+                    return self.db.execute(query, *args)
+
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusProvisionFinalizer(
+                    FailProvisionCompletion, assume_service_role=True
+                ).finalize_trusted(provision_candidate)
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_provision_ops WHERE id=%s",
+                (str(provision_candidate.operation_id),),
+            ).fetchone() == ("executing",)
+            assert (
+                db.execute(
+                    "SELECT 1 FROM public.corpora_corpus_bootstrap WHERE corpus_id=%s",
+                    (provision_corpus,),
+                ).fetchone()
+                is None
+            )
+            finalization_barrier = threading.Barrier(2)
+
+            def finalize_provision(_):
+                finalization_barrier.wait(timeout=10)
+                return provision_finalizer.finalize_trusted(provision_candidate)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                assert list(pool.map(finalize_provision, range(2))) == ["9" * 40] * 2
+            with pytest.raises(CorpusMetadataConflict):
+                provision_finalizer.finalize_trusted(
+                    replace(provision_candidate, commit_sha="8" * 40)
+                )
+            db.execute(
+                "UPDATE public.corpora_corpus_metadata SET state='ready' WHERE id=%s",
+                (provision_corpus,),
+            )
+            test_save_op, test_save_claim = str(uuid4()), str(uuid4())
+            db.execute(
+                "INSERT INTO public.corpora_corpus_write_ops "
+                "(id,corpus_id,actor_id,session_id,expected_sequence,"
+                "expected_parent_sha,input_sha256) "
+                "VALUES (%s,%s,%s,%s,0,NULL,%s)",
+                (test_save_op, provision_corpus, users[0][0]["sub"], str(uuid4()), "a" * 64),
+            )
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
+                "WHERE id=%s",
+                (test_save_claim, test_save_op),
+            )
+            with db.transaction():
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_versions "
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                    "VALUES (%s,1,%s,NULL,%s,%s)",
+                    (provision_corpus, "a" * 40, test_save_op, "corpora-op-" + test_save_op),
+                )
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_heads VALUES (%s,1,%s)",
+                    (provision_corpus, "a" * 40),
+                )
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET state='completed' WHERE id=%s",
+                    (test_save_op,),
+                )
+            assert provision_finalizer.finalize_trusted(provision_candidate) == "9" * 40
+            different_corpus = str(uuid4())
+            editor.reserve(
+                users[0][0], different_corpus, "Different candidates", repo_type="dataset"
+            )
+            different_claim = provision_admission.claim(users[0][0], different_corpus)
+            different_candidate = TrustedBootstrapAttestation(
+                different_claim.corpus_id,
+                different_claim.operation_id,
+                different_claim.claim_id,
+                different_claim.repo_id,
+                different_claim.repo_type,
+                "1" * 40,
+            )
+            different_barrier = threading.Barrier(2)
+
+            def finalize_different_provision(sha):
+                different_barrier.wait(timeout=10)
+                try:
+                    provision_finalizer.finalize_trusted(
+                        replace(different_candidate, commit_sha=sha)
+                    )
+                    return "completed"
+                except CorpusMetadataConflict:
+                    return "conflict"
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                assert sorted(pool.map(finalize_different_provision, ("1" * 40, "2" * 40))) == [
+                    "completed",
+                    "conflict",
+                ]
             admin_provision_corpus = str(uuid4())
             editor.reserve(users[0][0], admin_provision_corpus, "Admin claim", repo_type="dataset")
             admin_claim = provision_admission.claim(users[2][0], admin_provision_corpus)
@@ -353,6 +488,20 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "WHERE corpus_id=%s",
                 (snapshot_corpus,),
             ).fetchone() == (snapshot.actor_id, snapshot.session_id)
+            db.execute(
+                "UPDATE public.corpora_corpus_provision_ops SET state='uncertain' WHERE id=%s",
+                (str(snapshot.operation_id),),
+            )
+            uncertain_bootstrap = TrustedBootstrapAttestation(
+                snapshot.corpus_id,
+                snapshot.operation_id,
+                snapshot.claim_id,
+                snapshot.repo_id,
+                snapshot.repo_type,
+                "9" * 40,
+            )
+            with pytest.raises(CorpusMetadataConflict, match="reconciliation"):
+                provision_finalizer.finalize_trusted(uncertain_bootstrap)
             updated = editor.update(
                 users[0][0], identifier, 1, {"title": "Revised", "language": "grc"}
             )
@@ -881,6 +1030,20 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     if exc_type is None:
                         raise OSError("simulated lost commit acknowledgement")
                     return False
+
+            lost_bootstrap = TrustedBootstrapAttestation(
+                admin_claim.corpus_id,
+                admin_claim.operation_id,
+                admin_claim.claim_id,
+                admin_claim.repo_id,
+                admin_claim.repo_type,
+                "9" * 40,
+            )
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusProvisionFinalizer(
+                    LostClaimResponse, assume_service_role=True
+                ).finalize_trusted(lost_bootstrap)
+            assert provision_finalizer.finalize_trusted(lost_bootstrap) == "9" * 40
 
             lost_provision_corpus = str(uuid4())
             editor.reserve(
