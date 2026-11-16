@@ -62,3 +62,12 @@ def require_user(request: Request) -> str:
     if not isinstance(user_id, str) or not user_id:
         raise HTTPException(status_code=401, detail="Verified user token required")
     return user_id
+
+
+def require_user_claims(request: Request) -> dict[str, Any]:
+    """Return only the verified claims attached by authentication middleware."""
+    user_id = require_user(request)
+    claims = getattr(request.state, "user_claims", None)
+    if not isinstance(claims, dict) or claims.get("sub") != user_id:
+        raise HTTPException(status_code=401, detail="Verified user token required")
+    return claims

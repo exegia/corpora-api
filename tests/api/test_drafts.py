@@ -16,10 +16,29 @@ from tf.fabric import Fabric
 
 from corpora_api import app as app_module
 from corpora_api import drafts as drafts_module
+from corpora_api import session_drafts
 from corpora_api.app import app
 from corpora_api.auth import UserAuthError
 from corpora_api.drafts import DraftHead, DraftStore
 from corpora_api.validation import ValidationBridge
+
+
+@pytest.fixture
+def mock_draft_lease(monkeypatch):
+    """Use the existing in-memory Storage fixture while exercising route behavior."""
+
+    class Lease:
+        def read(self, claims, callback, *, max_bytes):
+            data = callback(claims["sub"])
+            assert len(data) <= max_bytes
+            return data
+
+    monkeypatch.setattr(app_module, "configured_draft_lease", lambda: Lease())
+    monkeypatch.setattr(
+        session_drafts,
+        "read_draft_timed",
+        lambda store, owner, draft, view, params: store.read(owner, draft, view, **params),
+    )
 
 
 def test_draft_view_limits_the_complete_response_envelope(monkeypatch):
@@ -43,7 +62,7 @@ def test_draft_view_limits_the_complete_response_envelope(monkeypatch):
     assert caught.value.status_code == 413
 
 
-def test_large_draft_node_returns_413_with_real_corpus(monkeypatch, tmp_path):
+def test_large_draft_node_returns_413_with_real_corpus(monkeypatch, tmp_path, mock_draft_lease):
     from corpus_validate import validate_archive
 
     owner, document, revision = (str(uuid4()) for _ in range(3))
@@ -164,7 +183,9 @@ def test_concurrent_draft_creation_reuses_the_same_immutable_object(monkeypatch)
     assert len(objects) == 1
 
 
-def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkeypatch, tmp_path):
+def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(
+    monkeypatch, tmp_path, mock_draft_lease
+):
     owner, foreign, job = str(uuid4()), str(uuid4()), str(uuid4())
     objects, heads = {}, {}
     root = tmp_path / "tf"

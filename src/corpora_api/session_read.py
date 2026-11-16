@@ -23,12 +23,26 @@ class SessionBoundRead:
         self.connect = connect
         self.assume_service_role = assume_service_role
 
-    def read(self, verified_claims: Mapping[str, Any], download: Callable[[str], bytes]) -> bytes:
-        return self.read_with_connection(verified_claims, lambda owner, _db: download(owner))
+    def read(
+        self,
+        verified_claims: Mapping[str, Any],
+        download: Callable[[str], bytes],
+        *,
+        max_bytes: int = MAX_STORED_ARCHIVE_BYTES,
+    ) -> bytes:
+        return self.read_with_connection(
+            verified_claims, lambda owner, _db: download(owner), max_bytes=max_bytes
+        )
 
     def read_with_connection(
-        self, verified_claims: Mapping[str, Any], download: Callable[[str, Any], bytes]
+        self,
+        verified_claims: Mapping[str, Any],
+        download: Callable[[str, Any], bytes],
+        *,
+        max_bytes: int = MAX_STORED_ARCHIVE_BYTES,
     ) -> bytes:
+        if type(max_bytes) is not int or not 0 < max_bytes <= 4_000_000:
+            raise ValueError("Invalid session read limit")
         try:
             owner = UUID(verified_claims["sub"])
             session = UUID(verified_claims["session_id"])
@@ -48,7 +62,7 @@ class SessionBoundRead:
                     data = download(str(owner), db)
                     if not isinstance(data, bytes):
                         raise HTTPException(503, "Archive reader returned invalid data")
-                    if len(data) > MAX_STORED_ARCHIVE_BYTES:
+                    if len(data) > max_bytes:
                         raise HTTPException(413, "Stored archive exceeds size limit")
                     db.execute("SELECT public.corpora_stored_lock_session(%s,%s,%s)", params)
             return data
