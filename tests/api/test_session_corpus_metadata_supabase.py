@@ -136,6 +136,20 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 ).fetchone()[0]
                 == 1
             )
+            assert str(editor.get(users[0][0], identifier).id) == identifier
+            with pytest.raises(CorpusMetadataNotFound):
+                editor.get(users[1][0], identifier)
+            assert str(editor.get(users[2][0], identifier).id) == identifier
+            expected_ids = sorted([identifier, duplicate_id])
+            first_page, cursor = editor.list_owned(users[0][0], limit=1)
+            assert [str(row.id) for row in first_page] == expected_ids[:1]
+            assert cursor == expected_ids[0]
+            second_page, cursor = editor.list_owned(users[0][0], limit=1, after=cursor)
+            assert [str(row.id) for row in second_page] == expected_ids[1:] and cursor is None
+            admin_page, _ = editor.list_owned(users[2][0], owner_id=users[0][0]["sub"])
+            assert [str(row.id) for row in admin_page] == expected_ids
+            with pytest.raises(CorpusMetadataNotFound):
+                editor.list_owned(users[1][0], owner_id=users[0][0]["sub"])
             updated = editor.update(
                 users[0][0], identifier, 1, {"title": "Revised", "language": "grc"}
             )
@@ -290,6 +304,12 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             with pytest.raises(HTTPException) as revoked_reservation:
                 editor.reserve(users[0][0], str(uuid4()), "After logout", repo_type="dataset")
             assert revoked_reservation.value.status_code == 401
+            with pytest.raises(HTTPException) as revoked_get:
+                editor.get(users[0][0], identifier)
+            assert revoked_get.value.status_code == 401
+            with pytest.raises(HTTPException) as revoked_list:
+                editor.list_owned(users[0][0])
+            assert revoked_list.value.status_code == 401
             assert metadata.get(users[2][0]["sub"], identifier).title == "Committed"
         finally:
             db.execute("DROP TABLE IF EXISTS public.corpora_corpus_metadata")

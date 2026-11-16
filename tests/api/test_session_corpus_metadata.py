@@ -200,3 +200,58 @@ def test_session_reservation_bad_insert_result_aborts_lease(monkeypatch):
             {"sub": owner}, corpus, "Original", repo_type="dataset"
         )
     assert bad.value.status_code == 503 and not lease.committed
+
+
+def test_session_metadata_get_authorizes_before_return(monkeypatch):
+    owner, corpus = str(uuid4()), str(uuid4())
+    monkeypatch.setenv("HF_CORPUS_ORGANIZATION", "fixture-org")
+    monkeypatch.delenv("CORPORA_SUPERADMIN_USER_ID", raising=False)
+    row = record(owner, corpus)
+
+    class ReadDB:
+        def execute(self, query, params):
+            assert "owner_id" in query
+            value = (row,) if params[1] == owner and not params[2] else None
+            return SimpleNamespace(fetchone=lambda: value)
+
+    reader = SessionBoundCorpusMetadata(Lease(ReadDB()))
+    assert str(reader.get({"sub": owner}, corpus).id) == corpus
+    with pytest.raises(CorpusMetadataNotFound):
+        reader.get({"sub": str(uuid4())}, corpus)
+
+
+def test_session_metadata_list_requires_owner_or_superadmin(monkeypatch):
+    owner, admin, foreign = str(uuid4()), str(uuid4()), str(uuid4())
+    ids = sorted((str(uuid4()), str(uuid4())))
+    monkeypatch.setenv("HF_CORPUS_ORGANIZATION", "fixture-org")
+    monkeypatch.setenv("CORPORA_SUPERADMIN_USER_ID", admin)
+
+    class ListDB:
+        calls = []
+
+        def execute(self, query, params):
+            self.calls.append((query, params))
+            selected = [record(owner, identifier) for identifier in ids]
+            if len(params) == 3:
+                selected = [row for row in selected if row["id"] > params[1]]
+            return SimpleNamespace(fetchall=lambda: [(row,) for row in selected[: params[-1]]])
+
+    db = ListDB()
+    reader = SessionBoundCorpusMetadata(Lease(db))
+    first, cursor = reader.list_owned({"sub": owner}, limit=1)
+    assert [str(row.id) for row in first] == ids[:1] and cursor == ids[0]
+    second, next_cursor = reader.list_owned({"sub": owner}, limit=1, after=cursor)
+    assert [str(row.id) for row in second] == ids[1:] and next_cursor is None
+    admin_page, _ = reader.list_owned({"sub": admin}, owner_id=owner)
+    assert [str(row.id) for row in admin_page] == ids
+    calls_before = len(db.calls)
+    with pytest.raises(CorpusMetadataNotFound):
+        reader.list_owned({"sub": foreign}, owner_id=owner)
+    assert len(db.calls) == calls_before
+
+
+def test_revoked_session_precedes_invalid_list_input():
+    reader = SessionBoundCorpusMetadata(Lease(Database(), revoked=True))
+    with pytest.raises(HTTPException) as caught:
+        reader.list_owned({"sub": str(uuid4())}, limit=0)
+    assert caught.value.status_code == 401
