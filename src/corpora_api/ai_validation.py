@@ -23,29 +23,40 @@ from corpora_api.storage_detail import download_stored_archive
 _ARCHIVE_ID = re.compile(r"^[\w][\w .-]*$", re.UNICODE)
 
 
+def owned_archive(
+    storage: Any, jobs: Any, drafts: Any, owner: str, corpus: str, *, scope_validation: bool = False
+) -> bytes:
+    if corpus.startswith("job:"):
+        if scope_validation:
+            try:
+                UUID(corpus[4:])
+            except ValueError as error:
+                raise HTTPException(422, "Expected job:<UUID>") from error
+        return jobs.fetch(owner, corpus[4:])[1]
+    if corpus.startswith("draft:"):
+        if drafts is None:
+            raise HTTPException(status_code=503, detail="Working draft storage is unavailable")
+        head = drafts.resolve(owner, corpus[6:])
+        return drafts._download(head)
+    if scope_validation and (not _ARCHIVE_ID.fullmatch(corpus) or corpus != corpus.strip()):
+        raise HTTPException(422, "Expected a flat corpus archive ID, not a path or URL")
+    try:
+        return download_stored_archive(storage, owner, corpus)
+    except StoredCorpusNotFound:
+        raise
+    except StorageError as error:
+        if not scope_validation:
+            raise
+        raise HTTPException(503, "Corpus storage is unavailable") from error
+
+
 def validate_scope(
-    storage: Any, jobs: Any, owner: str, request: AINodeScope
+    storage: Any, jobs: Any, owner: str, request: AINodeScope, drafts: Any = None
 ) -> dict[str, Any] | JSONResponse:
-    if request.corpus.startswith("job:"):
-        try:
-            UUID(request.corpus[4:])
-        except ValueError as error:
-            raise HTTPException(422, "Expected job:<UUID>") from error
-        try:
-            _, data = jobs.fetch(owner, request.corpus[4:])
-        except ConversionArtifactNotFound as error:
-            raise HTTPException(404, "Corpus not found") from error
-    else:
-        if not request.corpus.startswith("draft:") and (
-            not _ARCHIVE_ID.fullmatch(request.corpus) or request.corpus != request.corpus.strip()
-        ):
-            raise HTTPException(422, "Expected a flat corpus archive ID, not a path or URL")
-        try:
-            data = download_stored_archive(storage, owner, request.corpus)
-        except StoredCorpusNotFound as error:
-            raise HTTPException(404, "Corpus not found") from error
-        except StorageError as error:
-            raise HTTPException(503, "Corpus storage is unavailable") from error
+    try:
+        data = owned_archive(storage, jobs, drafts, owner, request.corpus, scope_validation=True)
+    except (ConversionArtifactNotFound, StoredCorpusNotFound) as error:
+        raise HTTPException(404, "Corpus not found") from error
     try:
         return run_corpus(data, "scope", scope=request.model_dump())
     except CorpusProcessError as error:

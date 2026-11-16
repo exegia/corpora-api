@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -288,6 +289,65 @@ class AIChatErrorEvent(BaseModel):
 AIChatEvent = (
     AIChatTokenEvent | AIChatToolEvent | AIChatSuggestionEvent | AIChatDoneEvent | AIChatErrorEvent
 )
+
+
+class AIThreadSection(BaseModel):
+    id: str
+    scope: AINodeScope
+    created_at: datetime
+
+
+class AIThread(BaseModel):
+    id: str
+    corpus: str
+    pinned_scope: AINodeScope
+    sections: list[AIThreadSection]
+    created_at: datetime
+
+
+class AIThreadCreate(BaseModel):
+    scope: AINodeScope
+
+
+class AIThreadList(BaseModel):
+    threads: list[AIThread]
+    next_cursor: str | None = None
+
+
+class AIMessageCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    section_id: str
+    content: str = Field(min_length=1, max_length=32768)
+
+
+class AIThreadMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    section_id: str
+    role: Literal["user", "assistant", "tool"]
+    content: str = Field(min_length=1, max_length=32768)
+    created_at: datetime
+
+
+class AIMessageList(BaseModel):
+    messages: list[AIThreadMessage]
+    next_offset: int | None = None
+
+
+class AIThreadSuggestionData(AIChatSuggestion):
+    scope: AINodeScope
+
+
+class AIThreadSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    section_id: str
+    suggestion: AIThreadSuggestionData
+    created_at: datetime
+
+
+class AISuggestionList(BaseModel):
+    suggestions: list[AIThreadSuggestion]
+    next_offset: int | None = None
 
 
 class ReferenceCreate(BaseModel):

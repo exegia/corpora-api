@@ -490,6 +490,54 @@
         "title": "AIFinding",
         "type": "object"
       },
+      "AIMessageCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "section_id": {
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section_id",
+          "content"
+        ],
+        "title": "AIMessageCreate",
+        "type": "object"
+      },
+      "AIMessageList": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/AIThreadMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "AIMessageList",
+        "type": "object"
+      },
       "AINodeScope": {
         "properties": {
           "content_hash": {
@@ -626,6 +674,283 @@
           "scope"
         ],
         "title": "AIScopeRequest",
+        "type": "object"
+      },
+      "AISuggestionList": {
+        "properties": {
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/AIThreadSuggestion"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "suggestions"
+        ],
+        "title": "AISuggestionList",
+        "type": "object"
+      },
+      "AIThread": {
+        "properties": {
+          "corpus": {
+            "title": "Corpus",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "pinned_scope": {
+            "$ref": "#/components/schemas/AINodeScope"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/AIThreadSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "corpus",
+          "pinned_scope",
+          "sections",
+          "created_at"
+        ],
+        "title": "AIThread",
+        "type": "object"
+      },
+      "AIThreadCreate": {
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/AINodeScope"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "title": "AIThreadCreate",
+        "type": "object"
+      },
+      "AIThreadList": {
+        "properties": {
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/AIThread"
+            },
+            "title": "Threads",
+            "type": "array"
+          }
+        },
+        "required": [
+          "threads"
+        ],
+        "title": "AIThreadList",
+        "type": "object"
+      },
+      "AIThreadMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant",
+              "tool"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "section_id": {
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "section_id",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "AIThreadMessage",
+        "type": "object"
+      },
+      "AIThreadSection": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AINodeScope"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "created_at"
+        ],
+        "title": "AIThreadSection",
+        "type": "object"
+      },
+      "AIThreadSuggestion": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "section_id": {
+            "title": "Section Id",
+            "type": "string"
+          },
+          "suggestion": {
+            "$ref": "#/components/schemas/AIThreadSuggestionData"
+          }
+        },
+        "required": [
+          "section_id",
+          "suggestion",
+          "created_at"
+        ],
+        "title": "AIThreadSuggestion",
+        "type": "object"
+      },
+      "AIThreadSuggestionData": {
+        "properties": {
+          "base_version": {
+            "title": "Base Version",
+            "type": "string"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "diff": {
+            "items": {
+              "$ref": "#/components/schemas/AIChatDiffRow"
+            },
+            "minItems": 1,
+            "title": "Diff",
+            "type": "array"
+          },
+          "finding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AIFinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generated": {
+            "const": true,
+            "default": true,
+            "title": "Generated",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "annotation",
+              "label",
+              "boundary",
+              "formatting",
+              "reference",
+              "text"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AINodeScope"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "applied",
+              "rejected",
+              "stale"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_node": {
+            "title": "Target Node",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "kind",
+          "target_node",
+          "diff",
+          "rationale",
+          "base_version",
+          "content_hash"
+        ],
+        "title": "AIThreadSuggestionData",
         "type": "object"
       },
       "AIUnitRange": {
@@ -3081,6 +3406,496 @@
           }
         ],
         "summary": "Ai Providers",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/threads": {
+      "get": {
+        "operationId": "list_ai_threads_v1_ai_threads_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "corpus",
+            "required": true,
+            "schema": {
+              "title": "Corpus",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIThreadList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "List Ai Threads",
+        "tags": [
+          "ai"
+        ]
+      },
+      "post": {
+        "operationId": "create_ai_thread_v1_ai_threads_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIThreadCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIThread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Create Ai Thread",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/threads/{thread_id}": {
+      "get": {
+        "operationId": "get_ai_thread_v1_ai_threads__thread_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIThread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Get Ai Thread",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/threads/{thread_id}/messages": {
+      "get": {
+        "operationId": "list_ai_messages_v1_ai_threads__thread_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIMessageList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "List Ai Messages",
+        "tags": [
+          "ai"
+        ]
+      },
+      "post": {
+        "operationId": "create_ai_message_v1_ai_threads__thread_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIMessageCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIThreadMessage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Create Ai Message",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/threads/{thread_id}/sections": {
+      "post": {
+        "operationId": "fork_ai_thread_v1_ai_threads__thread_id__sections_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIThreadCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIThread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Fork Ai Thread",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/threads/{thread_id}/suggestions": {
+      "get": {
+        "operationId": "list_ai_suggestions_v1_ai_threads__thread_id__suggestions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AISuggestionList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "List Ai Suggestions",
         "tags": [
           "ai"
         ]

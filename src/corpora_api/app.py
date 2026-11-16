@@ -65,9 +65,16 @@ from corpora_api.models import (
     AIChatErrorInfo,
     AIChatEvent,
     AIChatRequest,
+    AIMessageCreate,
+    AIMessageList,
     AIProvider,
     AIProvidersResponse,
     AIScopeRequest,
+    AISuggestionList,
+    AIThread,
+    AIThreadCreate,
+    AIThreadList,
+    AIThreadMessage,
     AIValidationResponse,
     CorpusContentResponse,
     CorpusIndexResponse,
@@ -105,6 +112,8 @@ from corpora_api.storage import (
 from corpora_api.storage_detail import read_stored_archive_view
 from corpora_api.tf_check import MAX_ARCHIVE_BYTES as MAX_TF_ARCHIVE_BYTES
 from corpora_api.tf_check import TFArchiveRejected, check_tf_archive
+from corpora_api.thread_store import ThreadStore
+from corpora_api.threads import ScopeConflict, ThreadService
 from corpora_api.validation import (
     MAX_VALIDATION_ARCHIVE_BYTES,
     ValidationBridge,
@@ -122,6 +131,7 @@ ingest_store = IngestStore()
 conversion_artifact_store = ConversionArtifactStore()
 corpus_storage = CorpusStorage()
 draft_store = DraftStore()
+thread_store = ThreadStore()
 logger = logging.getLogger(__name__)
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
@@ -137,6 +147,8 @@ def user_auth_path(path: str) -> bool:
         or path == "/v1/ai/providers"
         or path == "/v1/ai/validate"
         or path == "/v1/ai/chat"
+        or path == "/v1/ai/threads"
+        or path.startswith("/v1/ai/threads/")
         or path == "/v1/refs"
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
@@ -173,6 +185,7 @@ app.add_middleware(
         "X-AI-Provider",
         "X-AI-Api-Key",
         "X-AI-Model",
+        "Idempotency-Key",
     ],
 )
 
@@ -208,7 +221,10 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     request.state.user_claims = claims
     context_token = current_user_id.set(claims["sub"])
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path == "/v1/ai/threads" or request.url.path.startswith("/v1/ai/threads/"):
+            response.headers["Cache-Control"] = "private, no-store"
+        return response
     finally:
         current_user_id.reset(context_token)
 
@@ -902,8 +918,104 @@ async def ai_validate(
     from corpora_api.ai_validation import validate_scope
 
     return await run_in_threadpool(
-        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope
+        validate_scope,
+        corpus_storage,
+        conversion_artifact_store,
+        user_id,
+        request.scope,
+        draft_store,
     )
+
+
+def _thread_owner(user_id: Annotated[str, Depends(require_user)]) -> str:
+    try:
+        return str(uuid.UUID(user_id))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise HTTPException(401, "Verified user token required") from error
+
+
+def _thread_service() -> ThreadService:
+    return ThreadService(thread_store, corpus_storage, conversion_artifact_store, draft_store)
+
+
+async def _thread_call(function: Any, *args: Any) -> Any:
+    try:
+        return await run_in_threadpool(function, *args)
+    except ScopeConflict as error:
+        return error.response
+
+
+@app.post("/v1/ai/threads", tags=["ai"], response_model=AIThread)
+async def create_ai_thread(
+    request: AIThreadCreate,
+    user_id: Annotated[str, Depends(_thread_owner)],
+    idempotency_key: Annotated[str | None, Header()] = None,
+) -> Any:
+    return await _thread_call(_thread_service().create, user_id, request.scope, idempotency_key)
+
+
+@app.get("/v1/ai/threads", tags=["ai"], response_model=AIThreadList)
+async def list_ai_threads(
+    user_id: Annotated[str, Depends(_thread_owner)],
+    corpus: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
+) -> Any:
+    return await _thread_call(_thread_service().list, user_id, corpus, limit, cursor)
+
+
+@app.get("/v1/ai/threads/{thread_id}", tags=["ai"], response_model=AIThread)
+async def get_ai_thread(thread_id: str, user_id: Annotated[str, Depends(_thread_owner)]) -> Any:
+    return await _thread_call(_thread_service().get, user_id, thread_id)
+
+
+@app.post("/v1/ai/threads/{thread_id}/sections", tags=["ai"], response_model=AIThread)
+async def fork_ai_thread(
+    thread_id: str,
+    request: AIThreadCreate,
+    user_id: Annotated[str, Depends(_thread_owner)],
+    idempotency_key: Annotated[str | None, Header()] = None,
+) -> Any:
+    return await _thread_call(
+        _thread_service().fork, user_id, thread_id, request.scope, idempotency_key
+    )
+
+
+@app.post("/v1/ai/threads/{thread_id}/messages", tags=["ai"], response_model=AIThreadMessage)
+async def create_ai_message(
+    thread_id: str,
+    request: AIMessageCreate,
+    user_id: Annotated[str, Depends(_thread_owner)],
+    idempotency_key: Annotated[str | None, Header()] = None,
+) -> Any:
+    return await _thread_call(
+        _thread_service().append,
+        user_id,
+        thread_id,
+        request.section_id,
+        request.content,
+        idempotency_key,
+    )
+
+
+@app.get("/v1/ai/threads/{thread_id}/messages", tags=["ai"], response_model=AIMessageList)
+async def list_ai_messages(
+    thread_id: str,
+    user_id: Annotated[str, Depends(_thread_owner)],
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    return await _thread_call(_thread_service().messages, user_id, thread_id, limit, offset)
+
+
+@app.get("/v1/ai/threads/{thread_id}/suggestions", tags=["ai"], response_model=AISuggestionList)
+async def list_ai_suggestions(
+    thread_id: str,
+    user_id: Annotated[str, Depends(_thread_owner)],
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    return await _thread_call(_thread_service().suggestions, user_id, thread_id, limit, offset)
 
 
 _REFERENCE_RESPONSES = {

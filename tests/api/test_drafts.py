@@ -189,6 +189,21 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
         exported = api.get(f"/v1/ai/drafts/{first['id']}/archive", headers=own_headers)
         other = api.get(f"/v1/ai/drafts/{first['id']}", headers=foreign_headers)
         unauthenticated = api.get("/v1/ai/drafts")
+        scope = {
+            "corpus": first["corpus"],
+            "level": "word",
+            "node_id": 1,
+            "label": "word",
+            "version": "1.0",
+        }
+        checked = api.post("/v1/ai/validate", json={"scope": scope}, headers=own_headers)
+        foreign_check = api.post("/v1/ai/validate", json={"scope": scope}, headers=foreign_headers)
+        stale_check = api.post(
+            "/v1/ai/validate", json={"scope": {**scope, "version": "old"}}, headers=own_headers
+        )
+        objects[next(iter(objects))] = b"tampered"
+        corrupt_check = api.post("/v1/ai/validate", json={"scope": scope}, headers=own_headers)
+        objects[next(iter(objects))] = archive_data
     assert created.json() == first
     assert listed.json()["drafts"] == [first]
     assert info.json() == first
@@ -196,6 +211,18 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
     assert exported.headers["cache-control"] == "private, no-store"
     assert exported.headers["etag"] == f'"{first["digest"]}"'
     assert exported.headers["x-draft-revision"] == first["revision"]
+    assert checked.status_code == 200, checked.text
+    assert checked.json() == {
+        "corpus": first["corpus"],
+        "version": "1.0",
+        "checked_nodes": 1,
+        "findings": [],
+    }
+    assert (foreign_check.status_code, stale_check.status_code, corrupt_check.status_code) == (
+        404,
+        409,
+        409,
+    )
     assert (other.status_code, foreign_create.status_code, unauthenticated.status_code) == (
         404,
         404,

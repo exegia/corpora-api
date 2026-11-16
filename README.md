@@ -54,6 +54,13 @@ Authenticated `/v1/ai/providers` lists the legacy provider guidance without
 accepting API keys. `/v1/ai/validate` validates a version-pinned scope against
 an accessible stored corpus or owned completed conversion, returning located
 findings and rejecting stale version or content hashes.
+The same validation accepts owned `draft:<UUID>` archives. Authenticated
+`/v1/ai/threads` routes persist bounded conversations in the private
+`corpus_ai_threads` table from the reviewed legacy migration. They recheck
+corpus access, use owner-filtered reads and compare-and-swap updates, and accept
+UUID `Idempotency-Key` headers for thread, section, and message creation.
+`POST /v1/ai/chat` documents its streaming contract but returns 501 until chat
+is implemented; it does not store provider keys.
 Corpus detail, reference, and scope reads run the native loader in a separate
 short-lived process per request so its state cannot cross server worker threads.
 Results exceeding the worker's 3.9 MB encoded JSON limit return 413 rather than
