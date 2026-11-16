@@ -38,6 +38,7 @@ from corpora_api.conversions import (
     ConversionUnavailable,
 )
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreRejected, CoreUnavailable
+from corpora_api.drafts import DraftStore
 from corpora_api.ingest import (
     MAX_GRAPH_BYTES,
     MAX_INGEST_BYTES,
@@ -74,6 +75,9 @@ from corpora_api.models import (
     CorpusNodeDetailResponse,
     CorpusSectionPageResponse,
     DiagnosticReport,
+    DraftCreateRequest,
+    DraftInfo,
+    DraftListResponse,
     ErrorResponse,
     IngestCreated,
     IngestJobStatus,
@@ -118,6 +122,7 @@ validator = ValidationBridge()
 ingest_store = IngestStore()
 conversion_artifact_store = ConversionArtifactStore()
 corpus_storage = CorpusStorage()
+draft_store = DraftStore()
 logger = logging.getLogger(__name__)
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
@@ -128,6 +133,8 @@ def user_auth_path(path: str) -> bool:
     return (
         path in USER_AUTH_PATHS
         or path.startswith("/v1/storage/")
+        or path == "/v1/ai/drafts"
+        or path.startswith("/v1/ai/drafts/")
         or path == "/v1/ai/providers"
         or path == "/v1/ai/validate"
         or path == "/v1/ai/chat"
@@ -778,6 +785,66 @@ _STORAGE_DETAIL_RESPONSES = {
     502: {"model": ErrorResponse},
     503: {"model": ErrorResponse},
 }
+
+
+@app.post(
+    "/v1/ai/drafts", tags=["ai"], response_model=DraftInfo, responses=_STORAGE_DETAIL_RESPONSES
+)
+async def create_working_draft(
+    body: DraftCreateRequest, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return await run_in_threadpool(
+        draft_store.create, user_id, body.job_id, conversion_artifact_store, validator
+    )
+
+
+@app.get(
+    "/v1/ai/drafts",
+    tags=["ai"],
+    response_model=DraftListResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def list_working_drafts(
+    response: Response,
+    user_id: Annotated[str, Depends(require_user)],
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return await run_in_threadpool(draft_store.list, user_id, limit, offset)
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}",
+    tags=["ai"],
+    response_model=DraftInfo,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_working_draft(
+    draft_id: str, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    head = await run_in_threadpool(draft_store.resolve, user_id, draft_id)
+    return draft_store._info(head)
+
+
+@app.get("/v1/ai/drafts/{draft_id}/archive", tags=["ai"], responses=_STORAGE_DETAIL_RESPONSES)
+async def download_working_draft(
+    draft_id: str, user_id: Annotated[str, Depends(require_user)]
+) -> Response:
+    head = await run_in_threadpool(draft_store.resolve, user_id, draft_id)
+    data = await run_in_threadpool(draft_store._download, head)
+    return Response(
+        data,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{head.document_id}.corpus"',
+            "ETag": f'"{head.digest}"',
+            "X-Draft-Revision": str(head.revision),
+        },
+    )
 
 
 @app.get("/v1/ai/providers", tags=["ai"], response_model=AIProvidersResponse)
