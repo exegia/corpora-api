@@ -8,7 +8,7 @@ import httpx
 from fastapi import HTTPException
 
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
-from corpora_api.storage import StorageError
+from corpora_api.storage import StorageError, archive_name
 
 MAX_STORED_ARCHIVE_BYTES = 3_000_000
 
@@ -53,4 +53,17 @@ def read_stored_archive_view(
         return run_corpus(data, "view", view=view, **params)
     except CorpusProcessError as error:
         status = {"not_found": 404, "too_large": 413, "unavailable": 503}.get(error.kind, 422)
-        raise HTTPException(status_code=status, detail="Corpus detail is unavailable") from error
+        detail = "Corpus detail is unavailable"
+        if error.kind == "not_found":
+            node = params.get("node")
+            ref = params.get("parent") if view == "sections" else params.get("ref")
+            if view == "node" and isinstance(node, int) and str(error) == f"Node {node} not found":
+                detail = f"Node {node} not found in {archive_name(filename)}"
+            elif (
+                view in {"sections", "content"}
+                and isinstance(ref, str)
+                and len(ref) <= 512
+                and str(error) == f"Section reference {ref!r} not found"
+            ):
+                detail = f"Section reference {ref!r} not found in {archive_name(filename)}"
+        raise HTTPException(status_code=status, detail=detail) from error
