@@ -7,6 +7,7 @@ fixture does not establish real PostgreSQL concurrency or Supabase behavior.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import select
@@ -25,6 +26,8 @@ from corpora_api import app as api_module
 from corpora_api.auth import UserAuthError
 from corpora_api.drafts import DraftStore
 from corpora_api.models import AIThreadSuggestion
+from corpora_api.mutation_journal import CurationError
+from corpora_api.mutation_storage import MutationStorage
 from corpora_api.thread_store import ThreadStore
 from corpora_api.validation import ValidationBridge
 
@@ -69,6 +72,11 @@ def test_apply_recovery_undo_and_owner_isolation(archive, monkeypatch, tmp_path)
             db.execute(
                 (
                     root / "supabase/migrations/20261115042900_legacy_ai_draft_registry.sql"
+                ).read_text()
+            )
+            db.execute(
+                (
+                    root / "supabase/migrations/20261115152158_ai_draft_revision_lookup.sql"
                 ).read_text()
             )
         with socket.socket() as probe:
@@ -196,11 +204,22 @@ def test_apply_recovery_undo_and_owner_isolation(archive, monkeypatch, tmp_path)
             applied = api.post(url, json={}, headers=a)
             assert applied.status_code == 200, applied.text
             assert api.post(url, json={}, headers=a).json() == applied.json()
+            edited = api.get("/v1/ai/drafts/" + draft["id"], headers=a).json()
+            storage = MutationStorage(api_module.draft_store)
+            selected, historical_bytes = storage.download_revision(
+                owner, draft["corpus"], draft["revision"]
+            )
+            assert selected.version == draft["version"] and historical_bytes == path.read_bytes()
+            with pytest.raises(CurationError) as foreign:
+                storage.download_revision(other, draft["corpus"], draft["revision"])
+            assert foreign.value.status == 404
             change = applied.json()["change"]["change_id"]
             assert api.post(f"/v1/ai/changes/{change}/undo", headers=b).status_code == 404
             undone = api.post(f"/v1/ai/changes/{change}/undo", headers=a)
             assert undone.status_code == 200, undone.text
             assert api.post(f"/v1/ai/changes/{change}/undo", headers=a).json() == undone.json()
+            selected, _ = storage.download_revision(owner, draft["corpus"], edited["revision"])
+            assert selected.version == edited["version"] and selected.digest == edited["digest"]
             history = api.get("/v1/ai/changes", params={"corpus": draft["corpus"]}, headers=a)
             assert history.status_code == 200 and len(history.json()["entries"]) == 2
             current = api.get("/v1/ai/drafts/" + draft["id"], headers=a).json()
@@ -242,6 +261,37 @@ def test_apply_recovery_undo_and_owner_isolation(archive, monkeypatch, tmp_path)
                 )
                 == 2
             )
+            if core_root := os.getenv("CORPORA_CORE_TEST_ROOT"):
+                import corpus_validate
+
+                core_package = Path(core_root) / "packages/corpus-validate/src/corpus_validate"
+                monkeypatch.setattr(corpus_validate, "__path__", [str(core_package)])
+                prepare_restore = importlib.import_module(
+                    "corpus_validate.version_edit"
+                ).prepare_restore
+                selected, selected_bytes = storage.download_revision(
+                    owner, draft["corpus"], draft["revision"]
+                )
+                current_head = storage.resolve(owner, draft["corpus"])
+                restored = prepare_restore(
+                    storage.download(current_head),
+                    selected_bytes,
+                    name="draft.corpus",
+                    expected_digest=current_head.digest,
+                    selected_digest=selected.digest,
+                    expected_version=current_head.version,
+                    selected_version=selected.version,
+                    owner=owner,
+                    current_revision=str(current_head.revision),
+                    selected_revision=str(selected.revision),
+                    new_revision=str(uuid4()),
+                )
+                assert (
+                    corpus_validate.read_archive(restored.archive, "node", node=1)["features"][
+                        "lemma"
+                    ]
+                    == "first"
+                )
 
     finally:
         if rest is not None:

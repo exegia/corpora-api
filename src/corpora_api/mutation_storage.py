@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -10,11 +11,21 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from corpora_api.corpus_process import MAX_CORPUS_WORKER_RESPONSE_BYTES
 from corpora_api.drafts import BUCKET, DraftHead, DraftStore
-from corpora_api.mutation_journal import CurationError, Intent, Receipt, Record, _validate_plan
+from corpora_api.mutation_journal import (
+    CurationError,
+    Intent,
+    Receipt,
+    Record,
+    _operation_id,
+    _validate_plan,
+)
 from corpora_api.validation import MAX_VALIDATION_ARCHIVE_BYTES
+
+MAX_JOURNAL_WITNESS_BYTES = 16_000_000
 
 
 def _uuid(value: str) -> str:
@@ -22,6 +33,16 @@ def _uuid(value: str) -> str:
         return str(UUID(value))
     except (ValueError, TypeError, AttributeError) as error:
         raise CurationError(404, "Conversation document or change not found") from error
+
+
+class RevisionFact(BaseModel):
+    """Trusted registry facts, never an object path supplied by a caller."""
+
+    model_config = ConfigDict(extra="forbid")
+    revision: UUID
+    digest: str
+    version: str = Field(min_length=1)
+    operations: list[UUID] = Field(max_length=2)
 
 
 class MutationStorage:
@@ -48,7 +69,9 @@ class MutationStorage:
         except HTTPException as error:
             raise self._convert(error) from error
 
-    def _candidate(self, head: DraftHead, revision: str, digest: str) -> DraftHead:
+    def _candidate(
+        self, head: DraftHead, revision: str, digest: str, version: str | None = None
+    ) -> DraftHead:
         revision_id = _uuid(revision)
         key = f"{head.owner}/ai/{head.document_id}/{revision_id}.corpus"
         try:
@@ -58,6 +81,7 @@ class MutationStorage:
                     "revision": revision_id,
                     "object_key": key,
                     "digest": digest,
+                    "version": version if version is not None else head.version,
                 },
                 str(head.owner),
                 str(head.document_id),
@@ -70,6 +94,96 @@ class MutationStorage:
             return self.drafts._download(head)
         except HTTPException as error:
             raise self._convert(error) from error
+
+    def _revision_rpc(self, function: str, payload: dict[str, Any], limit: int) -> Any:
+        try:
+            url, headers = self.drafts._config()
+            with self.drafts.client.stream(
+                "POST", url + "/rest/v1/rpc/" + function, headers=headers, json=payload
+            ) as response:
+                data = bytearray()
+                for chunk in response.iter_bytes():
+                    data.extend(chunk)
+                    if len(data) > limit:
+                        raise CurationError(503, "Revision registry returned oversized data")
+                value = json.loads(data)
+                if response.status_code >= 400:
+                    message = value.get("message") if isinstance(value, dict) else None
+                    status = {"AI_NOT_FOUND": 404, "AI_CONFLICT": 409}.get(message, 503)
+                    raise CurationError(status, "Draft revision is unavailable")
+        except HTTPException as error:
+            raise self._convert(error) from error
+        except (httpx.HTTPError, ValueError) as error:
+            raise CurationError(503, "Revision registry is unavailable") from error
+        return value
+
+    def download_revision(self, owner: str, corpus: str, revision: str) -> tuple[DraftHead, bytes]:
+        """Read a journal-bound private snapshot and verify its immutable bytes.
+
+        Publishing still requires a conditional write protocol. Imported archive
+        history and object retention are outside this lookup's guarantees.
+        """
+        owner, revision = _uuid(owner), _uuid(revision)
+        head = self.resolve(owner, corpus)
+        value = self._revision_rpc(
+            "corpora_ai_revision_lookup",
+            {"p_owner": owner, "p_document": str(head.document_id), "p_revision": revision},
+            MAX_CORPUS_WORKER_RESPONSE_BYTES,
+        )
+        try:
+            fact = RevisionFact.model_validate(value)
+            if str(fact.revision) != revision or len(set(fact.operations)) != len(fact.operations):
+                raise ValueError("invalid revision identity")
+            if not fact.operations and revision != str(head.revision):
+                raise ValueError("historical revision has no applied witness")
+            if revision == str(head.revision) and (
+                fact.digest != head.digest or fact.version != head.version
+            ):
+                raise ValueError("head changed during revision lookup")
+        except (ValidationError, ValueError) as error:
+            raise CurationError(503, "Revision registry returned invalid data") from error
+
+        for operation in fact.operations:
+            operation_id = str(operation)
+            record_value = self._revision_rpc(
+                "corpora_ai_storage",
+                {"p_action": "get", "p_owner": owner, "p_payload": {"id": operation_id}},
+                MAX_JOURNAL_WITNESS_BYTES,
+            )
+            receipt_value = self._revision_rpc(
+                "corpora_ai_storage",
+                {"p_action": "receipt", "p_owner": owner, "p_payload": {"id": operation_id}},
+                MAX_CORPUS_WORKER_RESPONSE_BYTES,
+            )
+            try:
+                record = Record.model_validate(record_value)
+                receipt = Receipt.model_validate(receipt_value)
+                intent = record.intent
+                if (
+                    intent.owner != owner
+                    or intent.id != operation_id
+                    or intent.id != _operation_id(owner, intent.suggestion.id, intent.reverts)
+                    or intent.suggestion.scope.corpus != head.corpus
+                    or record.applied_at is None
+                    or record.applied_at != receipt.applied_at
+                    or intent.proof != receipt.proof
+                ):
+                    raise ValueError("invalid publication witness")
+                _validate_plan(intent.suggestion, intent.plan)
+                if not any(
+                    snapshot.revision == revision
+                    and snapshot.digest == fact.digest
+                    and snapshot.version == fact.version
+                    for snapshot in (intent.plan.before, intent.plan.after)
+                ):
+                    raise ValueError("revision does not match witness")
+            except (ValidationError, ValueError, CurationError) as error:
+                raise CurationError(503, "Revision registry returned invalid data") from error
+        try:
+            candidate = self._candidate(head, revision, fact.digest, fact.version)
+        except CurationError as error:
+            raise CurationError(503, "Revision registry returned invalid data") from error
+        return candidate, self.download(candidate)
 
     def stage(self, head: DraftHead, revision: str, data: bytes, digest: str) -> str:
         candidate = self._candidate(head, revision, digest)
