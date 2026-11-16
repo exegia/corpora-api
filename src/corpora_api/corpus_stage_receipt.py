@@ -28,6 +28,91 @@ class CorpusStageReceiptRecorder:
         self.connect = connect
         self.assume_service_role = assume_service_role
 
+    def load_trusted(self, operation_id: UUID, claim_id: UUID) -> StagedCorpusArchive:
+        """Load one executing receipt without granting or renewing a worker claim."""
+        if not isinstance(operation_id, UUID) or not isinstance(claim_id, UUID):
+            raise CorpusMetadataError("Invalid staging receipt identity")
+        try:
+            with self.connect() as db:
+                with db.transaction():
+                    if self.assume_service_role:
+                        db.execute("SET LOCAL ROLE service_role")
+                    db.execute("SELECT pg_catalog.set_config('statement_timeout','5000',true)")
+                    identity = db.execute(
+                        "SELECT corpus_id FROM public.corpora_corpus_staged_inputs "
+                        "WHERE operation_id=%s::uuid AND worker_claim=%s::uuid",
+                        (str(operation_id), str(claim_id)),
+                    ).fetchone()
+                    if identity is None:
+                        raise CorpusMetadataConflict(
+                            "Staged input is unavailable or needs reconciliation"
+                        )
+                    db.execute(
+                        "SELECT 1 FROM public.corpora_corpus_metadata WHERE id=%s::uuid FOR UPDATE",
+                        (str(identity[0]),),
+                    )
+                    db.execute(
+                        "SELECT 1 FROM public.corpora_corpus_write_ops "
+                        "WHERE id=%s::uuid FOR UPDATE",
+                        (str(operation_id),),
+                    )
+                    result = db.execute(
+                        "SELECT row_to_json(s),row_to_json(m) "
+                        "FROM public.corpora_corpus_staged_inputs s "
+                        "JOIN public.corpora_corpus_write_ops o "
+                        "ON o.id=s.operation_id AND o.corpus_id=s.corpus_id "
+                        "AND o.worker_claim=s.worker_claim "
+                        "JOIN public.corpora_corpus_metadata m ON m.id=o.corpus_id "
+                        "LEFT JOIN public.corpora_corpus_bootstrap b ON b.corpus_id=o.corpus_id "
+                        "LEFT JOIN public.corpora_corpus_heads h ON h.corpus_id=o.corpus_id "
+                        "WHERE s.operation_id=%s::uuid AND s.worker_claim=%s::uuid "
+                        "AND o.state='executing' AND s.input_sha256=o.input_sha256 "
+                        "AND s.input_format=o.input_format AND s.repo_id=m.hf_repo_id "
+                        "AND s.repo_type=m.hf_repo_type AND ("
+                        "(o.expected_sequence=0 AND h.corpus_id IS NULL "
+                        "AND m.state='provisioning' AND s.requested_base_sha=b.commit_sha) "
+                        "OR (o.expected_sequence>0 AND m.state='ready' "
+                        "AND h.sequence=o.expected_sequence AND h.commit_sha=o.expected_parent_sha "
+                        "AND s.requested_base_sha=o.expected_parent_sha))",
+                        (str(operation_id), str(claim_id)),
+                    ).fetchone()
+                    if result is None:
+                        raise CorpusMetadataConflict(
+                            "Staged input is unavailable or needs reconciliation"
+                        )
+                    row, metadata_raw = result
+                    metadata = CorpusMetadata.model_validate(metadata_raw)
+                    CorpusMetadataStore._check_link(metadata)
+                    if not isinstance(row, dict):
+                        raise ValueError("Invalid stored receipt")
+                    stage = StagedCorpusArchive(
+                        corpus_id=UUID(row["corpus_id"]),
+                        operation_id=UUID(row["operation_id"]),
+                        claim_id=UUID(row["worker_claim"]),
+                        repo_id=row["repo_id"],
+                        repo_type=row["repo_type"],
+                        input_format=row["input_format"],
+                        archive_size=row["archive_size"],
+                        archive_sha256=row["input_sha256"],
+                        requested_base_sha=row["requested_base_sha"],
+                        stage_ref=row["stage_ref"],
+                        stage_sha=row["stage_sha"],
+                        stage_path=row["stage_path"],
+                    )
+                    if (
+                        stage.operation_id != operation_id
+                        or stage.claim_id != claim_id
+                        or stage.corpus_id != metadata.id
+                        or stage.repo_id != metadata.hf_repo_id
+                        or stage.repo_type != metadata.hf_repo_type
+                    ):
+                        raise ValueError("Mismatched stored receipt")
+            return stage
+        except CorpusMetadataConflict:
+            raise
+        except Exception:
+            raise CorpusMetadataError("Staged input lookup failed") from None
+
     def record_trusted(self, stage: StagedCorpusArchive) -> StagedCorpusArchive:
         if (
             not isinstance(stage, StagedCorpusArchive)

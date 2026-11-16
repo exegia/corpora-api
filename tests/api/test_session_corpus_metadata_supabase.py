@@ -1023,12 +1023,18 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             assert uncertain_claim is not None
             uncertain_stage = stage_for(uncertain_claim)
             assert stage_recorder.record_trusted(uncertain_stage) == uncertain_stage
+            assert (
+                stage_recorder.load_trusted(uncertain_stage.operation_id, uncertain_stage.claim_id)
+                == uncertain_stage
+            )
             db.execute(
                 "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s",
                 (race_op,),
             )
             with pytest.raises(CorpusMetadataConflict):
                 stage_recorder.record_trusted(uncertain_stage)
+            with pytest.raises(CorpusMetadataConflict):
+                stage_recorder.load_trusted(uncertain_stage.operation_id, uncertain_stage.claim_id)
             with pytest.raises(CorpusMetadataConflict, match="reconciliation"):
                 finalizer.finalize_trusted(candidate_for(uncertain_claim, "f" * 40))
             assert db.execute(
@@ -1039,6 +1045,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             with pytest.raises(CorpusMetadataConflict, match="staged input"):
                 finalizer.finalize_trusted(first_candidate)
             first_stage = stage_for(winners[0])
+            with pytest.raises(CorpusMetadataConflict):
+                stage_recorder.load_trusted(first_stage.operation_id, first_stage.claim_id)
             direct_insert = (
                 "INSERT INTO public.corpora_corpus_staged_inputs "
                 "(operation_id,corpus_id,worker_claim,repo_id,repo_type,input_format,"
@@ -1125,6 +1133,12 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             with ThreadPoolExecutor(max_workers=2) as pool:
                 assert list(pool.map(record_same_stage, range(2))) == [first_stage, first_stage]
             assert stage_recorder.record_trusted(first_stage) == first_stage
+            assert (
+                stage_recorder.load_trusted(first_stage.operation_id, first_stage.claim_id)
+                == first_stage
+            )
+            with pytest.raises(CorpusMetadataConflict):
+                stage_recorder.load_trusted(first_stage.operation_id, uuid4())
             with pytest.raises(CorpusMetadataConflict):
                 stage_recorder.record_trusted(replace(first_stage, stage_sha="7" * 40))
             with pytest.raises(psycopg.errors.RaiseException):
@@ -1178,6 +1192,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             assert next_version.sequence == 2
             assert finalizer.finalize_trusted(first_candidate) == versions[0]
             assert stage_recorder.record_trusted(first_stage) == first_stage
+            with pytest.raises(CorpusMetadataConflict):
+                stage_recorder.load_trusted(first_stage.operation_id, first_stage.claim_id)
 
             competing_op = str(uuid4())
             admission.admit(

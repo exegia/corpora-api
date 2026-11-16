@@ -186,3 +186,106 @@ def test_invalid_claim_or_digest_never_sends_remote_request(monkeypatch):
             replace(claim, input_sha256="0" * 64), "mini.zip", data, Validator()
         )
     assert not hub.calls and not requests
+
+
+def test_recovery_rechecks_private_ref_and_pinned_bytes_without_remote_writes(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+    hub.calls.clear()
+    recovered = stager.recover_trusted(receipt, Validator())
+    assert recovered.archive == data
+    assert recovered.inventory.archive_sha256 == receipt.archive_sha256
+    assert [call[0] for call in hub.calls] == ["info", "info", "info"]
+
+
+@pytest.mark.parametrize("failure", ["moved", "public", "hash", "size", "path", "format"])
+def test_recovery_rejects_changed_or_invalid_receipts(monkeypatch, failure):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+    hub.calls.clear()
+    if failure == "moved":
+        hub.ref_sha = "3" * 40
+    elif failure == "public":
+        hub.private_after = False
+    elif failure == "hash":
+        receipt = replace(receipt, archive_sha256="f" * 64)
+    elif failure == "size":
+        receipt = replace(receipt, archive_size=receipt.archive_size - 1)
+    elif failure == "path":
+        receipt = replace(receipt, stage_path="other")
+    else:
+        receipt = replace(receipt, input_format="corpus")
+    with pytest.raises(CorpusStageUncertain):
+        stager.recover_trusted(receipt, Validator())
+    assert all(call[0] != "branch" and call[0] != "commit" for call in hub.calls)
+
+
+def test_recovery_rechecks_privacy_after_downloading(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+    original = hub.repo_info
+    calls = []
+
+    def changed(*args, **kwargs):
+        info = original(*args, **kwargs)
+        calls.append(True)
+        if len(calls) == 3:
+            info.private = False
+        return info
+
+    hub.repo_info = changed
+    with pytest.raises(CorpusStageUncertain):
+        stager.recover_trusted(receipt, Validator())
+    assert len(calls) == 3
+
+
+def test_recovery_rejects_ref_move_during_download(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    receipt = CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+
+    def move_ref(_request):
+        hub.ref_sha = "3" * 40
+        return httpx.Response(200, stream=httpx.ByteStream(data))
+
+    moved_client = httpx.Client(transport=httpx.MockTransport(move_ref))
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, moved_client, "test-token").recover_trusted(receipt, Validator())
+
+
+def test_recovery_rejects_invalid_validator_report(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+
+    class InvalidValidator:
+        def validate(self, name, raw):
+            return {"path": name, "valid": False, "checks": CHECKS}
+
+    with pytest.raises(CorpusStageUncertain):
+        stager.recover_trusted(receipt, InvalidValidator())
+
+
+def test_recovery_strips_auth_on_cdn_redirect(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    receipt = CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+    requests = []
+
+    def redirect(request):
+        requests.append(request)
+        if request.url.host == "huggingface.co":
+            assert request.headers["authorization"] == "Bearer test-token"
+            return httpx.Response(302, headers={"location": "https://cdn.hf.co/payload"})
+        assert request.url.host == "cdn.hf.co" and "authorization" not in request.headers
+        return httpx.Response(200, stream=httpx.ByteStream(data))
+
+    redirected_client = httpx.Client(transport=httpx.MockTransport(redirect))
+    assert (
+        CorpusHubStager(hub, redirected_client, "test-token")
+        .recover_trusted(receipt, Validator())
+        .archive
+        == data
+    )
+    assert len(requests) == 2

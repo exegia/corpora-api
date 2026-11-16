@@ -119,7 +119,11 @@ writes the validated input archive and reads it back by immutable commit SHA
 with a bounded stream and digest check. An unwired recorder can persist the
 trusted receipt for the exact claim; the database requires a receipt before a
 version can be finalized. The recorder does not verify Hub contents itself,
-and a saved receipt does not guarantee future privacy or availability. Remote
+and a saved receipt does not guarantee future privacy or availability. An
+unwired recovery read can load an executing receipt, recheck the repository and
+ref, and revalidate the bytes at its pinned commit. It does not renew a worker
+claim or authorize redispatch; the claim and head can change after the read.
+Remote
 calls lack an end-to-end deadline, and interrupted work requires reconciliation.
 A separate staging claim, safe dispatcher, cleanup policy and Hub parent
 verification are still required.
