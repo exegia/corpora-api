@@ -12,15 +12,18 @@ from typing import Any
 
 # Leave room under the 4 MB hosted response limit for route-level metadata.
 MAX_CORPUS_WORKER_RESPONSE_BYTES = 3_900_000
+MAX_MUTATION_WORKER_RESPONSE_BYTES = 8_000_000
 
 
-def _bounded_response(value: dict[str, Any]) -> str:
+def _bounded_response(value: dict[str, Any], *, max_bytes: int | None = None) -> str:
     """Encode before writing so oversized output never crosses the worker pipe."""
+    if max_bytes is None:
+        max_bytes = MAX_CORPUS_WORKER_RESPONSE_BYTES
     chunks: list[str] = []
     size = 0
     for chunk in json.JSONEncoder(default=str, ensure_ascii=False).iterencode(value):
         size += len(chunk.encode("utf-8"))
-        if size > MAX_CORPUS_WORKER_RESPONSE_BYTES:
+        if size > max_bytes:
             return json.dumps({"error": "too_large", "message": "Corpus result exceeds limit"})
         chunks.append(chunk)
     return "".join(chunks)
@@ -110,6 +113,9 @@ def _main() -> None:
     from corpus_validate.ai_types import NodeScope, ScopeLevel, UnitRange
     from corpus_validate.reference import reference_archive
 
+    from corpora_api.mutation_journal import CurationError
+
+    operation = None
     try:
         request = json.load(sys.stdin)
         data = base64.b64decode(request["data"], validate=True)
@@ -144,6 +150,10 @@ def _main() -> None:
                         if safe_scope_node_type(actual):
                             raise ScopeNodeTypeMismatch(actual) from error
                 raise
+        elif operation in ("mutation_inspect", "mutation_edit"):
+            from corpora_api.archive_mutation import run_archive_mutation
+
+            value = run_archive_mutation(data, **args, edit=operation == "mutation_edit")
         else:
             raise ValueError("Unsupported corpus operation")
         response = {"result": value}
@@ -153,6 +163,12 @@ def _main() -> None:
         response = {"error": "invalid_scope", "attributes": {"detail": error.detail}}
     except ScopeNodeTypeMismatch as error:
         response = {"error": "scope_type_mismatch", "attributes": {"actual": error.actual}}
+    except CurationError as error:
+        response = {
+            "error": "mutation",
+            "message": error.detail,
+            "attributes": {"status": error.status},
+        }
     except StaleScope as error:
         response = {
             "error": "stale",
@@ -178,7 +194,10 @@ def _main() -> None:
         response = {"error": "too_large", "message": str(error)}
     except Exception:
         response = {"error": "invalid", "message": "Corpus archive or selection is invalid"}
-    print(_bounded_response(response))
+    # Mutation output contains an internal base64 archive, not an HTTP response.
+    # Permit its encoding overhead while retaining an independent hard bound.
+    maximum = MAX_MUTATION_WORKER_RESPONSE_BYTES if operation == "mutation_edit" else None
+    print(_bounded_response(response, max_bytes=maximum))
 
 
 if __name__ == "__main__":

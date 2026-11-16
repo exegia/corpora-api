@@ -1,6 +1,200 @@
 {
   "components": {
     "schemas": {
+      "AIApplyRequest": {
+        "properties": {
+          "confirmation_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation Token"
+          }
+        },
+        "title": "AIApplyRequest",
+        "type": "object"
+      },
+      "AIApplyResponse": {
+        "properties": {
+          "change": {
+            "$ref": "#/components/schemas/AIChangeEntry"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/AIChangeEntry"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "applied",
+              "rejected",
+              "stale"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "suggestion_id": {
+            "title": "Suggestion Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suggestion_id",
+          "status",
+          "change"
+        ],
+        "title": "AIApplyResponse",
+        "type": "object"
+      },
+      "AIChangeEntry": {
+        "properties": {
+          "applied_at": {
+            "format": "date-time",
+            "title": "Applied At",
+            "type": "string"
+          },
+          "applied_by": {
+            "title": "Applied By",
+            "type": "string"
+          },
+          "change_id": {
+            "title": "Change Id",
+            "type": "string"
+          },
+          "corpus": {
+            "title": "Corpus",
+            "type": "string"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "new_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Value"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "integer"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "previous_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Value"
+          },
+          "resp": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "title": "Resp",
+            "type": "array"
+          },
+          "reverts": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverts"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "change_id",
+          "corpus",
+          "version",
+          "node_id",
+          "field",
+          "previous_value",
+          "new_value",
+          "resp",
+          "applied_by",
+          "applied_at"
+        ],
+        "title": "AIChangeEntry",
+        "type": "object"
+      },
+      "AIChangeLog": {
+        "properties": {
+          "corpus": {
+            "title": "Corpus",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/AIChangeEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "required": [
+          "corpus",
+          "entries"
+        ],
+        "title": "AIChangeLog",
+        "type": "object"
+      },
       "AIChatDiffRow": {
         "properties": {
           "field": {
@@ -951,6 +1145,41 @@
           "content_hash"
         ],
         "title": "AIThreadSuggestionData",
+        "type": "object"
+      },
+      "AIUndoResponse": {
+        "properties": {
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "revert": {
+            "$ref": "#/components/schemas/AIChangeEntry"
+          },
+          "reverted_change_id": {
+            "title": "Reverted Change Id",
+            "type": "string"
+          },
+          "reverts": {
+            "items": {
+              "$ref": "#/components/schemas/AIChangeEntry"
+            },
+            "title": "Reverts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reverted_change_id",
+          "revert"
+        ],
+        "title": "AIUndoResponse",
         "type": "object"
       },
       "AIUnitRange": {
@@ -2850,6 +3079,199 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/ai/changes": {
+      "get": {
+        "operationId": "ai_change_history_v1_ai_changes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "corpus",
+            "required": true,
+            "schema": {
+              "title": "Corpus",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "node_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Node Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChangeLog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Ai Change History",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/changes/{change_id}/undo": {
+      "post": {
+        "operationId": "undo_ai_change_v1_ai_changes__change_id__undo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIUndoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Caller lacks corpus rights"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Suggestion or draft is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Corpus is published or locked"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Corpus-wide confirmation is required"
+          },
+          "501": {
+            "description": "Hosted mutations are disabled"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Change storage or worker unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Undo Ai Change",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
     "/v1/ai/chat": {
       "post": {
         "description": "Describe the legacy streaming contract without starting a model request.",
@@ -3406,6 +3828,162 @@
           }
         ],
         "summary": "Ai Providers",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/suggestions/{suggestion_id}/apply": {
+      "post": {
+        "operationId": "apply_ai_suggestion_v1_ai_suggestions__suggestion_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "suggestion_id",
+            "required": true,
+            "schema": {
+              "title": "Suggestion Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIApplyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Caller lacks corpus rights"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Suggestion or draft is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Corpus is published or locked"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Corpus-wide confirmation is required"
+          },
+          "501": {
+            "description": "Hosted mutations are disabled"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIChatErrorInfo"
+                }
+              }
+            },
+            "description": "Change storage or worker unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Apply Ai Suggestion",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/v1/ai/suggestions/{suggestion_id}/reject": {
+      "post": {
+        "operationId": "reject_ai_suggestion_v1_ai_suggestions__suggestion_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "suggestion_id",
+            "required": true,
+            "schema": {
+              "title": "Suggestion Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Reject Ai Suggestion",
         "tags": [
           "ai"
         ]

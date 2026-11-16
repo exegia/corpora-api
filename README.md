@@ -49,6 +49,32 @@ The source-pinned legacy database setup is in `supabase/migrations/`; apply it
 only after reviewing it against the target database and verifying its existing
 tables and policies. The API does not apply migrations automatically.
 
+Suggestion apply and undo are disabled unless `CORPORA_AI_MUTATIONS_ENABLED=true`.
+They require the reviewed mutation RPC and private draft storage. Each change
+is staged immutably, read back, and committed with its version history and
+suggestion state. Only retained, complete Text-Fabric source archives are
+editable; source text, graph topology, and rendering features are protected.
+Corpus-wide changes return 428 until bound confirmation is implemented.
+An optional isolated database integration test uses a fresh in-memory PGlite
+server, PostgREST, and simulated object storage. It does not prove Supabase
+Storage behavior or multi-connection concurrency. With the PGlite packages
+installed outside this repository and a PostgREST executable available, run:
+
+```sh
+CORPORA_PGLITE_ROOT=/path/to/pglite-dependencies \
+CORPORA_POSTGREST_BIN=/path/to/postgrest \
+uv run --with 'psycopg[binary]' python -m pytest tests/api/test_mutation_pglite.py -q
+```
+
+The opt-in archive interoperability test uses a local core checkout containing
+the proposed version transformer. It does not verify storage authorization or
+the owner-and-document binding of the historical snapshot registry:
+
+```sh
+CORPORA_CORE_TEST_ROOT=/path/to/corpora-core uv run python -m pytest \
+  tests/api/test_archive_mutation.py -q
+```
+
 
 Authenticated `/v1/ai/providers` lists the legacy provider guidance without
 accepting API keys. `/v1/ai/validate` validates a version-pinned scope against

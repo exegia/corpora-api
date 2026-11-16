@@ -98,6 +98,9 @@ def setup_threads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         def _download(self, head):
             return data
 
+        def history(self, owner, corpus, node_id, limit, offset):
+            raise HTTPException(404 if corpus == "missing" else 503, "unavailable")
+
     def registry(request: httpx.Request) -> httpx.Response:
         assert request.headers["apikey"] == "service-placeholder"
         params = request.url.params
@@ -160,9 +163,37 @@ def test_thread_ownership_idempotency_and_stale_scope(setup_threads, monkeypatch
             ("/v1/ai/threads/{thread_id}/messages", "post"),
             ("/v1/ai/threads/{thread_id}/messages", "get"),
             ("/v1/ai/threads/{thread_id}/suggestions", "get"),
+            ("/v1/ai/suggestions/{suggestion_id}/reject", "post"),
+            ("/v1/ai/suggestions/{suggestion_id}/apply", "post"),
+            ("/v1/ai/changes/{change_id}/undo", "post"),
+            ("/v1/ai/changes", "get"),
         ):
             assert schema["paths"][path][method]["security"] == [{"SupabaseUserJWT": []}]
         assert client.post("/v1/ai/threads", json={"scope": scope}).status_code == 401
+        assert client.get("/v1/ai/changes", params={"corpus": "draft:unknown"}).status_code == 401
+        monkeypatch.delenv("CORPORA_AI_MUTATIONS_ENABLED", raising=False)
+        assert client.post("/v1/ai/suggestions/unknown/apply", json={}).status_code == 401
+        disabled = client.post("/v1/ai/suggestions/unknown/apply", json={}, headers=alice)
+        assert (
+            disabled.status_code == 501 and disabled.headers["cache-control"] == "private, no-store"
+        )
+        disabled_undo = client.post("/v1/ai/changes/unknown/undo", headers=alice)
+        assert (
+            disabled_undo.status_code == 501
+            and disabled_undo.headers["cache-control"] == "private, no-store"
+        )
+        for code in ("403", "409", "423", "428", "503"):
+            assert (
+                code
+                in schema["paths"]["/v1/ai/suggestions/{suggestion_id}/apply"]["post"]["responses"]
+            )
+
+        for corpus, status in (("missing", 404), ("unavailable", 503)):
+            response = client.get("/v1/ai/changes", params={"corpus": corpus}, headers=alice)
+            assert (
+                response.status_code == status
+                and response.headers["cache-control"] == "private, no-store"
+            )
         bad_key = client.post(
             "/v1/ai/threads",
             json={"scope": scope},
@@ -219,12 +250,13 @@ def test_thread_ownership_idempotency_and_stale_scope(setup_threads, monkeypatch
             headers={**alice, "Idempotency-Key": FORK_KEY},
         )
         assert fork.status_code == 200 and len(fork.json()["sections"]) == 2
+        suggestion_id = thread_id + ":00000000-0000-4000-8000-000000000007"
         rows[thread_id]["data"]["suggestions"].append(
             {
                 "section_id": section_id,
                 "created_at": thread["created_at"],
                 "suggestion": {
-                    "id": "suggestion-1",
+                    "id": suggestion_id,
                     "scope": scope,
                     "kind": "text",
                     "target_node": 1,
@@ -236,7 +268,49 @@ def test_thread_ownership_idempotency_and_stale_scope(setup_threads, monkeypatch
             }
         )
         suggestions = client.get(f"/v1/ai/threads/{thread_id}/suggestions", headers=alice).json()
-        assert suggestions["suggestions"][0]["suggestion"]["id"] == "suggestion-1"
+        assert suggestions["suggestions"][0]["suggestion"]["id"] == suggestion_id
+        reject_url = f"/v1/ai/suggestions/{suggestion_id}/reject"
+        bob = {"Authorization": "Bearer bob-token"}
+        assert client.post(reject_url, headers=bob).status_code == 404
+        retries[0] = 0
+        response = client.post(reject_url, headers=alice)
+        assert (
+            response.status_code == 204 and response.headers["cache-control"] == "private, no-store"
+        )
+        assert retries[0] == 1
+        revision = rows[thread_id]["revision"]
+        assert client.post(reject_url, headers=alice).status_code == 204
+        assert rows[thread_id]["revision"] == revision
+        assert rows[thread_id]["data"]["suggestions"][0]["suggestion"]["status"] == "rejected"
+        rows[thread_id]["data"]["suggestions"][0]["suggestion"]["status"] = "applied"
+        assert client.post(reject_url, headers=alice).status_code == 409
+        rows[thread_id]["data"]["suggestions"][0]["suggestion"]["status"] = "pending"
+        raced = [False]
+
+        def apply_wins(request: httpx.Request) -> httpx.Response:
+            if request.method == "PATCH" and not raced[0]:
+                raced[0] = True
+                rows[thread_id]["data"]["suggestions"][0]["suggestion"]["status"] = "applied"
+                rows[thread_id]["revision"] += 1
+                return httpx.Response(200, json=[])
+            return registry(request)
+
+        monkeypatch.setattr(
+            app_module,
+            "thread_store",
+            ThreadStore(httpx.Client(transport=httpx.MockTransport(apply_wins))),
+        )
+        assert client.post(reject_url, headers=alice).status_code == 409
+        assert (
+            raced[0]
+            and rows[thread_id]["data"]["suggestions"][0]["suggestion"]["status"] == "applied"
+        )
+        monkeypatch.setattr(
+            app_module,
+            "thread_store",
+            ThreadStore(httpx.Client(transport=httpx.MockTransport(registry))),
+        )
+        assert client.post("/v1/ai/suggestions/invalid/reject", headers=alice).status_code == 404
         stale = client.post(
             "/v1/ai/threads",
             json={"scope": {**scope, "version": "stale"}},

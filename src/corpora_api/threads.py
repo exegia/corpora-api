@@ -207,6 +207,24 @@ class ThreadService:
             next_offset=end if end < len(record.data.messages) else None,
         )
 
+    def reject_suggestion(self, owner: str, suggestion_id: str) -> None:
+        parts = suggestion_id.split(":")
+        if len(parts) != 2:
+            raise HTTPException(404, "Suggestion not found")
+        normalized = _id(parts[0]) + ":" + _id(parts[1])
+
+        def reject(state: ThreadState) -> None:
+            row = next(
+                (item for item in state.suggestions if item.suggestion.id == normalized), None
+            )
+            if row is None:
+                raise HTTPException(404, "Suggestion not found")
+            if row.suggestion.status not in ("pending", "rejected"):
+                raise HTTPException(409, "Suggestion is already in another terminal state")
+            row.suggestion.status = "rejected"
+
+        self._update(owner, parts[0], reject)
+
     def suggestions(self, owner: str, thread_id: str, limit: int, offset: int) -> AISuggestionList:
         record = self._record(owner, thread_id)
         self._access(owner, record.corpus)

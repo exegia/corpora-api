@@ -16,6 +16,8 @@ from corpus_validate import read_archive
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from corpora_api.corpus_process import MAX_CORPUS_WORKER_RESPONSE_BYTES
+from corpora_api.models import AIChangeEntry, AIChangeLog
 from corpora_api.validation import MAX_VALIDATION_ARCHIVE_BYTES
 
 BUCKET = "corpus-ai-drafts"
@@ -156,6 +158,48 @@ class DraftStore:
             "drafts": [self._info(head) for head in heads[:limit]],
             "next_offset": offset + limit if len(heads) > limit else None,
         }
+
+    def history(
+        self, owner: str, corpus: str, node_id: int | None, limit: int, offset: int
+    ) -> AIChangeLog:
+        capabilities = self._rpc("capabilities", owner, {})
+        if not isinstance(capabilities, dict) or capabilities.get("mutation_api") != 1:
+            raise HTTPException(status_code=503, detail="Change registry is unavailable")
+        page = self._rpc(
+            "history",
+            owner,
+            {"corpus": corpus, "node_id": node_id, "limit": limit + 1, "offset": offset},
+        )
+        try:
+            if not isinstance(page, dict) or not isinstance(page.get("has_more"), bool):
+                raise ValueError("invalid history page")
+            rows = page.get("entries")
+            if not isinstance(rows, list) or len(rows) > limit + 1:
+                raise ValueError("invalid history page")
+            entries = [AIChangeEntry.model_validate(row) for row in rows]
+            if any(entry.applied_by != owner or entry.corpus != corpus for entry in entries):
+                raise ValueError("invalid history ownership")
+            if not entries and page["has_more"]:
+                raise HTTPException(413, "Change history entry exceeds size limits")
+            count = min(limit, len(entries))
+            while count:
+                more = page["has_more"] or len(entries) > count
+                result = AIChangeLog(
+                    corpus=corpus,
+                    entries=entries[:count],
+                    next_offset=offset + count if more else None,
+                )
+                size = len(result.model_dump_json().encode("utf-8"))
+                if size <= MAX_CORPUS_WORKER_RESPONSE_BYTES:
+                    return result
+                count -= 1
+            if entries:
+                raise HTTPException(413, "Change history entry exceeds size limits")
+            return AIChangeLog(corpus=corpus, entries=[], next_offset=None)
+        except (ValidationError, ValueError, TypeError) as error:
+            raise HTTPException(
+                status_code=503, detail="Working draft storage returned invalid data"
+            ) from error
 
     def create(self, owner: str, job_id: str, jobs: Any, validator: Any) -> dict[str, Any]:
         try:

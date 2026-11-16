@@ -62,6 +62,9 @@ from corpora_api.ingest_worker import (
     run_docling_worker,
 )
 from corpora_api.models import (
+    AIApplyRequest,
+    AIApplyResponse,
+    AIChangeLog,
     AIChatErrorInfo,
     AIChatEvent,
     AIChatRequest,
@@ -75,6 +78,7 @@ from corpora_api.models import (
     AIThreadCreate,
     AIThreadList,
     AIThreadMessage,
+    AIUndoResponse,
     AIValidationResponse,
     CorpusContentResponse,
     CorpusIndexResponse,
@@ -149,6 +153,9 @@ def user_auth_path(path: str) -> bool:
         or path == "/v1/ai/chat"
         or path == "/v1/ai/threads"
         or path.startswith("/v1/ai/threads/")
+        or path.startswith("/v1/ai/suggestions/")
+        or path == "/v1/ai/changes"
+        or path.startswith("/v1/ai/changes/")
         or path == "/v1/refs"
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
@@ -222,7 +229,13 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     context_token = current_user_id.set(claims["sub"])
     try:
         response = await call_next(request)
-        if request.url.path == "/v1/ai/threads" or request.url.path.startswith("/v1/ai/threads/"):
+        if (
+            request.url.path == "/v1/ai/threads"
+            or request.url.path.startswith("/v1/ai/threads/")
+            or request.url.path.startswith("/v1/ai/suggestions/")
+            or request.url.path == "/v1/ai/changes"
+            or request.url.path.startswith("/v1/ai/changes/")
+        ):
             response.headers["Cache-Control"] = "private, no-store"
         return response
     finally:
@@ -1006,6 +1019,94 @@ async def list_ai_messages(
     offset: int = Query(default=0, ge=0),
 ) -> Any:
     return await _thread_call(_thread_service().messages, user_id, thread_id, limit, offset)
+
+
+async def _mutation_call(function: Any, *args: Any) -> Any:
+    from corpora_api.mutation_journal import CurationError
+
+    try:
+        return await run_in_threadpool(function, *args)
+    except CurationError as error:
+        codes = {
+            403: "forbidden",
+            409: "stale",
+            423: "locked",
+            428: "confirmation_required",
+            503: "model_unavailable",
+        }
+        body = (
+            {
+                "code": codes[error.status],
+                "reason": error.detail,
+                "retryable": error.status == 503,
+                "current_version": None,
+            }
+            if error.status in codes
+            else {"detail": error.detail}
+        )
+        return JSONResponse(status_code=error.status, content=body)
+
+
+_MUTATION_ERRORS = {
+    403: {"model": AIChatErrorInfo, "description": "Caller lacks corpus rights"},
+    409: {"model": AIChatErrorInfo, "description": "Suggestion or draft is stale"},
+    423: {"model": AIChatErrorInfo, "description": "Corpus is published or locked"},
+    428: {"model": AIChatErrorInfo, "description": "Corpus-wide confirmation is required"},
+    503: {"model": AIChatErrorInfo, "description": "Change storage or worker unavailable"},
+    501: {"description": "Hosted mutations are disabled"},
+}
+
+
+@app.post(
+    "/v1/ai/suggestions/{suggestion_id}/apply",
+    tags=["ai"],
+    response_model=AIApplyResponse,
+    responses=_MUTATION_ERRORS,
+)
+async def apply_ai_suggestion(
+    suggestion_id: str, body: AIApplyRequest, user_id: Annotated[str, Depends(_thread_owner)]
+) -> Any:
+    from corpora_api.mutations import MutationService
+
+    return await _mutation_call(
+        MutationService(draft_store, thread_store).apply,
+        user_id,
+        suggestion_id,
+        body.confirmation_token,
+    )
+
+
+@app.post(
+    "/v1/ai/changes/{change_id}/undo",
+    tags=["ai"],
+    response_model=AIUndoResponse,
+    responses=_MUTATION_ERRORS,
+)
+async def undo_ai_change(change_id: str, user_id: Annotated[str, Depends(_thread_owner)]) -> Any:
+    from corpora_api.mutations import MutationService
+
+    return await _mutation_call(MutationService(draft_store, thread_store).undo, user_id, change_id)
+
+
+@app.get("/v1/ai/changes", tags=["ai"], response_model=AIChangeLog)
+async def ai_change_history(
+    response: Response,
+    user_id: Annotated[str, Depends(_thread_owner)],
+    corpus: str,
+    node_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> AIChangeLog:
+    response.headers["Cache-Control"] = "private, no-store"
+    return await run_in_threadpool(draft_store.history, user_id, corpus, node_id, limit, offset)
+
+
+@app.post("/v1/ai/suggestions/{suggestion_id}/reject", tags=["ai"], status_code=204)
+async def reject_ai_suggestion(
+    suggestion_id: str, user_id: Annotated[str, Depends(_thread_owner)]
+) -> Response:
+    await _thread_call(_thread_service().reject_suggestion, user_id, suggestion_id)
+    return Response(status_code=204)
 
 
 @app.get("/v1/ai/threads/{thread_id}/suggestions", tags=["ai"], response_model=AISuggestionList)

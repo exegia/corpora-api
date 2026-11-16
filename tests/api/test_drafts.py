@@ -87,6 +87,69 @@ def test_concurrent_draft_creation_reuses_the_same_immutable_object(monkeypatch)
     assert len(objects) == 1
 
 
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_draft_retry_after_lost_upload_response_checks_stored_digest(monkeypatch, corrupt):
+    owner, job = str(uuid4()), str(uuid4())
+    objects, heads, attempts = {}, {}, []
+    monkeypatch.setenv("SUPABASE_URL", "https://fixture.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "fixture-key")
+    monkeypatch.setattr(drafts_module, "read_archive", lambda *_: {"version": "1.0"})
+
+    def transport(request):
+        key = request.url.path
+        if request.method == "POST":
+            attempts.append(key)
+            if key not in objects:
+                objects[key] = request.content
+                raise httpx.ReadTimeout("upload response lost", request=request)
+            return httpx.Response(409)
+        if request.method == "GET":
+            return httpx.Response(200, content=objects[key])
+        raise AssertionError("unexpected storage request")
+
+    store = DraftStore(httpx.Client(transport=httpx.MockTransport(transport)))
+
+    def missing(*_):
+        raise HTTPException(404, "Draft not found")
+
+    def rpc(action, principal, payload):
+        if action == "capabilities":
+            return {"draft_api": 1}
+        assert action == "provision"
+        heads.update(
+            {
+                **{key: value for key, value in payload.items() if key not in ("name", "job_id")},
+                "owner": principal,
+                "state": "draft",
+            }
+        )
+        return dict(heads)
+
+    monkeypatch.setattr(store, "resolve", missing)
+    monkeypatch.setattr(store, "_rpc", rpc)
+
+    class Jobs:
+        def fetch(self, *_):
+            return "fixture.corpus", b"same verified bytes"
+
+    class Validator:
+        def validate(self, *_):
+            return {"valid": True}
+
+    with pytest.raises(HTTPException) as first:
+        store.create(owner, job, Jobs(), Validator())
+    assert first.value.status_code == 503 and len(objects) == 1 and not heads
+    if corrupt:
+        objects[attempts[0]] = b"unexpected bytes"
+        with pytest.raises(HTTPException) as second:
+            store.create(owner, job, Jobs(), Validator())
+        assert second.value.status_code == 409 and not heads
+    else:
+        created = store.create(owner, job, Jobs(), Validator())
+        assert created["id"] == heads["document_id"]
+    assert attempts[0] == attempts[1] and len(objects) == 1
+
+
 def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkeypatch, tmp_path):
     owner, foreign, job = str(uuid4()), str(uuid4()), str(uuid4())
     objects, heads = {}, {}
@@ -235,3 +298,99 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
     with pytest.raises(HTTPException) as mismatch:
         second._download(second.resolve(owner, first["id"]))
     assert mismatch.value.status_code == 409
+
+
+def test_change_history_validates_ownership_and_pagination(monkeypatch):
+    owner, other = str(uuid4()), str(uuid4())
+    corpus = f"draft:{uuid4()}"
+    entries = [
+        {
+            "change_id": str(uuid4()),
+            "operation_id": str(uuid4()),
+            "corpus": corpus,
+            "version": "1",
+            "node_id": 1,
+            "field": "label",
+            "previous_value": "before",
+            "new_value": "after",
+            "resp": ["#corpora-ai", f"#{owner}"],
+            "applied_by": owner,
+            "applied_at": "2026-01-01T00:00:00Z",
+        }
+        for _ in range(2)
+    ]
+    requested = []
+    store = DraftStore()
+
+    def rpc(action, requested_owner, payload):
+        requested.append((action, requested_owner, payload))
+        if action == "capabilities":
+            return {"mutation_api": 1}
+        return {"entries": entries, "has_more": False}
+
+    monkeypatch.setattr(store, "_rpc", rpc)
+    page = store.history(owner, corpus, 1, 1, 0)
+    assert len(page.entries) == 1 and page.next_offset == 1
+    assert requested == [
+        ("capabilities", owner, {}),
+        ("history", owner, {"corpus": corpus, "node_id": 1, "limit": 2, "offset": 0}),
+    ]
+    entries[1]["applied_by"] = other
+    with pytest.raises(HTTPException) as error:
+        store.history(owner, corpus, None, 1, 0)
+    assert error.value.status_code == 503
+    monkeypatch.setattr(store, "_rpc", lambda action, owner, payload: {"draft_api": 1})
+    with pytest.raises(HTTPException) as unavailable:
+        store.history(owner, corpus, None, 1, 0)
+    assert unavailable.value.status_code == 503
+
+
+def test_change_history_respects_byte_limit_without_skipping(monkeypatch):
+    owner, corpus = str(uuid4()), f"draft:{uuid4()}"
+    entries = [
+        {
+            "change_id": str(uuid4()),
+            "operation_id": str(uuid4()),
+            "corpus": corpus,
+            "version": "1",
+            "node_id": 1,
+            "field": "label",
+            "previous_value": "x" * 100,
+            "new_value": "after",
+            "resp": ["#corpora-ai", f"#{owner}"],
+            "applied_by": owner,
+            "applied_at": "2026-01-01T00:00:00Z",
+        }
+        for _ in range(3)
+    ]
+    store = DraftStore()
+    monkeypatch.setattr(drafts_module, "MAX_CORPUS_WORKER_RESPONSE_BYTES", 900)
+    monkeypatch.setattr(
+        store,
+        "_rpc",
+        lambda action, owner, payload: (
+            {"mutation_api": 1}
+            if action == "capabilities"
+            else {"entries": entries[payload["offset"] :], "has_more": False}
+        ),
+    )
+    first = store.history(owner, corpus, None, 3, 0)
+    assert 0 < len(first.entries) < 3
+    assert first.next_offset == len(first.entries)
+    found = list(first.entries)
+    next_offset = first.next_offset
+    while next_offset is not None:
+        page = store.history(owner, corpus, None, 3, next_offset)
+        found.extend(page.entries)
+        next_offset = page.next_offset
+    assert [e.change_id for e in found] == [e["change_id"] for e in entries]
+    monkeypatch.setattr(
+        store,
+        "_rpc",
+        lambda action, owner, payload: (
+            {"mutation_api": 1} if action == "capabilities" else {"entries": [], "has_more": True}
+        ),
+    )
+    with pytest.raises(HTTPException) as oversized:
+        store.history(owner, corpus, None, 3, 0)
+    assert oversized.value.status_code == 413

@@ -141,6 +141,46 @@ class CorpusNodeDetailResponse(BaseModel):
     occurrences_in_section: int
 
 
+class AIChangeEntry(BaseModel):
+    change_id: str
+    operation_id: str | None = None
+    corpus: str
+    version: str
+    node_id: int
+    field: str
+    previous_value: str | None
+    new_value: str | None
+    resp: list[str] = Field(min_length=2)
+    applied_by: str
+    applied_at: datetime
+    reverts: str | None = None
+
+
+class AIApplyRequest(BaseModel):
+    confirmation_token: str | None = None
+
+
+class AIApplyResponse(BaseModel):
+    suggestion_id: str
+    status: Literal["pending", "applied", "rejected", "stale"]
+    change: AIChangeEntry
+    operation_id: str | None = None
+    changes: list[AIChangeEntry] = Field(default_factory=list)
+
+
+class AIUndoResponse(BaseModel):
+    reverted_change_id: str
+    revert: AIChangeEntry
+    operation_id: str | None = None
+    reverts: list[AIChangeEntry] = Field(default_factory=list)
+
+
+class AIChangeLog(BaseModel):
+    corpus: str
+    entries: list[AIChangeEntry]
+    next_offset: int | None = None
+
+
 class DraftCreateRequest(BaseModel):
     job_id: str
 

@@ -283,13 +283,27 @@ BEGIN
         IF NOT FOUND THEN RAISE EXCEPTION 'AI_NOT_FOUND'; END IF;
         IF (p_payload->>'limit')::int NOT BETWEEN 1 AND 101 OR (p_payload->>'offset')::int < 0
             THEN RAISE EXCEPTION 'AI_INVALID'; END IF;
-        SELECT coalesce(jsonb_agg(to_jsonb(q) ORDER BY q.applied_at DESC,q.change_id DESC),'[]') INTO result
-        FROM (SELECT c.id AS change_id,d.corpus,c.version,c.node_id,c.field,c.previous_value,c.new_value,
-            c.resp,c.applied_by,c.applied_at,c.reverts_change_id AS reverts,c.ai_operation_id AS operation_id
-            FROM public.corpus_changes c WHERE c.document_id=d.document_id AND c.applied_by=p_owner
-                AND c.ai_operation_id IS NOT NULL AND c.status='applied'
-                AND (p_payload->>'node_id' IS NULL OR c.node_id=(p_payload->>'node_id')::bigint)
-            ORDER BY c.applied_at DESC,c.id DESC LIMIT (p_payload->>'limit')::int OFFSET (p_payload->>'offset')::int) q;
+        -- Bound the JSON returned over PostgREST before it reaches the API.
+        -- A prefix is essential: next_offset must never skip a large entry.
+        SELECT jsonb_build_object(
+            'entries', coalesce(jsonb_agg(item ORDER BY applied_at DESC,change_id DESC)
+                FILTER (WHERE cumulative_bytes <= 3800000), '[]'::jsonb),
+            'has_more', count(*) > count(*) FILTER (WHERE cumulative_bytes <= 3800000))
+        INTO result
+        FROM (
+            SELECT item, applied_at, change_id,
+                sum(octet_length(item::text) + 2) OVER
+                    (ORDER BY applied_at DESC, change_id DESC) AS cumulative_bytes
+            FROM (
+                SELECT to_jsonb(q) AS item, q.applied_at, q.change_id
+                FROM (SELECT c.id AS change_id,d.corpus,c.version,c.node_id,c.field,c.previous_value,c.new_value,
+                    c.resp,c.applied_by,c.applied_at,c.reverts_change_id AS reverts,c.ai_operation_id AS operation_id
+                    FROM public.corpus_changes c WHERE c.document_id=d.document_id AND c.applied_by=p_owner
+                        AND c.ai_operation_id IS NOT NULL AND c.status='applied'
+                        AND (p_payload->>'node_id' IS NULL OR c.node_id=(p_payload->>'node_id')::bigint)
+                    ORDER BY c.applied_at DESC,c.id DESC LIMIT (p_payload->>'limit')::int OFFSET (p_payload->>'offset')::int) q
+            ) encoded
+        ) bounded;
         RETURN result;
     ELSIF p_action = 'pending' THEN
         IF (p_payload->>'limit')::int NOT BETWEEN 1 AND 100 THEN RAISE EXCEPTION 'AI_INVALID'; END IF;
@@ -549,13 +563,27 @@ BEGIN
         IF NOT FOUND THEN RAISE EXCEPTION 'AI_NOT_FOUND'; END IF;
         IF (p_payload->>'limit')::int NOT BETWEEN 1 AND 101 OR (p_payload->>'offset')::int < 0
             THEN RAISE EXCEPTION 'AI_INVALID'; END IF;
-        SELECT coalesce(jsonb_agg(to_jsonb(q) ORDER BY q.applied_at DESC,q.change_id DESC),'[]') INTO result
-        FROM (SELECT c.id AS change_id,d.corpus,c.version,c.node_id,c.field,c.previous_value,c.new_value,
-            c.resp,c.applied_by,c.applied_at,c.reverts_change_id AS reverts,c.ai_operation_id AS operation_id
-            FROM public.corpus_changes c WHERE c.document_id=d.document_id AND c.applied_by=p_owner
-                AND c.ai_operation_id IS NOT NULL AND c.status='applied'
-                AND (p_payload->>'node_id' IS NULL OR c.node_id=(p_payload->>'node_id')::bigint)
-            ORDER BY c.applied_at DESC,c.id DESC LIMIT (p_payload->>'limit')::int OFFSET (p_payload->>'offset')::int) q;
+        -- Bound the JSON returned over PostgREST before it reaches the API.
+        -- A prefix is essential: next_offset must never skip a large entry.
+        SELECT jsonb_build_object(
+            'entries', coalesce(jsonb_agg(item ORDER BY applied_at DESC,change_id DESC)
+                FILTER (WHERE cumulative_bytes <= 3800000), '[]'::jsonb),
+            'has_more', count(*) > count(*) FILTER (WHERE cumulative_bytes <= 3800000))
+        INTO result
+        FROM (
+            SELECT item, applied_at, change_id,
+                sum(octet_length(item::text) + 2) OVER
+                    (ORDER BY applied_at DESC, change_id DESC) AS cumulative_bytes
+            FROM (
+                SELECT to_jsonb(q) AS item, q.applied_at, q.change_id
+                FROM (SELECT c.id AS change_id,d.corpus,c.version,c.node_id,c.field,c.previous_value,c.new_value,
+                    c.resp,c.applied_by,c.applied_at,c.reverts_change_id AS reverts,c.ai_operation_id AS operation_id
+                    FROM public.corpus_changes c WHERE c.document_id=d.document_id AND c.applied_by=p_owner
+                        AND c.ai_operation_id IS NOT NULL AND c.status='applied'
+                        AND (p_payload->>'node_id' IS NULL OR c.node_id=(p_payload->>'node_id')::bigint)
+                    ORDER BY c.applied_at DESC,c.id DESC LIMIT (p_payload->>'limit')::int OFFSET (p_payload->>'offset')::int) q
+            ) encoded
+        ) bounded;
         RETURN result;
     ELSIF p_action = 'pending' THEN
         IF (p_payload->>'limit')::int NOT BETWEEN 1 AND 100 THEN RAISE EXCEPTION 'AI_INVALID'; END IF;
