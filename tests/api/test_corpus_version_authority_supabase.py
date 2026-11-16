@@ -28,6 +28,7 @@ def test_content_version_constraints_and_privileges():
         for table in (
             "corpora_corpus_metadata",
             "corpora_corpus_bootstrap",
+            "corpora_corpus_provision_ops",
             "corpora_corpus_write_ops",
             "corpora_corpus_versions",
             "corpora_corpus_heads",
@@ -51,10 +52,94 @@ def test_content_version_constraints_and_privileges():
                     "VALUES (%s,%s,'Test',%s,'dataset')",
                     (cid, user, "fixture/corpus-" + cid),
                 )
+            provision, claim = str(uuid4()), str(uuid4())
             db.execute(
-                "INSERT INTO public.corpora_corpus_bootstrap (corpus_id,commit_sha) VALUES (%s,%s)",
-                (corpus, "9" * 40),
+                "INSERT INTO public.corpora_corpus_provision_ops "
+                "(id,corpus_id,actor_id,session_id,repo_id,repo_type) "
+                "VALUES (%s,%s,%s,%s,%s,'dataset')",
+                (provision, corpus, user, str(uuid4()), "fixture/corpus-" + corpus),
             )
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_provision_ops "
+                    "(id,corpus_id,actor_id,session_id,repo_id,repo_type) "
+                    "VALUES (%s,%s,%s,%s,%s,'dataset')",
+                    (str(uuid4()), corpus, user, str(uuid4()), "fixture/corpus-" + corpus),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "DELETE FROM public.corpora_corpus_provision_ops WHERE id=%s", (provision,)
+                )
+            db.execute(
+                "UPDATE public.corpora_corpus_provision_ops SET state='executing', "
+                "worker_claim=%s WHERE id=%s",
+                (claim, provision),
+            )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='completed' WHERE id=%s",
+                    (provision,),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_bootstrap "
+                    "(corpus_id,operation_id,worker_claim,commit_sha) VALUES (%s,%s,%s,%s)",
+                    (corpus, provision, str(uuid4()), "9" * 40),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET worker_claim=%s WHERE id=%s",
+                    (str(uuid4()), provision),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_bootstrap "
+                    "(corpus_id,operation_id,worker_claim,commit_sha) VALUES (%s,%s,%s,%s)",
+                    (corpus, provision, claim, "9" * 40),
+                )
+            with db.transaction():
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_bootstrap "
+                    "(corpus_id,operation_id,worker_claim,commit_sha) VALUES (%s,%s,%s,%s)",
+                    (corpus, provision, claim, "9" * 40),
+                )
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='completed' WHERE id=%s",
+                    (provision,),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='executing' WHERE id=%s",
+                    (provision,),
+                )
+            uncertain, uncertain_claim = str(uuid4()), str(uuid4())
+            db.execute(
+                "INSERT INTO public.corpora_corpus_provision_ops "
+                "(id,corpus_id,actor_id,session_id,repo_id,repo_type) "
+                "VALUES (%s,%s,%s,%s,%s,'dataset')",
+                (uncertain, other, user, str(uuid4()), "fixture/corpus-" + other),
+            )
+            db.execute(
+                "UPDATE public.corpora_corpus_provision_ops SET state='executing', "
+                "worker_claim=%s WHERE id=%s",
+                (uncertain_claim, uncertain),
+            )
+            db.execute(
+                "UPDATE public.corpora_corpus_provision_ops SET state='uncertain' WHERE id=%s",
+                (uncertain,),
+            )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='executing' WHERE id=%s",
+                    (uncertain,),
+                )
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_provision_ops "
+                    "(id,corpus_id,actor_id,session_id,repo_id,repo_type) "
+                    "VALUES (%s,%s,%s,%s,%s,'dataset')",
+                    (str(uuid4()), other, user, str(uuid4()), "fixture/corpus-" + other),
+                )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "UPDATE public.corpora_corpus_bootstrap SET commit_sha=%s WHERE corpus_id=%s",
@@ -72,6 +157,21 @@ def test_content_version_constraints_and_privileges():
                     "expected_parent_sha,input_sha256) "
                     "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                     (op, cid, user, str(uuid4()), seq, parent, "a" * 64),
+                )
+
+            missing_bootstrap_op = str(uuid4())
+            operation(missing_bootstrap_op, other, 0, None)
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
+                "WHERE id=%s",
+                (str(uuid4()), missing_bootstrap_op),
+            )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_versions "
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                    "VALUES (%s,1,%s,NULL,%s,%s)",
+                    (other, "d" * 40, missing_bootstrap_op, "corpora-op-" + missing_bootstrap_op),
                 )
 
             operation(op1, corpus, 0, None)
@@ -206,6 +306,7 @@ def test_content_version_constraints_and_privileges():
                 )
             for table in (
                 "corpora_corpus_bootstrap",
+                "corpora_corpus_provision_ops",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_versions",
                 "corpora_corpus_heads",
@@ -228,6 +329,7 @@ def test_content_version_constraints_and_privileges():
                 "corpora_corpus_versions",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_bootstrap",
+                "corpora_corpus_provision_ops",
                 "corpora_corpus_metadata",
             ):
                 db.execute("DROP TABLE IF EXISTS public." + table + " CASCADE")
@@ -236,6 +338,9 @@ def test_content_version_constraints_and_privileges():
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_preserve_history()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_operation()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_finalized_version()")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_provision()")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_bootstrap()")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_bootstrap_finalized()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_metadata_stamp()")
             if user:
                 client.delete(

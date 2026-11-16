@@ -642,11 +642,30 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 rollback_finalize_corpus,
                 race_corpus,
             ):
+                provision, claim = str(uuid4()), str(uuid4())
                 db.execute(
-                    "INSERT INTO public.corpora_corpus_bootstrap (corpus_id,commit_sha) "
-                    "VALUES (%s,%s)",
-                    (cid, "9" * 40),
+                    "INSERT INTO public.corpora_corpus_provision_ops "
+                    "(id,corpus_id,actor_id,session_id,repo_id,repo_type) "
+                    "SELECT %s,id,owner_id,%s,hf_repo_id,hf_repo_type "
+                    "FROM public.corpora_corpus_metadata WHERE id=%s",
+                    (provision, str(uuid4()), cid),
                 )
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='executing', "
+                    "worker_claim=%s WHERE id=%s",
+                    (claim, provision),
+                )
+                with db.transaction():
+                    db.execute(
+                        "INSERT INTO public.corpora_corpus_bootstrap "
+                        "(corpus_id,operation_id,worker_claim,commit_sha) VALUES (%s,%s,%s,%s)",
+                        (cid, provision, claim, "9" * 40),
+                    )
+                    db.execute(
+                        "UPDATE public.corpora_corpus_provision_ops SET state='completed' "
+                        "WHERE id=%s",
+                        (provision,),
+                    )
             claim_barrier = threading.Barrier(2)
 
             def compete_for_claim(_):
@@ -889,6 +908,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "corpora_corpus_versions",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_bootstrap",
+                "corpora_corpus_provision_ops",
             ):
                 db.execute("DROP TABLE IF EXISTS public." + table + " CASCADE")
             for fn in (
@@ -897,6 +917,9 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "corpora_corpus_preserve_history",
                 "corpora_corpus_validate_operation",
                 "corpora_corpus_validate_finalized_version",
+                "corpora_corpus_validate_provision",
+                "corpora_corpus_validate_bootstrap",
+                "corpora_corpus_bootstrap_finalized",
             ):
                 db.execute("DROP FUNCTION IF EXISTS public." + fn + "()")
             db.execute("DROP TABLE IF EXISTS public.corpora_corpus_metadata")

@@ -4,10 +4,30 @@
 -- The first logical corpus version has no earlier published corpus version,
 -- but its Hub commit still needs a real Git parent. A trusted provisioner must
 -- verify and record the repository's initial commit before the first claim.
+CREATE TABLE public.corpora_corpus_provision_ops (
+    id uuid PRIMARY KEY,
+    corpus_id uuid NOT NULL UNIQUE REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,
+    actor_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
+    session_id uuid NOT NULL,
+    repo_id text NOT NULL,
+    repo_type text NOT NULL CHECK (repo_type IN ('dataset', 'model')),
+    state text NOT NULL DEFAULT 'admitted' CHECK (state IN ('admitted', 'executing', 'uncertain', 'completed')),
+    worker_claim uuid UNIQUE,
+    claimed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (id, corpus_id, worker_claim),
+    CHECK ((state = 'admitted' AND worker_claim IS NULL AND claimed_at IS NULL)
+        OR (state <> 'admitted' AND worker_claim IS NOT NULL AND claimed_at IS NOT NULL))
+);
+
 CREATE TABLE public.corpora_corpus_bootstrap (
     corpus_id uuid PRIMARY KEY REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,
+    operation_id uuid NOT NULL UNIQUE,
+    worker_claim uuid NOT NULL,
     commit_sha text NOT NULL CHECK (commit_sha ~ '^[0-9a-f]{40}$'),
-    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (operation_id, corpus_id, worker_claim)
+        REFERENCES public.corpora_corpus_provision_ops(id, corpus_id, worker_claim) ON DELETE RESTRICT
 );
 
 CREATE TABLE public.corpora_corpus_write_ops (
@@ -71,7 +91,10 @@ BEGIN
         WHERE id = NEW.operation_id AND corpus_id = NEW.corpus_id;
     IF NOT FOUND OR request_row.state NOT IN ('executing', 'uncertain')
        OR NEW.sequence <> request_row.expected_sequence + 1
-       OR NEW.parent_sha IS DISTINCT FROM request_row.expected_parent_sha THEN
+       OR NEW.parent_sha IS DISTINCT FROM request_row.expected_parent_sha
+       OR (NEW.sequence = 1 AND NOT EXISTS (
+           SELECT 1 FROM public.corpora_corpus_bootstrap b WHERE b.corpus_id = NEW.corpus_id
+       )) THEN
         RAISE EXCEPTION 'CORPUS_VERSION_OPERATION_INVALID';
     END IF;
     RETURN NEW;
@@ -121,6 +144,93 @@ CREATE TRIGGER corpora_corpus_heads_no_delete BEFORE DELETE
 CREATE TRIGGER corpora_corpus_bootstrap_immutable BEFORE UPDATE OR DELETE
     ON public.corpora_corpus_bootstrap FOR EACH ROW
     EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+
+CREATE FUNCTION public.corpora_corpus_validate_provision()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.state <> 'admitted' OR NEW.worker_claim IS NOT NULL OR NEW.claimed_at IS NOT NULL
+           OR NOT EXISTS (
+               SELECT 1 FROM public.corpora_corpus_metadata m
+               WHERE m.id = NEW.corpus_id AND m.state = 'provisioning'
+                 AND m.hf_repo_id = NEW.repo_id AND m.hf_repo_type = NEW.repo_type
+           ) THEN
+            RAISE EXCEPTION 'CORPUS_PROVISION_INVALID';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.id IS DISTINCT FROM OLD.id OR NEW.corpus_id IS DISTINCT FROM OLD.corpus_id
+       OR NEW.actor_id IS DISTINCT FROM OLD.actor_id OR NEW.session_id IS DISTINCT FROM OLD.session_id
+       OR NEW.repo_id IS DISTINCT FROM OLD.repo_id OR NEW.repo_type IS DISTINCT FROM OLD.repo_type
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'CORPUS_PROVISION_IDENTITY_IMMUTABLE';
+    END IF;
+    IF NOT ((OLD.state = 'admitted' AND NEW.state IN ('admitted', 'executing'))
+        OR (OLD.state = 'executing' AND NEW.state IN ('executing', 'uncertain', 'completed'))
+        OR (OLD.state = 'uncertain' AND NEW.state IN ('uncertain', 'completed'))
+        OR (OLD.state = 'completed' AND NEW.state = 'completed')) THEN
+        RAISE EXCEPTION 'CORPUS_PROVISION_STATE_INVALID';
+    END IF;
+    IF OLD.state = 'admitted' AND NEW.state = 'executing' THEN
+        IF NEW.worker_claim IS NULL OR NEW.claimed_at IS NOT NULL THEN
+            RAISE EXCEPTION 'CORPUS_PROVISION_CLAIM_INVALID';
+        END IF;
+        NEW.claimed_at := clock_timestamp();
+    ELSIF NEW.worker_claim IS DISTINCT FROM OLD.worker_claim
+          OR NEW.claimed_at IS DISTINCT FROM OLD.claimed_at THEN
+        RAISE EXCEPTION 'CORPUS_PROVISION_CLAIM_IMMUTABLE';
+    END IF;
+    IF NEW.state = 'completed' AND NOT EXISTS (
+        SELECT 1 FROM public.corpora_corpus_bootstrap b
+        WHERE b.operation_id = NEW.id AND b.corpus_id = NEW.corpus_id
+          AND b.worker_claim = NEW.worker_claim
+    ) THEN
+        RAISE EXCEPTION 'CORPUS_PROVISION_RESULT_MISSING';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER corpora_corpus_validate_provision BEFORE INSERT OR UPDATE
+    ON public.corpora_corpus_provision_ops FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_validate_provision();
+CREATE TRIGGER corpora_corpus_provision_ops_no_delete BEFORE DELETE
+    ON public.corpora_corpus_provision_ops FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+
+CREATE FUNCTION public.corpora_corpus_validate_bootstrap()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM public.corpora_corpus_provision_ops p
+        JOIN public.corpora_corpus_metadata m ON m.id = p.corpus_id
+        WHERE p.id = NEW.operation_id AND p.corpus_id = NEW.corpus_id
+          AND p.worker_claim = NEW.worker_claim AND p.state IN ('executing', 'uncertain')
+          AND m.state = 'provisioning' AND m.hf_repo_id = p.repo_id AND m.hf_repo_type = p.repo_type
+          AND NOT EXISTS (SELECT 1 FROM public.corpora_corpus_heads h WHERE h.corpus_id = m.id)
+    ) THEN
+        RAISE EXCEPTION 'CORPUS_BOOTSTRAP_OPERATION_INVALID';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER corpora_corpus_validate_bootstrap BEFORE INSERT
+    ON public.corpora_corpus_bootstrap FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_validate_bootstrap();
+
+CREATE FUNCTION public.corpora_corpus_bootstrap_finalized()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.corpora_corpus_provision_ops p
+                   WHERE p.id = NEW.operation_id AND p.corpus_id = NEW.corpus_id
+                     AND p.worker_claim = NEW.worker_claim AND p.state = 'completed') THEN
+        RAISE EXCEPTION 'CORPUS_BOOTSTRAP_NOT_FINALIZED';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER corpora_corpus_bootstrap_finalized
+    AFTER INSERT ON public.corpora_corpus_bootstrap DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION public.corpora_corpus_bootstrap_finalized();
 
 CREATE FUNCTION public.corpora_corpus_validate_operation()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
@@ -202,14 +312,17 @@ ALTER TABLE public.corpora_corpus_write_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_heads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_bootstrap ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+ALTER TABLE public.corpora_corpus_provision_ops ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads FROM PUBLIC, anon, authenticated, service_role;
 
 -- Deliberately read-only until a reviewed admission/finalization boundary is
 -- installed. The raw tables are not a safe public write interface.
-GRANT SELECT ON public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+GRANT SELECT ON public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads TO service_role;
 REVOKE ALL ON FUNCTION public.corpora_corpus_validate_version(),
     public.corpora_corpus_validate_head(), public.corpora_corpus_preserve_history(),
-    public.corpora_corpus_validate_operation(), public.corpora_corpus_validate_finalized_version()
+    public.corpora_corpus_validate_operation(), public.corpora_corpus_validate_finalized_version(),
+    public.corpora_corpus_validate_provision(), public.corpora_corpus_validate_bootstrap(),
+    public.corpora_corpus_bootstrap_finalized()
     FROM PUBLIC, anon, authenticated, service_role;
