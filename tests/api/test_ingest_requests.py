@@ -1,0 +1,162 @@
+"""Reservation identity is owner-scoped and survives uncertain inserts."""
+
+import json
+import uuid
+
+import httpx
+import pytest
+
+from corpora_api.auth import current_user_token
+from corpora_api.ingest_requests import IngestRequestConflict, input_fingerprint, reserve_request
+from corpora_api.ingest_store import IngestStore, IngestStoreError
+
+ALICE = "b9a94f14-dfc2-4699-ab8c-77378136f2b4"
+BOB = "477db53d-74f4-4ae4-8c51-5f1d2282821d"
+
+
+@pytest.fixture(autouse=True)
+def clear_request_token():
+    context = current_user_token.set(None)
+    yield
+    current_user_token.reset(context)
+
+
+def test_fingerprint_covers_effective_input():
+    def digest(filename="a.txt", source=b"abc", name="n", language="en", corpus_id=""):
+        return input_fingerprint(
+            filename, source, name=name, language=language, corpus_id=corpus_id
+        )
+
+    expected = digest()
+    assert digest() == expected
+    assert all(
+        value != expected
+        for value in (
+            digest(filename="b.txt"),
+            digest(source=b"abd"),
+            digest(name="m"),
+            digest(language="fr"),
+            digest(corpus_id=str(uuid.uuid4())),
+        )
+    )
+
+
+@pytest.mark.parametrize("missing", ["SUPABASE_INGEST_API_KEY", "user_token"])
+def test_ingest_credentials_fail_closed_without_service_role_fallback(monkeypatch, missing):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "conversion-jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "sb_publishable_test_placeholder")
+    current_user_token.set("bearer-placeholder")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-placeholder")
+    if missing == "user_token":
+        current_user_token.set(None)
+    else:
+        monkeypatch.delenv(missing)
+    with pytest.raises(IngestStoreError) as error:
+        IngestStore._config()
+    assert "service-placeholder" not in str(error.value)
+
+
+def test_ingest_credentials_use_distinct_headers_without_repr_leak(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "conversion-jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "sb_publishable_test_placeholder")
+    current_user_token.set("bearer-placeholder")
+    _, credentials, _ = IngestStore._config()
+    assert IngestStore._headers(credentials) == {
+        "apikey": "sb_publishable_test_placeholder",
+        "Authorization": "Bearer bearer-placeholder",
+    }
+    assert "sb_publishable_test_placeholder" not in repr(credentials)
+    assert "bearer-placeholder" not in repr(credentials)
+
+
+@pytest.mark.parametrize("key", ["sb_secret_example", "legacy-service-token", ""])
+def test_ingest_rejects_non_publishable_gateway_key(monkeypatch, key):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "conversion-jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", key)
+    current_user_token.set("bearer-placeholder")
+    with pytest.raises(IngestStoreError):
+        IngestStore._config()
+
+
+def test_ingest_rejects_unprotected_bucket(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "unrelated-bucket")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "sb_publishable_test_placeholder")
+    current_user_token.set("bearer-placeholder")
+    with pytest.raises(IngestStoreError):
+        IngestStore._config()
+
+
+@pytest.mark.parametrize("invalid", [" ", "token\nextra", "token with space", "é"])
+def test_ingest_credentials_reject_invalid_header_values(monkeypatch, invalid):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "conversion-jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "sb_publishable_test_placeholder")
+    current_user_token.set(invalid)
+    with pytest.raises(IngestStoreError):
+        IngestStore._config()
+
+
+def test_reservations_handle_retries_and_lost_insert(monkeypatch):
+    for name, value in {
+        "SUPABASE_URL": "https://db.test",
+        "SUPABASE_INGEST_API_KEY": "sb_publishable_test_placeholder",
+        "SUPABASE_JOBS_BUCKET": "conversion-jobs",
+    }.items():
+        monkeypatch.setenv(name, value)
+    current_user_token.set("bearer-placeholder")
+    rows = {}
+    lose_response = True
+
+    def respond(request):
+        nonlocal lose_response
+        assert request.headers["apikey"] == "sb_publishable_test_placeholder"
+        assert request.headers["authorization"] == "Bearer bearer-placeholder"
+        if request.method == "POST":
+            row = json.loads(request.content)
+            index = (row["owner_id"], row["request_key_hash"])
+            if index in rows:
+                return httpx.Response(409)
+            rows[index] = row
+            if lose_response:
+                lose_response = False
+                raise httpx.ReadTimeout("response lost", request=request)
+            return httpx.Response(201)
+        index = (request.url.params["owner_id"][3:], request.url.params["request_key_hash"][3:])
+        return httpx.Response(200, json=[rows[index]] if index in rows else [])
+
+    store = IngestStore(httpx.Client(transport=httpx.MockTransport(respond)))
+    digest = input_fingerprint("a.txt", b"abc", name="", language="en", corpus_id="")
+    first = reserve_request(store, ALICE, "retry-1", digest)
+    assert reserve_request(store, ALICE, "retry-1", digest) == first
+    assert reserve_request(store, BOB, "retry-1", digest) != first
+    with pytest.raises(IngestRequestConflict):
+        reserve_request(store, ALICE, "retry-1", "f" * 64)
+    with pytest.raises(ValueError):
+        reserve_request(store, ALICE, "white space", digest)
+
+
+def test_unconfirmed_reservation_fails_closed(monkeypatch):
+    for name, value in {
+        "SUPABASE_URL": "https://db.test",
+        "SUPABASE_INGEST_API_KEY": "sb_publishable_test_placeholder",
+        "SUPABASE_JOBS_BUCKET": "conversion-jobs",
+    }.items():
+        monkeypatch.setenv(name, value)
+    current_user_token.set("bearer-placeholder")
+    store = IngestStore(
+        httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: (
+                    httpx.Response(503)
+                    if request.method == "POST"
+                    else httpx.Response(200, json=[])
+                )
+            )
+        )
+    )
+    with pytest.raises(IngestStoreError):
+        reserve_request(store, ALICE, "retry", "a" * 64)
