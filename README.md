@@ -78,9 +78,12 @@ or enforce readiness in every possible write path. A first version has no prior
 logical corpus version, but must use a separately recorded, immutable Hub
 bootstrap commit as its Git parent. A provisioning operation binds that
 bootstrap to one immutable claim and must complete atomically with it; an
-uncertain operation cannot be automatically reclaimed. These tables do not
-authorize the actor or provide a dispatcher; a trusted admission and claim
-boundary must do that. No component yet
+uncertain operation cannot be automatically reclaimed. An unwired adapter
+checks a live session and owner or server-configured superadmin before
+atomically admitting and claiming one attempt. It does no Hub I/O and its
+receipt alone does not authorize a worker; the behavior of provisioning across
+sign-out and a restricted production privilege boundary remain unresolved.
+No component yet
 verifies or records the bootstrap, and this database link does not prove Hub
 provenance; claims fail closed when it is missing. An unwired one-shot claim
 adapter lets one trusted dispatcher claim an admitted operation; it does not

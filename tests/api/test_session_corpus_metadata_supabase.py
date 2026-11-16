@@ -28,6 +28,7 @@ from corpora_api.session_corpus_metadata import (
     SessionBoundCorpusMetadata,
     SessionBoundMetadataTransaction,
 )
+from corpora_api.session_corpus_provision import SessionBoundCorpusProvisionAdmission
 from corpora_api.session_corpus_versions import SessionBoundCorpusSaveAdmission
 
 pytestmark = pytest.mark.skipif(
@@ -93,6 +94,11 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 )
             )
             db.execute(version_migration.read_text())
+            # Test-only privilege: production requires a restricted write boundary.
+            db.execute(
+                "GRANT INSERT (id,corpus_id,actor_id,session_id,repo_id,repo_type), "
+                "UPDATE (state,worker_claim) ON public.corpora_corpus_provision_ops TO service_role"
+            )
             assert not db.execute(
                 "SELECT has_column_privilege('service_role',"
                 "'public.corpora_corpus_write_ops','id','INSERT')"
@@ -286,6 +292,67 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             assert [str(row.id) for row in admin_page] == expected_ids
             with pytest.raises(CorpusMetadataNotFound):
                 editor.list_owned(users[1][0], owner_id=users[0][0]["sub"])
+            provision_admission = SessionBoundCorpusProvisionAdmission(lease)
+            provision_corpus = str(uuid4())
+            editor.reserve(users[0][0], provision_corpus, "Provision claim", repo_type="dataset")
+            with pytest.raises(CorpusMetadataNotFound):
+                provision_admission.claim(users[1][0], provision_corpus)
+            provision_barrier = threading.Barrier(2)
+
+            def competing_provision(claims):
+                provision_barrier.wait(timeout=10)
+                try:
+                    return provision_admission.claim(claims, provision_corpus)
+                except CorpusMetadataConflict:
+                    return None
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                claims = list(pool.map(competing_provision, (users[0][0], users[2][0])))
+            winning_claims = [claim for claim in claims if claim is not None]
+            assert len(winning_claims) == 1
+            winning_claim = winning_claims[0]
+            assert str(winning_claim.corpus_id) == provision_corpus
+            assert winning_claim.repo_id == "fixture-org/corpus-" + provision_corpus
+            assert db.execute(
+                "SELECT state,worker_claim,actor_id,session_id "
+                "FROM public.corpora_corpus_provision_ops "
+                "WHERE corpus_id=%s",
+                (provision_corpus,),
+            ).fetchone() == (
+                "executing",
+                winning_claim.claim_id,
+                winning_claim.actor_id,
+                winning_claim.session_id,
+            )
+            with pytest.raises(CorpusMetadataConflict):
+                provision_admission.claim(users[0][0], provision_corpus)
+            admin_provision_corpus = str(uuid4())
+            editor.reserve(users[0][0], admin_provision_corpus, "Admin claim", repo_type="dataset")
+            admin_claim = provision_admission.claim(users[2][0], admin_provision_corpus)
+            assert str(admin_claim.actor_id) == users[2][0]["sub"]
+            snapshot_corpus = str(uuid4())
+            editor.reserve(users[0][0], snapshot_corpus, "Snapshot", repo_type="dataset")
+            mutable_claims = dict(users[0][0])
+
+            class MutatingLease:
+                def run(self, claims, callback):
+                    def mutate_then_run(actor, connection):
+                        mutable_claims["sub"] = users[1][0]["sub"]
+                        mutable_claims["session_id"] = users[1][0]["session_id"]
+                        return callback(actor, connection)
+
+                    return lease.run(claims, mutate_then_run)
+
+            snapshot = SessionBoundCorpusProvisionAdmission(MutatingLease()).claim(
+                mutable_claims, snapshot_corpus
+            )
+            assert str(snapshot.actor_id) == users[0][0]["sub"]
+            assert str(snapshot.session_id) == users[0][0]["session_id"]
+            assert db.execute(
+                "SELECT actor_id,session_id FROM public.corpora_corpus_provision_ops "
+                "WHERE corpus_id=%s",
+                (snapshot_corpus,),
+            ).fetchone() == (snapshot.actor_id, snapshot.session_id)
             updated = editor.update(
                 users[0][0], identifier, 1, {"title": "Revised", "language": "grc"}
             )
@@ -612,6 +679,12 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     input_sha256="a" * 64,
                 )
             assert revoked_save.value.status_code == 401
+            with pytest.raises(HTTPException) as revoked_provision:
+                provision_admission.claim(users[0][0], provision_corpus)
+            assert revoked_provision.value.status_code == 401
+            with pytest.raises(HTTPException) as revoked_invalid_provision:
+                provision_admission.claim(users[0][0], "invalid")
+            assert revoked_invalid_provision.value.status_code == 401
             with pytest.raises(HTTPException) as revoked_invalid_save:
                 admission.admit(
                     users[0][0],
@@ -808,6 +881,23 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     if exc_type is None:
                         raise OSError("simulated lost commit acknowledgement")
                     return False
+
+            lost_provision_corpus = str(uuid4())
+            editor.reserve(
+                users[2][0], lost_provision_corpus, "Lost provision", repo_type="dataset"
+            )
+            lost_provision = SessionBoundCorpusProvisionAdmission(
+                SessionBoundMetadataTransaction(LostClaimResponse, assume_service_role=True)
+            )
+            with pytest.raises(HTTPException) as lost_provision_error:
+                lost_provision.claim(users[2][0], lost_provision_corpus)
+            assert lost_provision_error.value.status_code == 503
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_provision_ops WHERE corpus_id=%s",
+                (lost_provision_corpus,),
+            ).fetchone() == ("executing",)
+            with pytest.raises(CorpusMetadataConflict):
+                provision_admission.claim(users[2][0], lost_provision_corpus)
 
             with pytest.raises(CorpusMetadataError, match="reconcile"):
                 CorpusSaveClaimer(LostClaimResponse, assume_service_role=True).claim(lost_claim_op)
