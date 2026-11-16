@@ -188,6 +188,22 @@ def test_retry_recovers_uploaded_graph_without_rerunning_builder(store, monkeypa
     assert jobs[job_id]["owner"] == ALICE
 
 
+def test_retry_resumes_abandoned_reservation(store):
+    artifacts, jobs, _ = store
+    fingerprint = input_fingerprint("a.txt", b"hello", name="", language="und", corpus_id="")
+    job_id = reserve_request(app_module.ingest_store, ALICE, "abandoned", fingerprint)
+    assert not artifacts and not jobs
+    response = TestClient(app).post(
+        "/v1/ingest",
+        headers={**headers("alice-token"), "Idempotency-Key": "abandoned"},
+        files={"file": ("a.txt", b"hello")},
+    )
+    assert response.status_code == 202
+    assert response.json()["job_id"] == job_id
+    assert jobs[job_id]["owner"] == ALICE
+    assert artifacts[artifact_path(job_id)]
+
+
 @pytest.mark.parametrize("outcome", ["committed", "missing", "mismatch", "foreign", "read_failed"])
 @pytest.mark.parametrize("failure", ["gateway", "timeout"])
 def test_ambiguous_job_response_preserves_graph(store, outcome, failure):
