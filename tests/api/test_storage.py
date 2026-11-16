@@ -426,6 +426,83 @@ def test_list_info_and_streamed_download_are_owner_scoped(store: dict[str, bytes
         assert schema["paths"][path]["get"]["security"] == [{"SupabaseUserJWT": []}]
 
 
+def test_owned_detail_not_found_uses_real_archive(store: dict[str, bytes], tmp_path: Path) -> None:
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={"otype": {1: "word", 2: "book"}, "text": {1: "A"}, "book": {2: "Mini"}},
+        edgeFeatures={"oslots": {2: {1}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "text": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "otext": {
+                "sectionTypes": "book",
+                "sectionFeatures": "book",
+                "fmt:text-orig-full": "{text}",
+            },
+        },
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    with TestClient(app) as client:
+        node = client.get("/v1/storage/first/nodes/99", headers=headers("alice-token"))
+        section = client.get(
+            "/v1/storage/first/content", params={"ref": "missing"}, headers=headers("alice-token")
+        )
+    assert node.status_code == section.status_code == 404
+    assert node.json() == {"detail": "Node 99 not found in first.corpus"}
+    assert section.json() == {"detail": "Section reference 'missing' not found in first.corpus"}
+
+
+def test_owned_detail_not_found_reports_only_requested_node_or_section(
+    monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
+) -> None:
+    from corpora_api.corpus_process import CorpusProcessError
+
+    def missing(data: bytes, operation: str, *, view: str, **params: object) -> dict[str, object]:
+        assert data == store[f"{ALICE}/first.corpus"]
+        assert operation == "view"
+        if view == "node":
+            raise CorpusProcessError("not_found", f"Node {params['node']} not found")
+        ref = params.get("parent") if view == "sections" else params.get("ref")
+        if ref == "unsafe":
+            raise CorpusProcessError("not_found", "private worker information")
+        raise CorpusProcessError("not_found", f"Section reference {ref!r} not found")
+
+    monkeypatch.setattr("corpora_api.storage_detail.run_corpus", missing)
+    with TestClient(app) as client:
+        node = client.get("/v1/storage/first/nodes/99", headers=headers("alice-token"))
+        section = client.get(
+            "/v1/storage/first/sections",
+            params={"parent": "missing"},
+            headers=headers("alice-token"),
+        )
+        content = client.get(
+            "/v1/storage/first/content", params={"ref": "missing"}, headers=headers("alice-token")
+        )
+        unsafe = client.get(
+            "/v1/storage/first/content", params={"ref": "unsafe"}, headers=headers("alice-token")
+        )
+        foreign = client.get("/v1/storage/private.corpus/nodes/99", headers=headers("alice-token"))
+    assert node.json() == {"detail": "Node 99 not found in first.corpus"}
+    assert (
+        section.json()
+        == content.json()
+        == {"detail": "Section reference 'missing' not found in first.corpus"}
+    )
+    assert unsafe.json() == {"detail": "Corpus detail is unavailable"}
+    assert all(
+        response.status_code == 404 for response in (node, section, content, unsafe, foreign)
+    )
+    assert "Node 99" not in foreign.json()["detail"]
+
+
 def test_corpus_detail_reads_are_owner_scoped_and_documented(
     monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
 ) -> None:
