@@ -40,7 +40,7 @@ def reserve_request(store: IngestStore, owner: str, key: str, input_hash: str) -
     if any(ord(char) < 33 or ord(char) > 126 for char in key):
         raise ValueError("Idempotency-Key must contain visible ASCII characters")
     owner = store._owner(owner)
-    url, service_key, _bucket = store._config()
+    url, credentials, _bucket = store._config()
     key_hash = hashlib.sha256(key.encode("ascii")).hexdigest()
     job_id = str(uuid.uuid4())
     row = {
@@ -54,7 +54,7 @@ def reserve_request(store: IngestStore, owner: str, key: str, input_hash: str) -
         response = store._request(
             "POST",
             endpoint,
-            headers={**store._headers(service_key), "Prefer": "return=minimal"},
+            headers={**store._headers(credentials), "Prefer": "return=minimal"},
             json=row,
         )
         if response.status_code in (200, 201, 204):
@@ -64,7 +64,7 @@ def reserve_request(store: IngestStore, owner: str, key: str, input_hash: str) -
     response = store._request(
         "GET",
         endpoint,
-        headers=store._headers(service_key),
+        headers=store._headers(credentials),
         params={
             "owner_id": f"eq.{owner}",
             "request_key_hash": f"eq.{key_hash}",

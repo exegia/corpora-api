@@ -30,6 +30,8 @@ def test_concurrent_retry_reserves_one_job_and_one_graph(monkeypatch):
     for name, value in {
         "SUPABASE_URL": url,
         "SUPABASE_SERVICE_ROLE_KEY": service,
+        "SUPABASE_INGEST_API_KEY": service,
+        "SUPABASE_INGEST_BEARER_TOKEN": service,
         "SUPABASE_JOBS_BUCKET": bucket,
     }.items():
         monkeypatch.setenv(name, value)

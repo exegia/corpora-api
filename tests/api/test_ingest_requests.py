@@ -33,10 +33,48 @@ def test_fingerprint_covers_effective_input():
     )
 
 
+@pytest.mark.parametrize("missing", ["SUPABASE_INGEST_API_KEY", "SUPABASE_INGEST_BEARER_TOKEN"])
+def test_ingest_credentials_fail_closed_without_service_role_fallback(monkeypatch, missing):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "api-placeholder")
+    monkeypatch.setenv("SUPABASE_INGEST_BEARER_TOKEN", "bearer-placeholder")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-placeholder")
+    monkeypatch.delenv(missing)
+    with pytest.raises(IngestStoreError) as error:
+        IngestStore._config()
+    assert "service-placeholder" not in str(error.value)
+
+
+def test_ingest_credentials_use_distinct_headers_without_repr_leak(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "api-placeholder")
+    monkeypatch.setenv("SUPABASE_INGEST_BEARER_TOKEN", "bearer-placeholder")
+    _, credentials, _ = IngestStore._config()
+    assert IngestStore._headers(credentials) == {
+        "apikey": "api-placeholder",
+        "Authorization": "Bearer bearer-placeholder",
+    }
+    assert "api-placeholder" not in repr(credentials)
+    assert "bearer-placeholder" not in repr(credentials)
+
+
+@pytest.mark.parametrize("invalid", [" ", "token\nextra", "token with space", "é"])
+def test_ingest_credentials_reject_invalid_header_values(monkeypatch, invalid):
+    monkeypatch.setenv("SUPABASE_URL", "https://db.test")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "api-placeholder")
+    monkeypatch.setenv("SUPABASE_INGEST_BEARER_TOKEN", invalid)
+    with pytest.raises(IngestStoreError):
+        IngestStore._config()
+
+
 def test_reservations_handle_retries_and_lost_insert(monkeypatch):
     for name, value in {
         "SUPABASE_URL": "https://db.test",
-        "SUPABASE_SERVICE_ROLE_KEY": "placeholder",
+        "SUPABASE_INGEST_API_KEY": "api-placeholder",
+        "SUPABASE_INGEST_BEARER_TOKEN": "bearer-placeholder",
         "SUPABASE_JOBS_BUCKET": "jobs",
     }.items():
         monkeypatch.setenv(name, value)
@@ -45,6 +83,8 @@ def test_reservations_handle_retries_and_lost_insert(monkeypatch):
 
     def respond(request):
         nonlocal lose_response
+        assert request.headers["apikey"] == "api-placeholder"
+        assert request.headers["authorization"] == "Bearer bearer-placeholder"
         if request.method == "POST":
             row = json.loads(request.content)
             index = (row["owner_id"], row["request_key_hash"])
@@ -72,7 +112,8 @@ def test_reservations_handle_retries_and_lost_insert(monkeypatch):
 def test_unconfirmed_reservation_fails_closed(monkeypatch):
     for name, value in {
         "SUPABASE_URL": "https://db.test",
-        "SUPABASE_SERVICE_ROLE_KEY": "placeholder",
+        "SUPABASE_INGEST_API_KEY": "api-placeholder",
+        "SUPABASE_INGEST_BEARER_TOKEN": "bearer-placeholder",
         "SUPABASE_JOBS_BUCKET": "jobs",
     }.items():
         monkeypatch.setenv(name, value)

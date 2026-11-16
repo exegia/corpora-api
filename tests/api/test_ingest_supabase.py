@@ -40,6 +40,8 @@ def test_ingest_confirms_committed_job_after_lost_response(monkeypatch):
     bucket, owner, job = "ingest-recovery-" + uuid4().hex, str(uuid4()), str(uuid4())
     monkeypatch.setenv("SUPABASE_URL", url)
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", service)
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", service)
+    monkeypatch.setenv("SUPABASE_INGEST_BEARER_TOKEN", service)
     monkeypatch.setenv("SUPABASE_JOBS_BUCKET", bucket)
     headers = {"apikey": service, "Authorization": "Bearer " + service}
     graph = json.dumps(build_plain_graph("source.txt", b"Recovery text").to_wire()).encode()
@@ -158,6 +160,8 @@ def test_ingest_persists_graph_across_processes_and_isolates_users(
     bucket = "ingest-test-" + uuid4().hex
     monkeypatch.setenv("SUPABASE_URL", url)
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", service)
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", service)
+    monkeypatch.setenv("SUPABASE_INGEST_BEARER_TOKEN", service)
     monkeypatch.setenv("SUPABASE_JOBS_BUCKET", bucket)
     monkeypatch.setenv("SUPABASE_JWKS_URL", url + "/auth/v1/.well-known/jwks.json")
     monkeypatch.setenv("SUPABASE_JWT_ISSUER", url + "/auth/v1")

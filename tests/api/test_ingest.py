@@ -35,6 +35,8 @@ def store(
     reservations: dict[tuple[str, str], dict] = {}
 
     def respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers["apikey"] == "test-ingest-api-placeholder"
+        assert request.headers["authorization"] == "Bearer test-ingest-bearer-placeholder"
         path = request.url.path
         if path.startswith("/storage/v1/object/jobs/"):
             if request.method == "POST":
@@ -79,7 +81,8 @@ def store(
 
     transport = httpx.MockTransport(respond)
     monkeypatch.setenv("SUPABASE_URL", "https://supabase.example.test")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-placeholder")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "test-ingest-api-placeholder")
+    monkeypatch.setenv("SUPABASE_INGEST_BEARER_TOKEN", "test-ingest-bearer-placeholder")
     monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
     monkeypatch.setenv("CORPORA_API_TOKEN", "service-token-placeholder")
     monkeypatch.setattr(app_module, "ingest_store", IngestStore(httpx.Client(transport=transport)))

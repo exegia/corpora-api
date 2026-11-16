@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,14 @@ class IngestStoreCorrupt(Exception):
     """The stored artifact no longer satisfies the shared graph contract."""
 
 
+@dataclass(frozen=True)
+class _IngestCredentials:
+    """Separate gateway and backend-role credentials; never render secrets."""
+
+    api_key: str = field(repr=False)
+    bearer_token: str = field(repr=False)
+
+
 class IngestStore:
     """Use the existing `conversion_jobs` table and private result bucket."""
 
@@ -38,20 +47,24 @@ class IngestStore:
         self.client = client or httpx.Client(timeout=30)
 
     @staticmethod
-    def _config() -> tuple[str, str, str]:
+    def _config() -> tuple[str, _IngestCredentials, str]:
         project_ref = os.getenv("PROJECT_REF")
         url = os.getenv("SUPABASE_URL") or (
             f"https://{project_ref}.supabase.co" if project_ref else ""
         )
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        api_key = os.getenv("SUPABASE_INGEST_API_KEY", "")
+        bearer = os.getenv("SUPABASE_INGEST_BEARER_TOKEN", "")
         bucket = os.getenv("SUPABASE_JOBS_BUCKET") or os.getenv("SUPABASE_STORAGE_BUCKET", "")
-        if not (url and key and bucket):
+        if not (url and api_key and bearer and bucket) or any(
+            not value.isascii() or any(ord(char) < 33 or ord(char) > 126 for char in value)
+            for value in (api_key, bearer)
+        ):
             raise IngestStoreError(
                 "Ingestion store requires SUPABASE_URL (or PROJECT_REF), "
-                "SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_JOBS_BUCKET "
+                "SUPABASE_INGEST_API_KEY, SUPABASE_INGEST_BEARER_TOKEN, and SUPABASE_JOBS_BUCKET "
                 "(or SUPABASE_STORAGE_BUCKET)"
             )
-        return url.rstrip("/"), key, bucket
+        return url.rstrip("/"), _IngestCredentials(api_key, bearer), bucket
 
     @staticmethod
     def _id(value: str) -> str:
@@ -68,8 +81,11 @@ class IngestStore:
             raise IngestStoreError("Verified user identity is not a UUID") from error
 
     @staticmethod
-    def _headers(key: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {key}", "apikey": key}
+    def _headers(credentials: _IngestCredentials) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {credentials.bearer_token}",
+            "apikey": credentials.api_key,
+        }
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         try:
