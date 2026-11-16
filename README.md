@@ -54,6 +54,22 @@ Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
 multi-namespace transition; this component does not perform either operation.
 
+An unwired corpus-file reader checks owner-bound metadata, a ready state, a
+specific Hub commit and point-in-time private visibility before streaming a
+bounded file. It uses server-only `HF_CORPUS_READ_TOKEN` and does not forward
+that token to redirected CDN hosts. It does not establish corpus readiness,
+authenticate sessions, guarantee continuous privacy or provide a total request
+deadline. Routes need a reviewed start-time session admission check and a trusted
+revision before enabling it. The hosted runtime is unverified.
+
+An additional unwired async transfer adapter applies one deadline across the
+metadata lookup, Hub verification, file transfer and sink backpressure. It uses
+a dedicated HTTP client for each transfer and allows a short cleanup period
+after the deadline. Client setup is synchronous and must not block; its
+transport and sink must cooperate with cancellation. Partial bytes already
+delivered cannot be recalled. It does not integrate a live-session guard,
+authorize revisions, or replace the existing reader.
+
 Authenticated `/v1/ai/drafts` endpoints create, list, inspect and export private
 working drafts from a caller-owned completed conversion. They use the existing
 `corpora_ai_storage` Supabase RPC and private `corpus-ai-drafts` bucket from
