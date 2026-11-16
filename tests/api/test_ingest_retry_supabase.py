@@ -82,6 +82,20 @@ def test_concurrent_retry_reserves_one_job_and_one_graph(monkeypatch):
             with pytest.raises(IngestRequestConflict):
                 reserve_request(store, owner, "same-key", "f" * 64)
 
+            endpoint = url + "/rest/v1/corpora_ingest_requests"
+            query = {"job_id": f"eq.{job_id}"}
+            for method, kwargs in (
+                ("PATCH", {"json": {"input_hash": "f" * 64}}),
+                ("DELETE", {}),
+            ):
+                denied_mutation = client.request(
+                    method, endpoint, headers=auth, params=query, **kwargs
+                )
+                assert denied_mutation.status_code in (401, 403)
+            assert db.execute(
+                "select input_hash from public.corpora_ingest_requests where job_id=%s", (job_id,)
+            ).fetchone() == (fingerprint,)
+
             class LostResponses(httpx.BaseTransport):
                 def __init__(self):
                     self.inner = httpx.HTTPTransport()
