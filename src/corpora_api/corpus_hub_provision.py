@@ -7,6 +7,7 @@ before using this adapter. It deliberately does not mark metadata ready.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -34,12 +35,13 @@ class CorpusHubProvisionUncertain(CorpusHubProvisionError):
 
 @dataclass(frozen=True)
 class VerifiedPrivateRepository:
-    """An observed private repository, not a durable readiness transition."""
+    """An observed private repository; its head is not a verified bootstrap."""
 
     corpus_id: UUID
     metadata_revision: int
     repo_id: str
     repo_type: Literal["dataset", "model"]
+    observed_head_sha: str
 
 
 class CorpusHubProvisioner:
@@ -133,6 +135,11 @@ class CorpusHubProvisioner:
                 raise ValueError("Repository identity mismatch")
             if info.get("private") is not True:
                 raise ValueError("Repository is not confirmed private")
+            observed_head = info.get("sha")
+            if not isinstance(observed_head, str) or not re.fullmatch(
+                r"[0-9a-f]{40}", observed_head
+            ):
+                raise ValueError("Repository head is not confirmed")
         except (httpx.HTTPError, ValueError, TypeError) as error:
             raise CorpusHubProvisionUncertain(
                 "Repository verification needs reconciliation"
@@ -142,4 +149,5 @@ class CorpusHubProvisioner:
             metadata_revision=record.revision,
             repo_id=record.hf_repo_id,
             repo_type=record.hf_repo_type,
+            observed_head_sha=observed_head,
         )

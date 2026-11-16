@@ -79,7 +79,7 @@ def test_creates_private_repository_and_verifies_identity(corpus, repo_type):
             )
         kind = "datasets" if repo_type == "dataset" else "models"
         assert request.url.path == f"/api/{kind}/{record.hf_repo_id}"
-        return httpx.Response(200, json={"id": record.hf_repo_id, "private": True})
+        return httpx.Response(200, json={"id": record.hf_repo_id, "private": True, "sha": "a" * 40})
 
     client = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True)
     receipt = CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
@@ -89,6 +89,7 @@ def test_creates_private_repository_and_verifies_identity(corpus, repo_type):
         repo_type,
     )
     assert len(requests) == 3 and receipt.metadata_revision == 1
+    assert receipt.observed_head_sha == "a" * 40
 
 
 def test_existing_repository_is_not_adopted_or_modified(corpus):
@@ -160,6 +161,7 @@ def test_deadline_expired_after_organization_lookup_never_sends_create(corpus):
 )
 def test_privacy_and_identity_must_be_verified(corpus, bad_info):
     owner, identifier, record, metadata = corpus
+    bad_info = {**bad_info, "sha": "a" * 40}
     if bad_info.get("id") == "fixture-org/placeholder":
         bad_info["id"] = record.hf_repo_id
 
@@ -174,6 +176,24 @@ def test_privacy_and_identity_must_be_verified(corpus, bad_info):
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
     with pytest.raises(CorpusHubProvisionUncertain):
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
+
+
+@pytest.mark.parametrize("sha", [None, "", "A" * 40, "g" * 40, "a" * 39, 123])
+def test_missing_or_invalid_head_is_uncertain_after_creation(corpus, sha):
+    owner, identifier, record, metadata = corpus
+
+    def respond(request):
+        if request.url.path == "/api/organizations/fixture-org/overview":
+            return httpx.Response(200, json={"name": "fixture-org"})
+        if request.method == "POST":
+            return httpx.Response(
+                200, json={"url": "https://huggingface.co/datasets/" + record.hf_repo_id}
+            )
+        return httpx.Response(200, json={"id": record.hf_repo_id, "private": True, "sha": sha})
+
+    with pytest.raises(CorpusHubProvisionUncertain):
+        client = httpx.Client(transport=httpx.MockTransport(respond))
         CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
 
 

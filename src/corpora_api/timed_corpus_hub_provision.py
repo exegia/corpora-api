@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -308,7 +309,13 @@ def _provision_with_deadline(
             if code == "rejected":
                 raise CorpusHubProvisionError("Corpus repository provisioning was rejected")
             raise CorpusHubProvisionUncertain("Repository creation needs reconciliation")
-        if set(value) != {"corpus_id", "metadata_revision", "repo_id", "repo_type"}:
+        if set(value) != {
+            "corpus_id",
+            "metadata_revision",
+            "repo_id",
+            "repo_type",
+            "observed_head_sha",
+        }:
             raise ValueError("Invalid worker output")
         if (
             value["corpus_id"] != identifier
@@ -316,6 +323,8 @@ def _provision_with_deadline(
             or value["repo_type"] not in {"dataset", "model"}
             or type(value["metadata_revision"]) is not int
             or value["metadata_revision"] < 1
+            or not isinstance(value["observed_head_sha"], str)
+            or not re.fullmatch(r"[0-9a-f]{40}", value["observed_head_sha"])
         ):
             raise ValueError("Invalid worker identity")
         return VerifiedPrivateRepository(
@@ -323,6 +332,7 @@ def _provision_with_deadline(
             metadata_revision=value["metadata_revision"],
             repo_id=value["repo_id"],
             repo_type=value["repo_type"],
+            observed_head_sha=value["observed_head_sha"],
         )
     except (CorpusMetadataNotFound, CorpusHubProvisionError):
         raise
@@ -377,6 +387,7 @@ def _main() -> None:
             "metadata_revision": result.metadata_revision,
             "repo_id": result.repo_id,
             "repo_type": result.repo_type,
+            "observed_head_sha": result.observed_head_sha,
         }
     except CorpusMetadataNotFound:
         output = {"error": "not_found"}

@@ -95,7 +95,7 @@ def test_timeout_keeps_real_session_lock_until_worker_stops(monkeypatch):
                 ready.set()
                 assert release.wait(15)
                 return VerifiedPrivateRepository(
-                    UUID(corpus), 1, "fixture-org/corpus-" + corpus, "dataset"
+                    UUID(corpus), 1, "fixture-org/corpus-" + corpus, "dataset", "a" * 40
                 )
 
             monkeypatch.setattr(timed, "_provision_with_deadline", slow_worker)
@@ -155,7 +155,7 @@ def test_timeout_keeps_real_session_lock_until_worker_stops(monkeypatch):
                 assert release.wait(15)
                 simulated_effects.append("after-logout")
                 return VerifiedPrivateRepository(
-                    UUID(corpus), 1, "fixture-org/corpus-" + corpus, "dataset"
+                    UUID(corpus), 1, "fixture-org/corpus-" + corpus, "dataset", "a" * 40
                 )
 
             monkeypatch.setattr(timed, "_provision_with_deadline", disconnected_worker)

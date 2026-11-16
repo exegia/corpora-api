@@ -60,7 +60,11 @@ multi-namespace transition; this component does not perform either operation.
 The draft Hub provisioning adapter uses the server-only
 `HF_CORPUS_PROVISION_TOKEN`, verifies the configured namespace is an actual Hub
 organization, requests a private repository, and checks its returned identity
-and privacy. It does not adopt an existing name or retry an ambiguous write.
+and privacy. The receipt includes the observed Git head, but this observation
+does not establish the initial commit or authorize recording a bootstrap: other
+writers may have changed the repository. Durable one-shot provisioning and
+independent verification are still needed. It does not adopt an existing name
+or retry an ambiguous write.
 An unwired POSIX worker wrapper applies a request deadline, bounds worker
 output, and accepts a trusted live-session lease. If the request times out,
 an acquired lease stays held until the worker stops while its database

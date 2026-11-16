@@ -40,7 +40,8 @@ def test_worker_receives_credentials_via_stdin_and_checks_receipt(config, monkey
         "assert r['registry_key'].endswith('placeholder'); "
         "assert r['hub_token'].endswith('placeholder'); "
         "print(json.dumps({'corpus_id':r['corpus_id'],'metadata_revision':1,"
-        "'repo_id':r['organization']+'/corpus-'+r['corpus_id'],'repo_type':'dataset'}))"
+        "'repo_id':r['organization']+'/corpus-'+r['corpus_id'],'repo_type':'dataset',"
+        "'observed_head_sha':'a'*40}))"
     )
 
     def worker(argv, **kwargs):
@@ -52,7 +53,27 @@ def test_worker_receives_credentials_via_stdin_and_checks_receipt(config, monkey
     monkeypatch.setattr(timed.subprocess, "Popen", worker)
     receipt = timed._provision_with_deadline(owner, corpus, timeout=1)
     assert str(receipt.corpus_id) == corpus and receipt.metadata_revision == 1
+    assert receipt.observed_head_sha == "a" * 40
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("sha", [None, "", "A" * 40, "g" * 40, "a" * 39, 123, "omitted"])
+def test_worker_rejects_invalid_observed_head(config, monkeypatch, sha):
+    real_popen = subprocess.Popen
+
+    def worker(_argv, **kwargs):
+        head_field = "" if sha == "omitted" else ",'observed_head_sha':" + repr(sha)
+        program = (
+            "import json,sys; r=json.load(sys.stdin); "
+            "print(json.dumps({'corpus_id':r['corpus_id'],'metadata_revision':1,"
+            "'repo_id':r['organization']+'/corpus-'+r['corpus_id'],"
+            "'repo_type':'dataset'" + head_field + "}))"
+        )
+        return real_popen([sys.executable, "-c", program], **kwargs)
+
+    monkeypatch.setattr(timed.subprocess, "Popen", worker)
+    with pytest.raises(CorpusHubProvisionUncertain):
+        timed._provision_with_deadline(str(uuid4()), str(uuid4()), timeout=1)
 
 
 def test_stalled_process_is_killed_reaped_and_marked_uncertain(config, monkeypatch):
@@ -188,7 +209,9 @@ def test_worker_outcomes_are_not_automatically_retried(config, monkeypatch, code
 
 def test_session_lease_wraps_worker_and_rechecks_before_receipt(monkeypatch):
     owner, corpus = str(uuid4()), str(uuid4())
-    receipt = VerifiedPrivateRepository(UUID(corpus), 1, f"fixture-org/corpus-{corpus}", "dataset")
+    receipt = VerifiedPrivateRepository(
+        UUID(corpus), 1, f"fixture-org/corpus-{corpus}", "dataset", "a" * 40
+    )
     events = []
 
     class Lease:
@@ -395,7 +418,9 @@ def test_worker_uses_stdin_configuration_without_exporting_secrets(monkeypatch, 
                 updated_at=datetime.now(UTC),
             )
             self.metadata._check_link(row)
-            return VerifiedPrivateRepository(UUID(corpus), 1, row.hf_repo_id, row.hf_repo_type)
+            return VerifiedPrivateRepository(
+                UUID(corpus), 1, row.hf_repo_id, row.hf_repo_type, "a" * 40
+            )
 
     monkeypatch.setattr(timed, "CorpusHubProvisioner", Provisioner)
     timed._main()
