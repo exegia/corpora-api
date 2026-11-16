@@ -42,6 +42,59 @@ class CorpusProvisionFinalizer:
         self.connect = connect
         self.assume_service_role = assume_service_role
 
+    def find_finalized_trusted(self, candidate: TrustedBootstrapAttestation) -> str | None:
+        """Read the exact immutable result after an ambiguous commit acknowledgement."""
+        if (
+            not isinstance(candidate, TrustedBootstrapAttestation)
+            or not all(
+                isinstance(value, UUID)
+                for value in (candidate.corpus_id, candidate.operation_id, candidate.claim_id)
+            )
+            or not isinstance(candidate.repo_id, str)
+            or candidate.repo_type not in ("dataset", "model")
+            or not isinstance(candidate.commit_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", candidate.commit_sha)
+        ):
+            raise CorpusMetadataError("Invalid trusted bootstrap candidate")
+        try:
+            with self.connect() as db:
+                with db.transaction():
+                    if self.assume_service_role:
+                        db.execute("SET LOCAL ROLE service_role")
+                    db.execute("SELECT pg_catalog.set_config('statement_timeout','5000',true)")
+                    row = db.execute(
+                        "SELECT row_to_json(m), b.commit_sha "
+                        "FROM public.corpora_corpus_bootstrap b "
+                        "JOIN public.corpora_corpus_provision_ops o ON o.id=b.operation_id "
+                        "JOIN public.corpora_corpus_metadata m ON m.id=b.corpus_id "
+                        "WHERE b.corpus_id=%s::uuid AND b.operation_id=%s::uuid "
+                        "AND b.worker_claim=%s::uuid AND b.commit_sha=%s "
+                        "AND o.corpus_id=b.corpus_id AND o.worker_claim=b.worker_claim "
+                        "AND o.repo_id=%s AND o.repo_type=%s AND o.state='completed'",
+                        (
+                            str(candidate.corpus_id),
+                            str(candidate.operation_id),
+                            str(candidate.claim_id),
+                            candidate.commit_sha,
+                            candidate.repo_id,
+                            candidate.repo_type,
+                        ),
+                    ).fetchone()
+                    if row is None:
+                        return None
+                    metadata = CorpusMetadata.model_validate(row[0])
+                    CorpusMetadataStore._check_link(metadata)
+                    if (
+                        metadata.id != candidate.corpus_id
+                        or metadata.hf_repo_id != candidate.repo_id
+                        or metadata.hf_repo_type != candidate.repo_type
+                        or row[1] != candidate.commit_sha
+                    ):
+                        raise ValueError("Mismatched finalized bootstrap")
+                    return candidate.commit_sha
+        except Exception:
+            raise CorpusMetadataError("Finalized bootstrap lookup failed") from None
+
     def finalize_trusted(self, candidate: TrustedBootstrapAttestation) -> str:
         if (
             not isinstance(candidate, TrustedBootstrapAttestation)

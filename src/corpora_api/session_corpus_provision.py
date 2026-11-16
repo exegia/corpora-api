@@ -1,8 +1,8 @@
 """Unwired session-bound admission of one repository-provisioning attempt.
 
-A claim records an authorized database decision, not proof of Hub creation or
-permission to dispatch after logout. Do not call a remote worker until its
-session, worker-liveness and reconciliation policy has been reviewed.
+A claim records an authorized database decision, not proof of Hub creation.
+An accepted creation may proceed after logout, but a claim must never be
+automatically redispatched after an ambiguous outcome.
 """
 
 from __future__ import annotations

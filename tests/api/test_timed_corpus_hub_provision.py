@@ -91,6 +91,25 @@ def test_stalled_process_is_killed_reaped_and_marked_uncertain(config, monkeypat
     assert workers[0].poll() is not None
 
 
+def test_interrupted_worker_is_killed_and_reaped(config, monkeypatch):
+    real_popen = subprocess.Popen
+    workers = []
+
+    def stalled(_argv, **kwargs):
+        worker = real_popen([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+        workers.append(worker)
+        return worker
+
+    def interrupt(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(timed.subprocess, "Popen", stalled)
+    monkeypatch.setattr(timed.os, "set_blocking", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        timed._provision_with_deadline(str(uuid4()), str(uuid4()), timeout=1)
+    assert workers[0].poll() is not None
+
+
 def test_signal_group_failure_retains_lease_for_descendant(config, monkeypatch, tmp_path):
     real_popen = subprocess.Popen
     real_killpg = os.killpg

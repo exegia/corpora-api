@@ -84,10 +84,13 @@ bootstrap to one immutable claim and must complete atomically with it; an
 uncertain operation cannot be automatically reclaimed. An unwired adapter
 checks a live session and owner or server-configured superadmin before
 atomically admitting and claiming one attempt. A creation already underway may
-finish after sign-out; a new creation request requires an active session. The
-adapter does no Hub I/O, and a receipt alone does not prove that a worker was
-already dispatched. The dispatch boundary, uncertain-outcome reconciliation,
-and a restricted production privilege boundary remain unresolved.
+finish after sign-out, including starting its Hub request; a new creation request
+requires an active session. An internal dispatcher calls the bounded worker once
+after a successful admission. After a confirmed creation and a second matching
+private-repository observation, it records the observed baseline against the
+exact claim. A lost database acknowledgement is checked against the immutable
+result; a lost Hub creation response is never automatically retried. A restricted
+production privilege boundary and outcome resolution remain unresolved.
 An internal read-only reconciliation inspector can report whether the expected
 private Hub repository is currently visible, mismatched or inconclusive. Its
 observation neither proves creation provenance nor establishes worker termination;
@@ -170,12 +173,12 @@ output, and accepts a trusted live-session lease. If the request times out,
 an acquired lease stays held until the worker stops while its database
 connection remains alive; the Hub write may still have been accepted and needs
 reconciliation. If that connection is lost, PostgreSQL releases its lock and
-the worker can still send a Hub write after logout. The current design does not
-fence that case and must not be enabled for user-facing writes. Abrupt
-application-process death and the hosted worker environment are also unverified.
-This adapter is not exposed by an API or background job: a safe session-bound
-write architecture, reconciliation, upload and readiness transitions are still
-required. Privacy must also be checked at later sensitive operations; one successful observation does not keep
+the worker can still send a Hub write after logout, which is allowed for a request
+already accepted while signed in. Abrupt application-process death and the
+hosted worker environment are unverified, and a remote write may remain in
+flight after local termination. This internal dispatcher is not exposed by an
+API or background job: a restricted privilege boundary, outcome resolution,
+upload and readiness transitions are still required. Privacy must also be checked at later sensitive operations; one successful observation does not keep
 a repository private.
 
 An unwired corpus-file reader checks owner-bound metadata, a ready state, a

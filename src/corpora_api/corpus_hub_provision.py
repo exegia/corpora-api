@@ -1,7 +1,7 @@
 """Unwired private Hub repository provisioning for a reserved corpus.
 
-The caller must establish a live session and ensure request-wide cancellation
-before using this adapter. It deliberately does not mark metadata ready.
+The caller must establish a live session when admitting the request. Accepted
+creation may continue after logout. This adapter does not mark metadata ready.
 """
 
 from __future__ import annotations

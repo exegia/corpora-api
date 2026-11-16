@@ -494,6 +494,13 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     (test_save_op,),
                 )
             assert provision_finalizer.finalize_trusted(provision_candidate) == "9" * 40
+            assert provision_finalizer.find_finalized_trusted(provision_candidate) == "9" * 40
+            assert (
+                provision_finalizer.find_finalized_trusted(
+                    replace(provision_candidate, claim_id=uuid4())
+                )
+                is None
+            )
             different_corpus = str(uuid4())
             editor.reserve(
                 users[0][0], different_corpus, "Different candidates", repo_type="dataset"
