@@ -31,6 +31,7 @@ class TrustedCandidateAttestation:
     repo_id: str
     repo_type: str
     parent_sha: str | None
+    hub_parent_sha: str
     commit_sha: str
     input_sha256: str
     retained_ref: str
@@ -62,6 +63,9 @@ class CorpusSaveFinalizer:
             )
             or not isinstance(candidate.commit_sha, str)
             or not re.fullmatch(r"[0-9a-f]{40}", candidate.commit_sha)
+            or not isinstance(candidate.hub_parent_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", candidate.hub_parent_sha)
+            or candidate.hub_parent_sha == candidate.commit_sha
             or not isinstance(candidate.input_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", candidate.input_sha256)
             or candidate.retained_ref != "corpora-op-" + str(candidate.operation_id)
@@ -122,6 +126,16 @@ class CorpusSaveFinalizer:
                     except (TypeError, ValueError, KeyError, AttributeError) as error:
                         raise CorpusMetadataConflict("Corpus save candidate conflicts") from error
                     next_sequence = sequence + 1
+                    if sequence == 0:
+                        bootstrap = db.execute(
+                            "SELECT commit_sha FROM public.corpora_corpus_bootstrap "
+                            "WHERE corpus_id=%s::uuid",
+                            (str(candidate.corpus_id),),
+                        ).fetchone()
+                        if bootstrap is None or bootstrap[0] != candidate.hub_parent_sha:
+                            raise CorpusMetadataConflict("Corpus save candidate conflicts")
+                    elif candidate.parent_sha != candidate.hub_parent_sha:
+                        raise CorpusMetadataConflict("Corpus save candidate conflicts")
                     if op["state"] == "completed":
                         version = db.execute(
                             "SELECT sequence,commit_sha,parent_sha,retained_ref "

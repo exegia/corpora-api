@@ -628,6 +628,25 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             claimer = CorpusSaveClaimer(
                 lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
             )
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                claimer.claim(operation_id)
+            assert db.execute(
+                "SELECT state,worker_claim FROM public.corpora_corpus_write_ops WHERE id=%s",
+                (operation_id,),
+            ).fetchone() == ("admitted", None)
+            # Synthetic bootstrap rows simulate a trusted provisioning result.
+            for cid in (
+                identifier,
+                lost_claim_corpus,
+                rollback_claim_corpus,
+                rollback_finalize_corpus,
+                race_corpus,
+            ):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_bootstrap (corpus_id,commit_sha) "
+                    "VALUES (%s,%s)",
+                    (cid, "9" * 40),
+                )
             claim_barrier = threading.Barrier(2)
 
             def compete_for_claim(_):
@@ -640,6 +659,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             assert len(winners) == 1 and sum(item is None for item in claims) == 1
             assert str(winners[0].operation_id) == operation_id
             assert winners[0].input_sha256 == "a" * 64
+            assert winners[0].hub_parent_sha == "9" * 40
             assert claimer.claim(operation_id) is None
             assert db.execute(
                 "SELECT state,worker_claim FROM public.corpora_corpus_write_ops WHERE id=%s",
@@ -663,6 +683,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     repo_id=claim.repo_id,
                     repo_type=claim.repo_type,
                     parent_sha=claim.expected_parent_sha,
+                    hub_parent_sha=claim.hub_parent_sha,
                     commit_sha=sha,
                     input_sha256=claim.input_sha256,
                     retained_ref=claim.retained_ref,
@@ -688,6 +709,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 finalizer.finalize_trusted(replace(first_candidate, claim_id=uuid4()))
             with pytest.raises(CorpusMetadataConflict):
                 finalizer.finalize_trusted(replace(first_candidate, input_sha256="c" * 64))
+            with pytest.raises(CorpusMetadataConflict):
+                finalizer.finalize_trusted(replace(first_candidate, hub_parent_sha="8" * 40))
             final_barrier = threading.Barrier(2)
 
             def finalize_same(_):
@@ -719,6 +742,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             next_claim = claimer.claim(next_op)
             assert next_claim is not None
+            assert next_claim.hub_parent_sha == "b" * 40
             next_version = finalizer.finalize_trusted(candidate_for(next_claim, "c" * 40))
             assert next_version.sequence == 2
             assert finalizer.finalize_trusted(first_candidate) == versions[0]
@@ -864,6 +888,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "corpora_corpus_heads",
                 "corpora_corpus_versions",
                 "corpora_corpus_write_ops",
+                "corpora_corpus_bootstrap",
             ):
                 db.execute("DROP TABLE IF EXISTS public." + table + " CASCADE")
             for fn in (

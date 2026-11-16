@@ -1,6 +1,15 @@
 -- Draft: application code must admit a verified session before inserting a
 -- write operation, and must independently verify a retained Hub commit before
 -- publishing it. No endpoint currently calls these tables.
+-- The first logical corpus version has no earlier published corpus version,
+-- but its Hub commit still needs a real Git parent. A trusted provisioner must
+-- verify and record the repository's initial commit before the first claim.
+CREATE TABLE public.corpora_corpus_bootstrap (
+    corpus_id uuid PRIMARY KEY REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,
+    commit_sha text NOT NULL CHECK (commit_sha ~ '^[0-9a-f]{40}$'),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
 CREATE TABLE public.corpora_corpus_write_ops (
     id uuid PRIMARY KEY,
     corpus_id uuid NOT NULL REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,
@@ -109,6 +118,9 @@ CREATE TRIGGER corpora_corpus_versions_immutable BEFORE UPDATE OR DELETE
 CREATE TRIGGER corpora_corpus_heads_no_delete BEFORE DELETE
     ON public.corpora_corpus_heads FOR EACH ROW
     EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+CREATE TRIGGER corpora_corpus_bootstrap_immutable BEFORE UPDATE OR DELETE
+    ON public.corpora_corpus_bootstrap FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_preserve_history();
 
 CREATE FUNCTION public.corpora_corpus_validate_operation()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
@@ -189,12 +201,13 @@ CREATE CONSTRAINT TRIGGER corpora_corpus_version_finalized
 ALTER TABLE public.corpora_corpus_write_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_heads ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+ALTER TABLE public.corpora_corpus_bootstrap ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads FROM PUBLIC, anon, authenticated, service_role;
 
 -- Deliberately read-only until a reviewed admission/finalization boundary is
 -- installed. The raw tables are not a safe public write interface.
-GRANT SELECT ON public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+GRANT SELECT ON public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads TO service_role;
 REVOKE ALL ON FUNCTION public.corpora_corpus_validate_version(),
     public.corpora_corpus_validate_head(), public.corpora_corpus_preserve_history(),

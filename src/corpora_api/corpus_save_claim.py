@@ -25,6 +25,7 @@ class ClaimedCorpusSave:
     session_id: UUID
     expected_sequence: int
     expected_parent_sha: str | None
+    hub_parent_sha: str
     input_sha256: str
     repo_id: str
     repo_type: str
@@ -107,6 +108,21 @@ class CorpusSaveClaimer:
                             or (sequence > 0 and metadata.state != "ready")
                         ):
                             raise ValueError("Corpus head is no longer claimable")
+                        if sequence == 0:
+                            bootstrap = db.execute(
+                                "SELECT commit_sha FROM public.corpora_corpus_bootstrap "
+                                "WHERE corpus_id=%s::uuid",
+                                (str(corpus),),
+                            ).fetchone()
+                            if bootstrap is None:
+                                raise ValueError("Corpus bootstrap is not recorded")
+                            hub_parent = bootstrap[0]
+                        else:
+                            hub_parent = parent
+                        if not isinstance(hub_parent, str) or not re.fullmatch(
+                            r"[0-9a-f]{40}", hub_parent
+                        ):
+                            raise ValueError("Invalid Hub parent")
                         result = ClaimedCorpusSave(
                             operation_id=identifier,
                             claim_id=claim_id,
@@ -115,6 +131,7 @@ class CorpusSaveClaimer:
                             session_id=session,
                             expected_sequence=sequence,
                             expected_parent_sha=parent,
+                            hub_parent_sha=hub_parent,
                             input_sha256=digest,
                             repo_id=metadata.hf_repo_id,
                             repo_type=metadata.hf_repo_type,

@@ -74,7 +74,10 @@ must independently verify the Hub commit, parent, input and retained ref;
 constructing an attestation does not verify it. No verifier, Hub write, restore,
 reconciliation or route is implemented. Recorded commits must remain reachable
 through their retained Hub references; the schema does not verify remote bytes
-or enforce readiness in every possible write path. An unwired one-shot claim
+or enforce readiness in every possible write path. A first version has no prior
+logical corpus version, but must use a separately recorded, immutable Hub
+bootstrap commit as its Git parent. No component yet verifies or records that
+bootstrap; claims fail closed when it is missing. An unwired one-shot claim
 adapter lets one trusted dispatcher claim an admitted operation; it does not
 run a worker or automatically reclaim an uncertain or stalled operation.
 Admission receipts do not themselves authorize dispatch. A lost admission or

@@ -27,6 +27,7 @@ def test_content_version_constraints_and_privileges():
     with httpx.Client(timeout=15) as client, psycopg.connect(dsn, autocommit=True) as db:
         for table in (
             "corpora_corpus_metadata",
+            "corpora_corpus_bootstrap",
             "corpora_corpus_write_ops",
             "corpora_corpus_versions",
             "corpora_corpus_heads",
@@ -49,6 +50,19 @@ def test_content_version_constraints_and_privileges():
                     "(id,owner_id,title,hf_repo_id,hf_repo_type) "
                     "VALUES (%s,%s,'Test',%s,'dataset')",
                     (cid, user, "fixture/corpus-" + cid),
+                )
+            db.execute(
+                "INSERT INTO public.corpora_corpus_bootstrap (corpus_id,commit_sha) VALUES (%s,%s)",
+                (corpus, "9" * 40),
+            )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_bootstrap SET commit_sha=%s WHERE corpus_id=%s",
+                    ("8" * 40, corpus),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "DELETE FROM public.corpora_corpus_bootstrap WHERE corpus_id=%s", (corpus,)
                 )
 
             def operation(op, cid, seq, parent):
@@ -191,6 +205,7 @@ def test_content_version_constraints_and_privileges():
                     ("b" * 40, corpus),
                 )
             for table in (
+                "corpora_corpus_bootstrap",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_versions",
                 "corpora_corpus_heads",
@@ -212,6 +227,7 @@ def test_content_version_constraints_and_privileges():
                 "corpora_corpus_heads",
                 "corpora_corpus_versions",
                 "corpora_corpus_write_ops",
+                "corpora_corpus_bootstrap",
                 "corpora_corpus_metadata",
             ):
                 db.execute("DROP TABLE IF EXISTS public." + table + " CASCADE")
