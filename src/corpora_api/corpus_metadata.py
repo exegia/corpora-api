@@ -67,6 +67,54 @@ def _same_json(left: Any, right: Any) -> bool:
     return True
 
 
+def _normalize_changes(revision: int, fields: dict[str, Any]) -> dict[str, Any]:
+    if (
+        type(revision) is not int
+        or not 1 <= revision < (1 << 63) - 1
+        or not isinstance(fields, dict)
+        or not fields
+        or not fields.keys() <= {"title", "description", "language", "properties"}
+    ):
+        raise CorpusMetadataError("Invalid corpus metadata update")
+    changes = dict(fields)
+    if "title" in changes:
+        title = changes["title"]
+        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 512:
+            raise CorpusMetadataError("Invalid corpus metadata update")
+        changes["title"] = title.strip()
+    for field, limit in (("description", 10000), ("language", 128)):
+        if field in changes:
+            value = changes[field]
+            if value is not None and (not isinstance(value, str) or len(value) > limit):
+                raise CorpusMetadataError("Invalid corpus metadata update")
+    try:
+        encoded = json.dumps(changes, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        snapshot = json.loads(encoded)
+        if snapshot != changes:
+            raise ValueError("Invalid metadata values")
+        changes = snapshot
+        pending: list[Any] = [changes]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, str) and "\x00" in item:
+                raise ValueError("Invalid metadata text")
+            if isinstance(item, dict):
+                pending.extend(item.keys())
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                pending.extend(item)
+        if "properties" in changes:
+            properties = changes["properties"]
+            if not isinstance(properties, dict):
+                raise ValueError("Invalid metadata properties")
+            raw = json.dumps(properties, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if len(raw) > 16384 or json.loads(raw) != properties:
+                raise ValueError("Invalid metadata properties")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as error:
+        raise CorpusMetadataError("Invalid corpus metadata update") from error
+    return changes
+
+
 class CorpusMetadataStore:
     """Use a server credential while enforcing ownership in every query."""
 
@@ -263,48 +311,7 @@ class CorpusMetadataStore:
     ) -> CorpusMetadata:
         """Replace selected editable metadata; properties are replaced as a whole."""
         actor = self._actor(verified_user)
-        if (
-            type(revision) is not int
-            or not 1 <= revision < (1 << 63) - 1
-            or not isinstance(fields, dict)
-            or not fields
-            or not fields.keys() <= {"title", "description", "language", "properties"}
-        ):
-            raise CorpusMetadataError("Invalid corpus metadata update")
-        changes = dict(fields)
-        if "title" in changes:
-            title = changes["title"]
-            if not isinstance(title, str) or not 1 <= len(title.strip()) <= 512:
-                raise CorpusMetadataError("Invalid corpus metadata update")
-            changes["title"] = title.strip()
-        for field, limit in (("description", 10000), ("language", 128)):
-            if field in changes:
-                value = changes[field]
-                if value is not None and (not isinstance(value, str) or len(value) > limit):
-                    raise CorpusMetadataError("Invalid corpus metadata update")
-        try:
-            encoded = json.dumps(changes, ensure_ascii=False, allow_nan=False).encode("utf-8")
-            if json.loads(encoded) != changes:
-                raise ValueError("Invalid metadata values")
-            pending: list[Any] = [changes]
-            while pending:
-                item = pending.pop()
-                if isinstance(item, str) and "\x00" in item:
-                    raise ValueError("Invalid metadata text")
-                if isinstance(item, dict):
-                    pending.extend(item.keys())
-                    pending.extend(item.values())
-                elif isinstance(item, list):
-                    pending.extend(item)
-            if "properties" in changes:
-                properties = changes["properties"]
-                if not isinstance(properties, dict):
-                    raise ValueError("Invalid metadata properties")
-                raw = json.dumps(properties, ensure_ascii=False, allow_nan=False).encode("utf-8")
-                if len(raw) > 16384 or json.loads(raw) != properties:
-                    raise ValueError("Invalid metadata properties")
-        except (ValueError, TypeError, UnicodeError, RecursionError) as error:
-            raise CorpusMetadataError("Invalid corpus metadata update") from error
+        changes = _normalize_changes(revision, fields)
         current = self.get(actor, corpus_id)
         params = {"id": "eq." + str(current.id), "revision": "eq." + str(revision)}
         if not self._is_superadmin(actor):
