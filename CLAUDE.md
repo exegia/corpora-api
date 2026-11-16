@@ -2,8 +2,9 @@
 
 # Claude-specific notes
 
-`AGENTS.md` above is the shared rulebook; this file only adds what is specific to Claude Code. Do not
-duplicate rules here - `make agents-check` fails if the import above is removed.
+`AGENTS.md` above is the shared rulebook. Keep its import; the branch rule is repeated below for visibility.
+
+**MULTIPLE FEATURE BRANCHES ARE ALLOWED ONLY WHEN THEY ARE RELATED AND FORM A STACK OF DEPENDENT PULL REQUESTS. OTHERWISE, MERGE THE CURRENT FEATURE INTO `dev` BEFORE STARTING ANOTHER FEATURE.**
 
 ## Working in this repo
 

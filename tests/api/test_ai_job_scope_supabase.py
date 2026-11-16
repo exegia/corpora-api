@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from cfabric import Fabric as ContextFabric
 from fastapi.testclient import TestClient
 from tf.fabric import Fabric
 
@@ -53,6 +54,7 @@ def test_job_scope_through_local_auth_postgrest_and_storage(tmp_path, monkeypatc
             },
         },
     )
+    assert ContextFabric(locations=str(root), silent="deep").loadAll(silent="deep")
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
@@ -118,6 +120,14 @@ def test_job_scope_through_local_auth_postgrest_and_storage(tmp_path, monkeypatc
                 assert foreign.status_code == 404
                 assert missing.status_code == 404
                 assert foreign.json() == missing.json() == {"detail": "Corpus not found"}
+                client.post(
+                    object_url,
+                    headers={**service_headers, "x-upsert": "true"},
+                    content=b"tampered after saved validation",
+                ).raise_for_status()
+                tampered = api.post("/v1/ai/validate", json={"scope": scope}, headers=own_headers)
+                assert tampered.status_code == 422
+                assert tampered.json()["detail"] == "Conversion archive is invalid"
                 db.execute("UPDATE public.conversion_jobs SET status='running' WHERE id=%s", (job,))
                 pending = api.post("/v1/ai/validate", json={"scope": scope}, headers=own_headers)
                 assert pending.status_code == 409

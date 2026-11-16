@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from cfabric import Fabric as ContextFabric
 from fastapi.testclient import TestClient
 from tf.fabric import Fabric
 
@@ -217,6 +218,7 @@ def test_ai_scope_validation_uses_owned_real_archive(
             },
         },
     )
+    assert ContextFabric(locations=str(root), silent="deep").loadAll(silent="deep")
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
@@ -226,6 +228,7 @@ def test_ai_scope_validation_uses_owned_real_archive(
     store[f"{ALICE}/first.corpus"] = stream.getvalue()
     job = "b85f991a-8aaf-4f48-b26e-a9ef63e6a7f4"
     downloads = []
+    job_bytes = [stream.getvalue()]
 
     def conversion_backend(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/rest/v1/conversion_jobs":
@@ -246,7 +249,7 @@ def test_ai_scope_validation_uses_owned_real_archive(
             )
         assert request.url.path == f"/storage/v1/object/jobs/conversion-jobs/{job}.corpus"
         downloads.append(True)
-        return httpx.Response(200, content=stream.getvalue())
+        return httpx.Response(200, content=job_bytes[0])
 
     monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
     monkeypatch.setattr(
@@ -302,6 +305,10 @@ def test_ai_scope_validation_uses_owned_real_archive(
         )
         unauthorized = client.get("/v1/ai/providers")
         schema = client.get("/v1/openapi.json").json()
+        job_bytes[0] = b"tampered after saved validation"
+        tampered = client.post(
+            "/v1/ai/validate", json={"scope": job_scope}, headers=headers("alice-token")
+        )
     assert [item["id"] for item in providers.json()["providers"]] == [
         "anthropic",
         "openai",
@@ -317,7 +324,9 @@ def test_ai_scope_validation_uses_owned_real_archive(
         "checked_nodes": 1,
         "findings": [],
     }
-    assert foreign_job.status_code == 404 and downloads == [True]
+    assert tampered.status_code == 422
+    assert tampered.json()["detail"] == "Conversion archive is invalid"
+    assert foreign_job.status_code == 404 and downloads == [True, True]
     assert foreign_job.json() == {"detail": "Corpus not found"}
     assert finding.status_code == 200, finding.text
     located = finding.json()["findings"]
@@ -424,6 +433,83 @@ def test_list_info_and_streamed_download_are_owner_scoped(store: dict[str, bytes
     assert [item["filename"] for item in bob.json()] == ["private.corpus"]
     for path in ("/v1/storage", "/v1/storage/{filename}", "/v1/storage/{filename}/download"):
         assert schema["paths"][path]["get"]["security"] == [{"SupabaseUserJWT": []}]
+
+
+def test_owned_detail_not_found_uses_real_archive(store: dict[str, bytes], tmp_path: Path) -> None:
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={"otype": {1: "word", 2: "book"}, "text": {1: "A"}, "book": {2: "Mini"}},
+        edgeFeatures={"oslots": {2: {1}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "text": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "otext": {
+                "sectionTypes": "book",
+                "sectionFeatures": "book",
+                "fmt:text-orig-full": "{text}",
+            },
+        },
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    store[f"{ALICE}/first.corpus"] = stream.getvalue()
+    with TestClient(app) as client:
+        node = client.get("/v1/storage/first/nodes/99", headers=headers("alice-token"))
+        section = client.get(
+            "/v1/storage/first/content", params={"ref": "missing"}, headers=headers("alice-token")
+        )
+    assert node.status_code == section.status_code == 404
+    assert node.json() == {"detail": "Node 99 not found in first.corpus"}
+    assert section.json() == {"detail": "Section reference 'missing' not found in first.corpus"}
+
+
+def test_owned_detail_not_found_reports_only_requested_node_or_section(
+    monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]
+) -> None:
+    from corpora_api.corpus_process import CorpusProcessError
+
+    def missing(data: bytes, operation: str, *, view: str, **params: object) -> dict[str, object]:
+        assert data == store[f"{ALICE}/first.corpus"]
+        assert operation == "view"
+        if view == "node":
+            raise CorpusProcessError("not_found", f"Node {params['node']} not found")
+        ref = params.get("parent") if view == "sections" else params.get("ref")
+        if ref == "unsafe":
+            raise CorpusProcessError("not_found", "private worker information")
+        raise CorpusProcessError("not_found", f"Section reference {ref!r} not found")
+
+    monkeypatch.setattr("corpora_api.storage_detail.run_corpus", missing)
+    with TestClient(app) as client:
+        node = client.get("/v1/storage/first/nodes/99", headers=headers("alice-token"))
+        section = client.get(
+            "/v1/storage/first/sections",
+            params={"parent": "missing"},
+            headers=headers("alice-token"),
+        )
+        content = client.get(
+            "/v1/storage/first/content", params={"ref": "missing"}, headers=headers("alice-token")
+        )
+        unsafe = client.get(
+            "/v1/storage/first/content", params={"ref": "unsafe"}, headers=headers("alice-token")
+        )
+        foreign = client.get("/v1/storage/private.corpus/nodes/99", headers=headers("alice-token"))
+    assert node.json() == {"detail": "Node 99 not found in first.corpus"}
+    assert (
+        section.json()
+        == content.json()
+        == {"detail": "Section reference 'missing' not found in first.corpus"}
+    )
+    assert unsafe.json() == {"detail": "Corpus detail is unavailable"}
+    assert all(
+        response.status_code == 404 for response in (node, section, content, unsafe, foreign)
+    )
+    assert "Node 99" not in foreign.json()["detail"]
 
 
 def test_corpus_detail_reads_are_owner_scoped_and_documented(
@@ -859,3 +945,29 @@ def test_hub_storage_reports_missing_configuration_and_private_access(
         )
     assert private_archive.status_code == 503
     assert "HF_TOKEN" in private_archive.json()["detail"]
+
+
+def test_ai_job_scope_fails_closed_when_validator_unavailable(store, monkeypatch):
+    from corpora_api.validation import ValidationUnavailable
+
+    job = "b85f991a-8aaf-4f48-b26e-a9ef63e6a7f4"
+    jobs = SimpleNamespace(fetch=lambda *_args: ("source.corpus", b"archive"))
+
+    def unavailable(*_args):
+        raise ValidationUnavailable("Corpus validator is unavailable")
+
+    monkeypatch.setattr(app_module, "conversion_artifact_store", jobs)
+    monkeypatch.setattr(app_module, "validator", SimpleNamespace(validate=unavailable))
+    scope = {
+        "corpus": "job:" + job,
+        "level": "word",
+        "node_id": 1,
+        "label": "word",
+        "version": "1.0",
+    }
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/ai/validate", json={"scope": scope}, headers=headers("alice-token")
+        )
+    assert result.status_code == 503
+    assert result.json() == {"detail": "Corpus validator is unavailable"}
