@@ -875,6 +875,20 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 finally:
                     logout_done.set()
 
+            # Simulate a trusted worker already dispatched while the session
+            # was live. A claim alone is not proof of actual Hub dispatch.
+            in_flight_corpus = str(uuid4())
+            editor.reserve(users[0][0], in_flight_corpus, "In flight", repo_type="dataset")
+            in_flight_claim = provision_admission.claim(users[0][0], in_flight_corpus)
+            in_flight_result = TrustedBootstrapAttestation(
+                in_flight_claim.corpus_id,
+                in_flight_claim.operation_id,
+                in_flight_claim.claim_id,
+                in_flight_claim.repo_id,
+                in_flight_claim.repo_type,
+                "a" * 40,
+            )
+
             editor_thread = threading.Thread(target=edit, daemon=True)
             logout_thread = threading.Thread(target=logout, daemon=True)
             editor_thread.start()
@@ -918,6 +932,9 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             with pytest.raises(HTTPException) as revoked_provision:
                 provision_admission.claim(users[0][0], provision_corpus)
             assert revoked_provision.value.status_code == 401
+            # An already-started operation can finish after sign-out; the
+            # trusted result here is synthetic and does not establish dispatch.
+            assert provision_finalizer.finalize_trusted(in_flight_result) == "a" * 40
             with pytest.raises(HTTPException) as revoked_invalid_provision:
                 provision_admission.claim(users[0][0], "invalid")
             assert revoked_invalid_provision.value.status_code == 401

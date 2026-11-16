@@ -83,12 +83,14 @@ original creation commit. A provisioning operation binds that
 bootstrap to one immutable claim and must complete atomically with it; an
 uncertain operation cannot be automatically reclaimed. An unwired adapter
 checks a live session and owner or server-configured superadmin before
-atomically admitting and claiming one attempt. It does no Hub I/O and its
-receipt alone does not authorize a worker; the behavior of provisioning across
-sign-out and a restricted production privilege boundary remain unresolved.
+atomically admitting and claiming one attempt. A creation already underway may
+finish after sign-out; a new creation request requires an active session. The
+adapter does no Hub I/O, and a receipt alone does not prove that a worker was
+already dispatched. The dispatch boundary, uncertain-outcome reconciliation,
+and a restricted production privilege boundary remain unresolved.
 An unwired finalizer can record a bootstrap from a trusted assertion, but no
 component verifies that assertion; save claims fail closed when it is missing.
-Before publishing, a future worker must replace and verify the complete
+Before recording a new content version, a future worker must replace and verify the complete
 intended tree at the resulting pinned commit, check content bytes, and guard
 against branch changes. Replacing files does not erase prior Git history.
 Hub organization administrators are trusted administrators and can still change
