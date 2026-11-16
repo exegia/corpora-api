@@ -3,10 +3,13 @@
 import os
 from pathlib import Path
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
+
+from corpora_api.corpus_metadata import CorpusMetadataConflict, CorpusMetadataError
+from corpora_api.corpus_provision_uncertainty import CorpusProvisionUncertaintyRecorder
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_TEST_LOCAL_SUPABASE"), reason="requires disposable local Supabase"
@@ -126,10 +129,24 @@ def test_content_version_constraints_and_privileges():
                 "worker_claim=%s WHERE id=%s",
                 (uncertain_claim, uncertain),
             )
-            db.execute(
-                "UPDATE public.corpora_corpus_provision_ops SET state='uncertain' WHERE id=%s",
-                (uncertain,),
+            recorder = CorpusProvisionUncertaintyRecorder(lambda: psycopg.connect(dsn))
+            with pytest.raises(CorpusMetadataConflict):
+                recorder.record_trusted(UUID(uncertain), uuid4())
+            assert (
+                db.execute(
+                    "SELECT state FROM public.corpora_corpus_provision_ops WHERE id=%s",
+                    (uncertain,),
+                ).fetchone()[0]
+                == "executing"
             )
+            recorder.record_trusted(UUID(uncertain), UUID(uncertain_claim))
+            recorder.record_trusted(UUID(uncertain), UUID(uncertain_claim))
+            with pytest.raises(CorpusMetadataConflict):
+                recorder.record_trusted(UUID(provision), UUID(claim))
+            with pytest.raises(CorpusMetadataError):
+                CorpusProvisionUncertaintyRecorder(
+                    lambda: psycopg.connect(dsn), assume_service_role=True
+                ).record_trusted(UUID(uncertain), UUID(uncertain_claim))
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "UPDATE public.corpora_corpus_provision_ops SET state='executing' WHERE id=%s",
