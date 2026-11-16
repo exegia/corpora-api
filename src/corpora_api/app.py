@@ -902,7 +902,7 @@ async def ai_validate(
     from corpora_api.ai_validation import validate_scope
 
     return await run_in_threadpool(
-        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope
+        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope, validator
     )
 
 
