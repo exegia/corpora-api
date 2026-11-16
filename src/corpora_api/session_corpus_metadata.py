@@ -59,8 +59,10 @@ class SessionBoundMetadataTransaction:
                     params = (str(owner), str(session), expiry)
                     db.execute("SELECT public.corpora_stored_lock_session(%s,%s,%s)", params)
                     result = operation(str(owner), db)
-                    if not isinstance(result, bytes) or len(result) > 131_072:
-                        raise HTTPException(503, "Corpus metadata update returned invalid data")
+                    if not isinstance(result, bytes):
+                        raise HTTPException(503, "Corpus metadata operation returned invalid data")
+                    if len(result) > 3_900_000:
+                        raise HTTPException(413, "Corpus metadata response is too large")
                     db.execute("SELECT public.corpora_stored_lock_session(%s,%s,%s)", params)
             return result
         except HTTPException:
@@ -77,6 +79,106 @@ class SessionBoundCorpusMetadata:
 
     def __init__(self, lease: MetadataSessionTransaction) -> None:
         self.lease = lease
+
+    def get(self, verified_claims: Mapping[str, Any], corpus_id: str) -> CorpusMetadata:
+        """Read one accessible record while the session lock is held."""
+
+        def operation(actor: str, db: Any) -> bytes:
+            try:
+                identifier = str(UUID(corpus_id))
+            except (ValueError, TypeError, AttributeError):
+                return b'{"status":"not_found"}'
+            admin = CorpusMetadataStore._is_superadmin(actor)
+            result = db.execute(
+                "SELECT row_to_json(corpora_corpus_metadata) "
+                "FROM public.corpora_corpus_metadata "
+                "WHERE id=%s::uuid AND (owner_id=%s::uuid OR %s::boolean)",
+                (identifier, actor, admin),
+            ).fetchone()
+            if result is None:
+                return b'{"status":"not_found"}'
+            try:
+                row = CorpusMetadata.model_validate(result[0])
+                if str(row.id) != identifier or (str(row.owner_id) != actor and not admin):
+                    raise ValueError("Mismatched metadata")
+                CorpusMetadataStore._check_link(row)
+                return json.dumps(
+                    {"status": "ok", "row": row.model_dump(mode="json")}, ensure_ascii=False
+                ).encode("utf-8")
+            except (ValueError, TypeError, ValidationError, CorpusMetadataError) as error:
+                raise HTTPException(503, "Corpus metadata read failed") from error
+
+        return self._run(verified_claims, operation)
+
+    def list_owned(
+        self,
+        verified_claims: Mapping[str, Any],
+        *,
+        owner_id: str | None = None,
+        limit: int = 50,
+        after: str | None = None,
+    ) -> tuple[list[CorpusMetadata], str | None]:
+        """Read one owner's records in stable corpus-ID order."""
+
+        def operation(actor: str, db: Any) -> bytes:
+            try:
+                if type(limit) is not int or not 1 <= limit <= 100:
+                    raise ValueError("Invalid limit")
+                owner = CorpusMetadataStore._actor(owner_id) if owner_id is not None else actor
+                cursor = UUID(after) if after is not None else None
+            except (ValueError, TypeError, AttributeError, CorpusMetadataError) as error:
+                raise HTTPException(422, "Invalid corpus metadata list") from error
+            admin = CorpusMetadataStore._is_superadmin(actor)
+            if owner != actor and not admin:
+                return b'{"status":"not_found"}'
+            query = (
+                "SELECT row_to_json(corpora_corpus_metadata) "
+                "FROM public.corpora_corpus_metadata WHERE owner_id=%s::uuid "
+            )
+            params: tuple[Any, ...] = (owner,)
+            if cursor is not None:
+                query += "AND id>%s::uuid "
+                params += (str(cursor),)
+            query += "ORDER BY id ASC LIMIT %s"
+            results = db.execute(query, (*params, limit + 1)).fetchall()
+            try:
+                if len(results) > limit + 1:
+                    raise ValueError("Too many metadata rows")
+                rows = []
+                previous = cursor
+                for result in results:
+                    row = CorpusMetadata.model_validate(result[0])
+                    if str(row.owner_id) != owner or (previous is not None and row.id <= previous):
+                        raise ValueError("Mismatched metadata")
+                    CorpusMetadataStore._check_link(row)
+                    rows.append(row)
+                    previous = row.id
+                page = rows[:limit]
+                next_cursor = str(page[-1].id) if len(rows) > limit else None
+                return json.dumps(
+                    {
+                        "status": "list",
+                        "rows": [row.model_dump(mode="json") for row in page],
+                        "next": next_cursor,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            except (ValueError, TypeError, ValidationError, CorpusMetadataError) as error:
+                raise HTTPException(503, "Corpus metadata list failed") from error
+
+        result = self._execute(verified_claims, operation)
+        try:
+            if set(result) != {"status", "rows", "next"} or result["status"] != "list":
+                raise ValueError("Invalid result")
+            if not isinstance(result["rows"], list) or len(result["rows"]) > limit:
+                raise ValueError("Invalid rows")
+            rows = [CorpusMetadata.model_validate(value) for value in result["rows"]]
+            cursor = result["next"]
+            if cursor is not None and (not rows or cursor != str(rows[-1].id)):
+                raise ValueError("Invalid cursor")
+            return rows, cursor
+        except (ValueError, TypeError, KeyError, ValidationError) as error:
+            raise CorpusMetadataError("Corpus metadata registry returned invalid data") from error
 
     def reserve(
         self,
@@ -212,12 +314,24 @@ class SessionBoundCorpusMetadata:
     def _run(
         self, verified_claims: Mapping[str, Any], operation: Callable[[str, Any], bytes]
     ) -> CorpusMetadata:
+        result = self._execute(verified_claims, operation)
+        try:
+            if set(result) != {"status", "row"} or result["status"] != "ok":
+                raise ValueError("Invalid result")
+            return CorpusMetadata.model_validate(result["row"])
+        except (ValueError, TypeError, KeyError, ValidationError) as error:
+            raise CorpusMetadataError("Corpus metadata registry returned invalid data") from error
+
+    def _execute(
+        self, verified_claims: Mapping[str, Any], operation: Callable[[str, Any], bytes]
+    ) -> dict[str, Any]:
         try:
             response = self.lease.run(verified_claims, operation)
         except HTTPException as error:
             if error.status_code == 422 and error.detail in {
                 "Invalid corpus metadata update",
                 "Invalid corpus metadata reservation",
+                "Invalid corpus metadata list",
             }:
                 raise CorpusMetadataError(error.detail) from error
             raise
@@ -229,13 +343,9 @@ class SessionBoundCorpusMetadata:
                 raise CorpusMetadataConflict("Corpus metadata changed; reload before editing")
             if result == {"status": "reservation_conflict"}:
                 raise CorpusMetadataConflict("Corpus metadata conflicts with an existing record")
-            if (
-                not isinstance(result, dict)
-                or set(result) != {"status", "row"}
-                or result["status"] != "ok"
-            ):
+            if not isinstance(result, dict):
                 raise ValueError("Invalid result")
-            return CorpusMetadata.model_validate(result["row"])
+            return result
         except (CorpusMetadataNotFound, CorpusMetadataConflict):
             raise
         except (ValueError, TypeError, KeyError, ValidationError) as error:
