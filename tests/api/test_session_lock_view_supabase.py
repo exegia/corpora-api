@@ -31,7 +31,7 @@ def test_restricted_view_locks_real_session_without_service_update():
     view = sql.Identifier(schema, "session_lock")
     owner_ident = sql.Identifier(owner_role)
     schema_ident = sql.Identifier(schema)
-    user = None
+    users = []
     role_created = schema_created = False
     with (
         httpx.Client(timeout=15) as api,
@@ -41,15 +41,20 @@ def test_restricted_view_locks_real_session_without_service_update():
             0
         ]
         try:
-            signup = api.post(
-                url + "/auth/v1/signup",
-                headers={"apikey": anon, "Authorization": "Bearer " + anon},
-                json={"email": str(uuid4()) + "@example.org", "password": str(uuid4())},
-            )
-            signup.raise_for_status()
-            token = signup.json()["access_token"]
-            claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "==="))
-            user, session = claims["sub"], claims["session_id"]
+            sessions = []
+            for _ in range(2):
+                signup = api.post(
+                    url + "/auth/v1/signup",
+                    headers={"apikey": anon, "Authorization": "Bearer " + anon},
+                    json={"email": str(uuid4()) + "@example.org", "password": str(uuid4())},
+                )
+                signup.raise_for_status()
+                token = signup.json()["access_token"]
+                claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "==="))
+                users.append(claims["sub"])
+                sessions.append((claims["sub"], claims["session_id"], token))
+            user, session, token = sessions[0]
+            other_user, other_session, _ = sessions[1]
             assert not admin.execute(
                 "SELECT has_column_privilege('service_role','auth.sessions','not_after','UPDATE')"
             ).fetchone()[0]
@@ -100,6 +105,23 @@ def test_restricted_view_locks_real_session_without_service_update():
                     (browser, schema + ".session_lock"),
                 ).fetchone()[0]
 
+            # This diagnostic confirms a limitation, not an authorization feature:
+            # the trusted role can enumerate and exclusively lock another session.
+            with psycopg.connect(dsn) as probe:
+                probe.execute("SET ROLE service_role")
+                other = probe.execute(
+                    sql.SQL("SELECT id FROM {} WHERE user_id=%s FOR UPDATE").format(view),
+                    (other_user,),
+                ).fetchall()
+                assert len(other) == 1 and str(other[0][0]) == other_session
+                with psycopg.connect(dsn, user="supabase_admin", autocommit=True) as blocked:
+                    blocked.execute("SET lock_timeout = '250ms'")
+                    with pytest.raises(psycopg.errors.LockNotAvailable):
+                        blocked.execute(
+                            "SELECT id FROM auth.sessions WHERE id=%s FOR UPDATE", (other_session,)
+                        )
+                probe.rollback()
+
             finished, result = threading.Event(), []
 
             def logout():
@@ -147,7 +169,7 @@ def test_restricted_view_locks_real_session_without_service_update():
                     sql.SQL("SELECT id FROM {} WHERE id=%s").format(view), (session,)
                 ).fetchall()
         finally:
-            if user:
+            for user in users:
                 api.delete(
                     url + "/auth/v1/admin/users/" + user,
                     headers={"apikey": service, "Authorization": "Bearer " + service},
