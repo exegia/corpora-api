@@ -45,6 +45,9 @@ the legacy `corpora-py` draft migrations. Archives are staged under immutable
 owner/document/revision keys and checked against their SHA-256 digest before
 publication and download. The API requires the server-side Supabase service key;
 no caller-supplied storage path is accepted.
+Draft manifest, index, version, node, section and content reads return the
+immutable draft revision alongside each result so callers can detect changes
+between related reads.
 The source-pinned legacy database setup is in `supabase/migrations/`; apply it
 only after reviewing it against the target database and verifying its existing
 tables and policies. The API does not apply migrations automatically.

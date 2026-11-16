@@ -18,8 +18,85 @@ from corpora_api import app as app_module
 from corpora_api import drafts as drafts_module
 from corpora_api.app import app
 from corpora_api.auth import UserAuthError
-from corpora_api.drafts import DraftStore
+from corpora_api.drafts import DraftHead, DraftStore
 from corpora_api.validation import ValidationBridge
+
+
+def test_draft_view_limits_the_complete_response_envelope(monkeypatch):
+    owner, document, revision = (str(uuid4()) for _ in range(3))
+    head = DraftHead(
+        document_id=document,
+        owner=owner,
+        corpus=f"draft:{document}",
+        bucket="corpus-ai-drafts",
+        object_key=f"{owner}/ai/{document}/{revision}.corpus",
+        revision=revision,
+        digest="sha256:" + "a" * 64,
+        version="1." + "0" * 101_000,
+    )
+    store = DraftStore()
+    monkeypatch.setattr(store, "resolve", lambda *_: head)
+    monkeypatch.setattr(store, "_download", lambda *_: b"archive")
+    monkeypatch.setattr(drafts_module, "run_corpus", lambda *_, **__: {"text": "x" * 3_899_000})
+    with pytest.raises(HTTPException) as caught:
+        store.read(owner, document, "node", node=1)
+    assert caught.value.status_code == 413
+
+
+def test_large_draft_node_returns_413_with_real_corpus(monkeypatch, tmp_path):
+    from corpus_validate import validate_archive
+
+    owner, document, revision = (str(uuid4()) for _ in range(3))
+    root = tmp_path / "tf"
+    root.mkdir()
+    assert Fabric(locations=str(root), silent="deep").save(
+        nodeFeatures={
+            "otype": {1: "word", 2: "book"},
+            "book": {2: "Mini"},
+            "text": {1: "x" * 2_400_000},
+        },
+        edgeFeatures={"oslots": {2: {1}}},
+        metaData={
+            "otype": {"valueType": "str"},
+            "oslots": {"valueType": "str"},
+            "book": {"valueType": "str"},
+            "text": {"valueType": "str"},
+            "otext": {
+                "sectionTypes": "book",
+                "sectionFeatures": "book",
+                "fmt:text-orig-full": "{text}",
+            },
+        },
+    )
+    assert ContextFabric(locations=str(root), silent="deep").loadAll(silent="deep")
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
+        for path in root.rglob("*"):
+            if path.is_file():
+                archive.write(path, f"corpora/{path.relative_to(root)}")
+    data = stream.getvalue()
+    assert len(data) < 3_000_000 and validate_archive(data, "draft.corpus")["valid"]
+    head = DraftHead(
+        document_id=document,
+        owner=owner,
+        corpus=f"draft:{document}",
+        bucket="corpus-ai-drafts",
+        object_key=f"{owner}/ai/{document}/{revision}.corpus",
+        revision=revision,
+        digest="sha256:" + "a" * 64,
+        version="1.0",
+    )
+    draft_store = DraftStore()
+    monkeypatch.setattr(draft_store, "resolve", lambda *_: head)
+    monkeypatch.setattr(draft_store, "_download", lambda *_: data)
+    monkeypatch.setattr(app_module, "draft_store", draft_store)
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: {"sub": owner})
+    with TestClient(app) as client:
+        response = client.get(
+            f"/v1/ai/drafts/{document}/nodes/1", headers={"Authorization": "Bearer token"}
+        )
+    assert response.status_code == 413 and len(response.content) < 1_000
 
 
 def test_concurrent_draft_creation_reuses_the_same_immutable_object(monkeypatch):
@@ -187,6 +264,16 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
         listed = api.get("/v1/ai/drafts", headers=own_headers)
         info = api.get(f"/v1/ai/drafts/{first['id']}", headers=own_headers)
         exported = api.get(f"/v1/ai/drafts/{first['id']}/archive", headers=own_headers)
+        views = {
+            view: api.get(f"/v1/ai/drafts/{first['id']}/{view}", headers=own_headers)
+            for view in ("manifest", "index", "versions", "nodes/1", "sections", "content")
+        }
+        foreign_view = api.get(f"/v1/ai/drafts/{first['id']}/manifest", headers=foreign_headers)
+        missing_node = api.get(f"/v1/ai/drafts/{first['id']}/nodes/999", headers=own_headers)
+        invalid_node = api.get(f"/v1/ai/drafts/{first['id']}/nodes/0", headers=own_headers)
+        invalid_limit = api.get(
+            f"/v1/ai/drafts/{first['id']}/sections?limit=201", headers=own_headers
+        )
         other = api.get(f"/v1/ai/drafts/{first['id']}", headers=foreign_headers)
         unauthenticated = api.get("/v1/ai/drafts")
     assert created.json() == first
@@ -196,6 +283,16 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
     assert exported.headers["cache-control"] == "private, no-store"
     assert exported.headers["etag"] == f'"{first["digest"]}"'
     assert exported.headers["x-draft-revision"] == first["revision"]
+    assert all(value.status_code == 200 for value in views.values())
+    assert all(value.json()["draft"]["revision"] == first["revision"] for value in views.values())
+    assert views["manifest"].json()["data"]["name"] == "Mini"
+    assert views["nodes/1"].json()["data"]["node"] == 1
+    assert foreign_view.status_code == 404
+    assert (missing_node.status_code, invalid_node.status_code, invalid_limit.status_code) == (
+        404,
+        422,
+        422,
+    )
     assert (other.status_code, foreign_create.status_code, unauthenticated.status_code) == (
         404,
         404,
