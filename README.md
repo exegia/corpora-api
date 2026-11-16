@@ -71,7 +71,7 @@ role read access only, so admission needs a separately reviewed write boundary.
 An unwired database finalizer checks the exact claim and atomically records a
 trusted candidate, advances the head and sets initial readiness. The caller
 must independently verify the Hub commit, parent, input and retained ref;
-constructing an attestation does not verify it. No published-commit verifier,
+constructing an attestation does not verify it. No complete wired published-commit verifier,
 corpus-publication write, restore,
 reconciliation or route is implemented. Recorded commits must remain reachable
 through their retained Hub references; the schema does not verify remote bytes
@@ -138,6 +138,15 @@ The claim is coordination only: the existing database role can read it, so
 staging and publishing are not isolated until a restricted dispatcher or
 separate production credentials are installed. It does not fence an existing
 remote request or authorize automatic takeover after an uncertain outcome.
+An unwired Git-object verifier checks the commit's single direct parent, exact
+tree paths and regular-file modes, and verifies each blob and resolved LFS file
+against trusted content hashes. Paths use exact case-sensitive Git names; this
+does not establish checkout compatibility on every filesystem. It requires an
+explicit decision on repository-managed files such as `.gitattributes`, uses
+Git's SHA-1 object identifiers, and supports canonical three-line LFS pointers
+only. The caller must verify every returned entry against the matching trusted
+path, size and hash. Object acquisition, Hub privacy and ref checks, aggregate download limits,
+and the publication worker still need to be implemented.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
