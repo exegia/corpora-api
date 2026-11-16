@@ -54,6 +54,8 @@ Authenticated `/v1/ai/providers` lists the legacy provider guidance without
 accepting API keys. `/v1/ai/validate` validates a version-pinned scope against
 an accessible stored corpus or owned completed conversion, returning located
 findings and rejecting stale version or content hashes.
+For conversion jobs, the API validates the downloaded archive again before
+using it; a saved result from an earlier validation is not sufficient.
 Corpus detail, reference, and scope reads run the native loader in a separate
 short-lived process per request so its state cannot cross server worker threads.
 Results exceeding the worker's 3.9 MB encoded JSON limit return 413 rather than

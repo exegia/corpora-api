@@ -24,7 +24,7 @@ _ARCHIVE_ID = re.compile(r"^[\w][\w .-]*$", re.UNICODE)
 
 
 def validate_scope(
-    storage: Any, jobs: Any, owner: str, request: AINodeScope
+    storage: Any, jobs: Any, owner: str, request: AINodeScope, validator: Any
 ) -> dict[str, Any] | JSONResponse:
     if request.corpus.startswith("job:"):
         try:
@@ -32,9 +32,14 @@ def validate_scope(
         except ValueError as error:
             raise HTTPException(422, "Expected job:<UUID>") from error
         try:
-            _, data = jobs.fetch(owner, request.corpus[4:])
+            name, data = jobs.fetch(owner, request.corpus[4:])
         except ConversionArtifactNotFound as error:
             raise HTTPException(404, "Corpus not found") from error
+        # The stored validation flag describes an earlier version of the
+        # object. Validate the exact downloaded bytes before using them.
+        verdict = validator.validate(name, data)
+        if not isinstance(verdict, dict) or verdict.get("valid") is not True:
+            raise HTTPException(422, "Conversion archive is invalid")
     else:
         if not request.corpus.startswith("draft:") and (
             not _ARCHIVE_ID.fullmatch(request.corpus) or request.corpus != request.corpus.strip()

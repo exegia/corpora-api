@@ -166,6 +166,14 @@ class DraftStore:
         name, data = jobs.fetch(owner, job_id)
         if not name.endswith(".corpus"):
             raise HTTPException(status_code=422, detail="Working drafts require a corpus archive")
+        try:
+            verdict = validator.validate(name, data)
+        except (ValueError, zipfile.BadZipFile) as error:
+            raise HTTPException(
+                status_code=422, detail="Conversion archive is unreadable"
+            ) from error
+        if not isinstance(verdict, dict) or verdict.get("valid") is not True:
+            raise HTTPException(status_code=422, detail="Conversion archive is invalid")
         document_id = str(uuid5(NAMESPACE_URL, json.dumps(["ai-draft", owner, job_id])))
         try:
             return self._info(self.resolve(owner, document_id))
@@ -173,14 +181,11 @@ class DraftStore:
             if error.status_code != 404:
                 raise
         try:
-            verdict = validator.validate(name, data)
             manifest = read_archive(data, "manifest")
         except (ValueError, zipfile.BadZipFile) as error:
             raise HTTPException(
                 status_code=422, detail="Conversion archive is unreadable"
             ) from error
-        if not verdict.get("valid"):
-            raise HTTPException(status_code=422, detail="Conversion archive is invalid")
         version = str(manifest.get("version") or "")
         if not re.fullmatch(r"v?[0-9]+\.[0-9]+", version):
             raise HTTPException(
