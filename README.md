@@ -71,7 +71,8 @@ role read access only, so admission needs a separately reviewed write boundary.
 An unwired database finalizer checks the exact claim and atomically records a
 trusted candidate, advances the head and sets initial readiness. The caller
 must independently verify the Hub commit, parent, input and retained ref;
-constructing an attestation does not verify it. No verifier, Hub write, restore,
+constructing an attestation does not verify it. No published-commit verifier,
+corpus-publication write, restore,
 reconciliation or route is implemented. Recorded commits must remain reachable
 through their retained Hub references; the schema does not verify remote bytes
 or enforce readiness in every possible write path. A first version has no prior
@@ -129,8 +130,14 @@ A separate read-only observation can inspect a deterministic staging ref and
 verify its bytes even when no receipt was recorded. A missing ref or a matching
 observation does not establish whether the earlier worker is still running and
 does not authorize a retry, receipt insertion or publication.
-A separate staging claim, safe dispatcher, cleanup policy and Hub parent
+A dedicated staging state, safe dispatcher, cleanup policy and Hub parent
 verification are still required.
+An unwired one-shot publication claim now follows a staged receipt and is
+separate from the staging claim; versions must carry that publication claim.
+The claim is coordination only: the existing database role can read it, so
+staging and publishing are not isolated until a restricted dispatcher or
+separate production credentials are installed. It does not fence an existing
+remote request or authorize automatic takeover after an uncertain outcome.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted

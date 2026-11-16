@@ -27,6 +27,7 @@ class TrustedCandidateAttestation:
 
     operation_id: UUID
     claim_id: UUID
+    publication_claim: UUID
     corpus_id: UUID
     repo_id: str
     repo_type: str
@@ -60,7 +61,12 @@ class CorpusSaveFinalizer:
             not isinstance(candidate, TrustedCandidateAttestation)
             or not all(
                 isinstance(value, UUID)
-                for value in (candidate.operation_id, candidate.claim_id, candidate.corpus_id)
+                for value in (
+                    candidate.operation_id,
+                    candidate.claim_id,
+                    candidate.publication_claim,
+                    candidate.corpus_id,
+                )
             )
             or not isinstance(candidate.commit_sha, str)
             or not re.fullmatch(r"[0-9a-f]{40}", candidate.commit_sha)
@@ -139,6 +145,20 @@ class CorpusSaveFinalizer:
                             raise CorpusMetadataConflict("Corpus save candidate conflicts")
                     elif candidate.parent_sha != candidate.hub_parent_sha:
                         raise CorpusMetadataConflict("Corpus save candidate conflicts")
+                    if op["state"] not in ("executing", "completed"):
+                        raise CorpusMetadataConflict("Corpus save requires reconciliation")
+                    if not db.execute(
+                        "SELECT 1 FROM public.corpora_corpus_publication_claims "
+                        "WHERE operation_id=%s::uuid AND corpus_id=%s::uuid "
+                        "AND stage_claim=%s::uuid AND publication_claim=%s::uuid",
+                        (
+                            str(candidate.operation_id),
+                            str(candidate.corpus_id),
+                            str(candidate.claim_id),
+                            str(candidate.publication_claim),
+                        ),
+                    ).fetchone():
+                        raise CorpusMetadataConflict("Corpus save publication claim conflicts")
                     if op["state"] == "completed":
                         version = db.execute(
                             "SELECT sequence,commit_sha,parent_sha,retained_ref "
@@ -158,8 +178,8 @@ class CorpusSaveFinalizer:
                         # path; a database claim cannot stop a remote request.
                         if op["state"] != "executing":
                             raise CorpusMetadataConflict("Corpus save requires reconciliation")
-                        if not db.execute(
-                            "SELECT 1 FROM public.corpora_corpus_staged_inputs "
+                        staged = db.execute(
+                            "SELECT stage_sha FROM public.corpora_corpus_staged_inputs "
                             "WHERE operation_id=%s::uuid AND corpus_id=%s::uuid "
                             "AND worker_claim=%s::uuid AND input_sha256=%s AND input_format=%s",
                             (
@@ -169,8 +189,11 @@ class CorpusSaveFinalizer:
                                 candidate.input_sha256,
                                 candidate.input_format,
                             ),
-                        ).fetchone():
+                        ).fetchone()
+                        if not staged:
                             raise CorpusMetadataConflict("Corpus save has no staged input receipt")
+                        if staged[0] == candidate.commit_sha:
+                            raise CorpusMetadataConflict("Staging commit cannot be published")
                         raw_head = db.execute(
                             "SELECT sequence,commit_sha FROM public.corpora_corpus_heads "
                             "WHERE corpus_id=%s::uuid FOR UPDATE",
@@ -185,14 +208,16 @@ class CorpusSaveFinalizer:
                             raise CorpusMetadataConflict("Corpus save candidate conflicts")
                         db.execute(
                             "INSERT INTO public.corpora_corpus_versions "
-                            "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                            "VALUES (%s::uuid,%s,%s,%s,%s::uuid,%s)",
+                            "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                            "publication_claim,retained_ref) "
+                            "VALUES (%s::uuid,%s,%s,%s,%s::uuid,%s::uuid,%s)",
                             (
                                 str(candidate.corpus_id),
                                 next_sequence,
                                 candidate.commit_sha,
                                 candidate.parent_sha,
                                 str(candidate.operation_id),
+                                str(candidate.publication_claim),
                                 candidate.retained_ref,
                             ),
                         )

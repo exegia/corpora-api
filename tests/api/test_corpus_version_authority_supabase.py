@@ -31,6 +31,7 @@ def test_content_version_constraints_and_privileges():
             "corpora_corpus_provision_ops",
             "corpora_corpus_write_ops",
             "corpora_corpus_staged_inputs",
+            "corpora_corpus_publication_claims",
             "corpora_corpus_versions",
             "corpora_corpus_heads",
         ):
@@ -160,6 +161,23 @@ def test_content_version_constraints_and_privileges():
                     (op, cid, user, str(uuid4()), seq, parent, "a" * 64),
                 )
 
+            db.execute(
+                "SELECT pg_catalog.set_config('test.publication_claim',%s,false)", (str(uuid4()),)
+            )
+
+            def seed_publication(op, cid, stage_claim):
+                publication = str(uuid4())
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_publication_claims "
+                    "(operation_id,corpus_id,stage_claim,publication_claim) VALUES (%s,%s,%s,%s)",
+                    (op, cid, stage_claim, publication),
+                )
+                db.execute(
+                    "SELECT pg_catalog.set_config('test.publication_claim',%s,false)",
+                    (publication,),
+                )
+                return publication
+
             missing_bootstrap_op = str(uuid4())
             operation(missing_bootstrap_op, other, 0, None)
             db.execute(
@@ -169,9 +187,19 @@ def test_content_version_constraints_and_privileges():
             )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
+                    "INSERT INTO public.corpora_corpus_publication_claims "
+                    "(operation_id,corpus_id,stage_claim,publication_claim) "
+                    "SELECT id,corpus_id,worker_claim,%s FROM public.corpora_corpus_write_ops "
+                    "WHERE id=%s",
+                    (str(uuid4()), missing_bootstrap_op),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
-                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                    "VALUES (%s,1,%s,NULL,%s,%s)",
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) "
+                    "VALUES (%s,1,%s,NULL,%s,%s,"
+                    "current_setting('test.publication_claim')::uuid)",
                     (other, "d" * 40, missing_bootstrap_op, "corpora-op-" + missing_bootstrap_op),
                 )
 
@@ -235,24 +263,66 @@ def test_content_version_constraints_and_privileges():
                     ".corpora-staging/" + op1 + "/" + claim1 + ".zip",
                 ),
             )
+            with pytest.raises(psycopg.errors.CheckViolation):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_publication_claims "
+                    "(operation_id,corpus_id,stage_claim,publication_claim) VALUES (%s,%s,%s,%s)",
+                    (op1, corpus, claim1, claim1),
+                )
+            publication1 = seed_publication(op1, corpus, claim1)
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_versions "
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) VALUES (%s,1,%s,NULL,%s,%s,%s)",
+                    (corpus, "d" * 40, op1, "corpora-op-" + op1, str(uuid4())),
+                )
+            with pytest.raises(psycopg.errors.RaiseException) as staging_version:
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_versions "
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) VALUES (%s,1,%s,NULL,%s,%s,%s)",
+                    (corpus, "8" * 40, op1, "corpora-op-" + op1, publication1),
+                )
+            assert staging_version.value.diag.message_primary == "CORPUS_VERSION_OPERATION_INVALID"
+            assert publication1 != claim1
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "UPDATE public.corpora_corpus_write_ops SET worker_claim=%s WHERE id=%s",
                     (str(uuid4()), op1),
                 )
-            db.execute(
-                "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s", (op1,)
-            )
-            with pytest.raises(psycopg.errors.RaiseException):
-                db.execute(
-                    "UPDATE public.corpora_corpus_write_ops SET state='admitted' WHERE id=%s",
-                    (op1,),
-                )
+
+            class RollBackUncertainProbe(Exception):
+                pass
+
+            with pytest.raises(RollBackUncertainProbe):
+                with db.transaction():
+                    db.execute(
+                        "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s",
+                        (op1,),
+                    )
+                    with pytest.raises(psycopg.errors.RaiseException):
+                        with db.transaction():
+                            db.execute(
+                                "UPDATE public.corpora_corpus_write_ops SET state='admitted' "
+                                "WHERE id=%s",
+                                (op1,),
+                            )
+                    with pytest.raises(psycopg.errors.RaiseException):
+                        with db.transaction():
+                            db.execute(
+                                "INSERT INTO public.corpora_corpus_versions "
+                                "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                                "retained_ref,publication_claim) VALUES (%s,1,%s,NULL,%s,%s,%s)",
+                                (corpus, "b" * 40, op1, "corpora-op-" + op1, publication1),
+                            )
+                    raise RollBackUncertainProbe()
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
-                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                    "VALUES (%s,2,%s,%s,%s,%s)",
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) "
+                    "VALUES (%s,2,%s,%s,%s,%s,current_setting('test.publication_claim')::uuid)",
                     (corpus, "b" * 40, "c" * 40, op1, "corpora-op-" + op1),
                 )
             with pytest.raises(psycopg.errors.RaiseException):
@@ -263,15 +333,19 @@ def test_content_version_constraints_and_privileges():
                 with db.transaction():
                     db.execute(
                         "INSERT INTO public.corpora_corpus_versions "
-                        "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                        "VALUES (%s,1,%s,NULL,%s,%s)",
+                        "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                        "retained_ref,publication_claim) "
+                        "VALUES (%s,1,%s,NULL,%s,%s,"
+                        "current_setting('test.publication_claim')::uuid)",
                         (corpus, "b" * 40, op1, "corpora-op-" + op1),
                     )
             with db.transaction():
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
-                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                    "VALUES (%s,1,%s,NULL,%s,%s)",
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) "
+                    "VALUES (%s,1,%s,NULL,%s,%s,"
+                    "current_setting('test.publication_claim')::uuid)",
                     (corpus, "b" * 40, op1, "corpora-op-" + op1),
                 )
                 db.execute(
@@ -285,6 +359,9 @@ def test_content_version_constraints_and_privileges():
                 db.execute(
                     "UPDATE public.corpora_corpus_write_ops SET state='failed' WHERE id=%s", (op1,)
                 )
+            db.execute(
+                "UPDATE public.corpora_corpus_metadata SET state='ready' WHERE id=%s", (corpus,)
+            )
             operation(op2, corpus, 1, "b" * 40)
             claim2 = str(uuid4())
             db.execute(
@@ -309,25 +386,29 @@ def test_content_version_constraints_and_privileges():
                     ".corpora-staging/" + op2 + "/" + claim2 + ".zip",
                 ),
             )
+            seed_publication(op2, corpus, claim2)
             with pytest.raises(psycopg.IntegrityError):
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
-                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                    "VALUES (%s,2,%s,%s,%s,%s)",
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) "
+                    "VALUES (%s,2,%s,%s,%s,%s,current_setting('test.publication_claim')::uuid)",
                     (corpus, "b" * 40, "b" * 40, op2, "corpora-op-" + op2),
                 )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
-                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                    "VALUES (%s,2,%s,%s,%s,%s)",
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) "
+                    "VALUES (%s,2,%s,%s,%s,%s,current_setting('test.publication_claim')::uuid)",
                     (corpus, "c" * 40, "d" * 40, op2, "corpora-op-" + op2),
                 )
             with db.transaction():
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
-                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                    "VALUES (%s,2,%s,%s,%s,%s)",
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) "
+                    "VALUES (%s,2,%s,%s,%s,%s,current_setting('test.publication_claim')::uuid)",
                     (corpus, "c" * 40, "b" * 40, op2, "corpora-op-" + op2),
                 )
                 db.execute(
@@ -363,6 +444,7 @@ def test_content_version_constraints_and_privileges():
                 "corpora_corpus_provision_ops",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_staged_inputs",
+                "corpora_corpus_publication_claims",
                 "corpora_corpus_versions",
                 "corpora_corpus_heads",
             ):
@@ -382,6 +464,7 @@ def test_content_version_constraints_and_privileges():
             for table in (
                 "corpora_corpus_heads",
                 "corpora_corpus_versions",
+                "corpora_corpus_publication_claims",
                 "corpora_corpus_staged_inputs",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_bootstrap",
@@ -396,6 +479,7 @@ def test_content_version_constraints_and_privileges():
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_finalized_version()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_provision()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_staged_input()")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_publication_claim()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_bootstrap()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_bootstrap_finalized()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_metadata_stamp()")

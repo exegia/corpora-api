@@ -72,8 +72,22 @@ CREATE TABLE public.corpora_corpus_staged_inputs (
     stage_ref text NOT NULL CHECK (stage_ref = 'corpora-stage-' || operation_id::text),
     stage_path text NOT NULL CHECK (stage_path = '.corpora-staging/' || operation_id::text || '/' || worker_claim::text || '.' || input_format),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (operation_id, corpus_id, worker_claim),
     FOREIGN KEY (operation_id, corpus_id, worker_claim)
         REFERENCES public.corpora_corpus_write_ops(id, corpus_id, worker_claim) ON DELETE RESTRICT
+);
+
+-- Staging and publication use distinct one-shot identities. A publication
+-- claim is not a lease and is never automatically reclaimed after uncertainty.
+CREATE TABLE public.corpora_corpus_publication_claims (
+    operation_id uuid PRIMARY KEY,
+    corpus_id uuid NOT NULL,
+    stage_claim uuid NOT NULL,
+    publication_claim uuid NOT NULL UNIQUE CHECK (publication_claim <> stage_claim),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (operation_id, corpus_id, publication_claim),
+    FOREIGN KEY (operation_id, corpus_id, stage_claim)
+        REFERENCES public.corpora_corpus_staged_inputs(operation_id, corpus_id, worker_claim) ON DELETE RESTRICT
 );
 
 CREATE TABLE public.corpora_corpus_versions (
@@ -82,6 +96,7 @@ CREATE TABLE public.corpora_corpus_versions (
     commit_sha text NOT NULL CHECK (commit_sha ~ '^[0-9a-f]{40}$'),
     parent_sha text CHECK (parent_sha IS NULL OR parent_sha ~ '^[0-9a-f]{40}$'),
     operation_id uuid NOT NULL UNIQUE,
+    publication_claim uuid NOT NULL,
     retained_ref text NOT NULL CHECK (retained_ref = 'corpora-op-' || operation_id::text),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (corpus_id, sequence),
@@ -89,6 +104,8 @@ CREATE TABLE public.corpora_corpus_versions (
     UNIQUE (corpus_id, sequence, commit_sha),
     FOREIGN KEY (operation_id, corpus_id)
         REFERENCES public.corpora_corpus_write_ops(id, corpus_id) ON DELETE RESTRICT,
+    FOREIGN KEY (operation_id, corpus_id, publication_claim)
+        REFERENCES public.corpora_corpus_publication_claims(operation_id, corpus_id, publication_claim) ON DELETE RESTRICT,
     CHECK ((sequence = 1) = (parent_sha IS NULL)),
     CHECK (parent_sha IS NULL OR parent_sha <> commit_sha)
 );
@@ -109,15 +126,17 @@ RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
 DECLARE
     request_row public.corpora_corpus_write_ops%ROWTYPE;
 BEGIN
+    PERFORM 1 FROM public.corpora_corpus_metadata WHERE id=NEW.corpus_id FOR UPDATE;
+    PERFORM 1 FROM public.corpora_corpus_write_ops WHERE id=NEW.operation_id FOR UPDATE;
     SELECT * INTO request_row FROM public.corpora_corpus_write_ops
         WHERE id = NEW.operation_id AND corpus_id = NEW.corpus_id;
-    IF NOT FOUND OR request_row.state NOT IN ('executing', 'uncertain')
+    IF NOT FOUND OR request_row.state <> 'executing'
        OR NEW.sequence <> request_row.expected_sequence + 1
        OR NEW.parent_sha IS DISTINCT FROM request_row.expected_parent_sha
        OR NOT EXISTS (
            SELECT 1 FROM public.corpora_corpus_staged_inputs s
            WHERE s.operation_id = NEW.operation_id AND s.corpus_id = NEW.corpus_id
-             AND s.worker_claim = request_row.worker_claim
+             AND s.worker_claim = request_row.worker_claim AND s.stage_sha <> NEW.commit_sha
        )
        OR (NEW.sequence = 1 AND NOT EXISTS (
            SELECT 1 FROM public.corpora_corpus_bootstrap b WHERE b.corpus_id = NEW.corpus_id
@@ -174,6 +193,35 @@ CREATE TRIGGER corpora_corpus_bootstrap_immutable BEFORE UPDATE OR DELETE
 CREATE TRIGGER corpora_corpus_staged_inputs_immutable BEFORE UPDATE OR DELETE
     ON public.corpora_corpus_staged_inputs FOR EACH ROW
     EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+CREATE TRIGGER corpora_corpus_publication_claims_immutable BEFORE UPDATE OR DELETE
+    ON public.corpora_corpus_publication_claims FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+
+CREATE FUNCTION public.corpora_corpus_validate_publication_claim()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+    PERFORM 1 FROM public.corpora_corpus_metadata WHERE id = NEW.corpus_id FOR UPDATE;
+    PERFORM 1 FROM public.corpora_corpus_write_ops WHERE id = NEW.operation_id FOR UPDATE;
+    IF NOT EXISTS (
+        SELECT 1 FROM public.corpora_corpus_write_ops o
+        JOIN public.corpora_corpus_metadata m ON m.id=o.corpus_id
+        JOIN public.corpora_corpus_staged_inputs s ON s.operation_id=o.id
+             AND s.corpus_id=o.corpus_id AND s.worker_claim=o.worker_claim
+        LEFT JOIN public.corpora_corpus_heads h ON h.corpus_id=o.corpus_id
+        WHERE o.id=NEW.operation_id AND o.corpus_id=NEW.corpus_id
+          AND o.worker_claim=NEW.stage_claim AND o.state='executing'
+          AND ((o.expected_sequence=0 AND h.corpus_id IS NULL AND m.state='provisioning')
+            OR (o.expected_sequence>0 AND m.state='ready'
+                AND h.sequence=o.expected_sequence AND h.commit_sha=o.expected_parent_sha))
+    ) THEN
+        RAISE EXCEPTION 'CORPUS_PUBLICATION_CLAIM_INVALID';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER corpora_corpus_validate_publication_claim BEFORE INSERT
+    ON public.corpora_corpus_publication_claims FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_validate_publication_claim();
 
 CREATE FUNCTION public.corpora_corpus_validate_staged_input()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
@@ -372,16 +420,18 @@ ALTER TABLE public.corpora_corpus_heads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_bootstrap ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_provision_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_staged_inputs ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.corpora_corpus_staged_inputs, public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+ALTER TABLE public.corpora_corpus_publication_claims ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.corpora_corpus_publication_claims, public.corpora_corpus_staged_inputs, public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads FROM PUBLIC, anon, authenticated, service_role;
 
 -- Deliberately read-only until a reviewed admission/finalization boundary is
 -- installed. The raw tables are not a safe public write interface.
-GRANT SELECT ON public.corpora_corpus_staged_inputs, public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
+GRANT SELECT ON public.corpora_corpus_publication_claims, public.corpora_corpus_staged_inputs, public.corpora_corpus_provision_ops, public.corpora_corpus_bootstrap, public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads TO service_role;
 REVOKE ALL ON FUNCTION public.corpora_corpus_validate_version(),
     public.corpora_corpus_validate_head(), public.corpora_corpus_preserve_history(),
     public.corpora_corpus_validate_operation(), public.corpora_corpus_validate_finalized_version(),
     public.corpora_corpus_validate_provision(), public.corpora_corpus_validate_bootstrap(),
-    public.corpora_corpus_bootstrap_finalized(), public.corpora_corpus_validate_staged_input()
+    public.corpora_corpus_bootstrap_finalized(), public.corpora_corpus_validate_staged_input(),
+    public.corpora_corpus_validate_publication_claim()
     FROM PUBLIC, anon, authenticated, service_role;

@@ -27,6 +27,7 @@ from corpora_api.corpus_provision_finalize import (
     CorpusProvisionFinalizer,
     TrustedBootstrapAttestation,
 )
+from corpora_api.corpus_publication_claim import CorpusPublicationClaimer
 from corpora_api.corpus_save_claim import CorpusSaveClaimer
 from corpora_api.corpus_save_finalize import CorpusSaveFinalizer, TrustedCandidateAttestation
 from corpora_api.corpus_stage_observation import CorpusStageObservationLookup
@@ -111,6 +112,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "ON public.corpora_corpus_bootstrap TO service_role"
             )
             db.execute("GRANT INSERT ON public.corpora_corpus_staged_inputs TO service_role")
+            db.execute("GRANT INSERT ON public.corpora_corpus_publication_claims TO service_role")
             assert not db.execute(
                 "SELECT has_column_privilege('service_role',"
                 "'public.corpora_corpus_write_ops','id','INSERT')"
@@ -126,7 +128,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "TO service_role"
             )
             db.execute(
-                "GRANT INSERT (corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                "GRANT INSERT (corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                "publication_claim,retained_ref) "
                 "ON public.corpora_corpus_versions TO service_role"
             )
             db.execute(
@@ -428,10 +431,6 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 provision_finalizer.finalize_trusted(
                     replace(provision_candidate, commit_sha="8" * 40)
                 )
-            db.execute(
-                "UPDATE public.corpora_corpus_metadata SET state='ready' WHERE id=%s",
-                (provision_corpus,),
-            )
             test_save_op, test_save_claim = str(uuid4()), str(uuid4())
             db.execute(
                 "INSERT INTO public.corpora_corpus_write_ops "
@@ -462,12 +461,29 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     ".corpora-staging/" + test_save_op + "/" + test_save_claim + ".zip",
                 ),
             )
+            test_publication_claim = str(uuid4())
+            db.execute(
+                "INSERT INTO public.corpora_corpus_publication_claims "
+                "(operation_id,corpus_id,stage_claim,publication_claim) VALUES (%s,%s,%s,%s)",
+                (test_save_op, provision_corpus, test_save_claim, test_publication_claim),
+            )
+            db.execute(
+                "UPDATE public.corpora_corpus_metadata SET state='ready' WHERE id=%s",
+                (provision_corpus,),
+            )
             with db.transaction():
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
-                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                    "VALUES (%s,1,%s,NULL,%s,%s)",
-                    (provision_corpus, "a" * 40, test_save_op, "corpora-op-" + test_save_op),
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                    "retained_ref,publication_claim) "
+                    "VALUES (%s,1,%s,NULL,%s,%s,%s)",
+                    (
+                        provision_corpus,
+                        "a" * 40,
+                        test_save_op,
+                        "corpora-op-" + test_save_op,
+                        test_publication_claim,
+                    ),
                 )
                 db.execute(
                     "INSERT INTO public.corpora_corpus_heads VALUES (%s,1,%s)",
@@ -989,10 +1005,16 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     input_format="zip",
                 )
 
+            publication_claims = {}
+            publication_claimer = CorpusPublicationClaimer(
+                lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
+            )
+
             def candidate_for(claim, sha):
                 return TrustedCandidateAttestation(
                     operation_id=claim.operation_id,
                     claim_id=claim.claim_id,
+                    publication_claim=publication_claims.get(claim.operation_id, uuid4()),
                     corpus_id=claim.corpus_id,
                     repo_id=claim.repo_id,
                     repo_type=claim.repo_type,
@@ -1061,8 +1083,10 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             ).fetchone() == ("uncertain",)
             # Synthetic assertions exercise database mechanics, not actual Hub verification.
             first_candidate = candidate_for(winners[0], "b" * 40)
-            with pytest.raises(CorpusMetadataConflict, match="staged input"):
+            with pytest.raises(CorpusMetadataConflict, match="publication claim"):
                 finalizer.finalize_trusted(first_candidate)
+            with pytest.raises(CorpusMetadataConflict):
+                publication_claimer.claim(winners[0].operation_id)
             first_stage = stage_for(winners[0])
             with pytest.raises(CorpusMetadataConflict):
                 stage_recorder.load_trusted(first_stage.operation_id, first_stage.claim_id)
@@ -1152,6 +1176,43 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             with ThreadPoolExecutor(max_workers=2) as pool:
                 assert list(pool.map(record_same_stage, range(2))) == [first_stage, first_stage]
             assert stage_recorder.record_trusted(first_stage) == first_stage
+            publication_barrier = threading.Barrier(2)
+
+            def claim_publication(_):
+                publication_barrier.wait(timeout=10)
+                return publication_claimer.claim(winners[0].operation_id)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                publication_results = list(pool.map(claim_publication, range(2)))
+            publication_winners = [value for value in publication_results if value is not None]
+            assert len(publication_winners) == 1
+            publication = publication_winners[0]
+            assert publication.stage == first_stage
+            assert publication.publication_claim != first_stage.claim_id
+            assert publication_claimer.claim(winners[0].operation_id) is None
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "DELETE FROM public.corpora_corpus_publication_claims WHERE operation_id=%s",
+                    (str(winners[0].operation_id),),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_publication_claims "
+                    "SET publication_claim=%s WHERE operation_id=%s",
+                    (str(uuid4()), str(winners[0].operation_id)),
+                )
+            publication_claims[winners[0].operation_id] = publication.publication_claim
+            first_candidate = candidate_for(winners[0], "b" * 40)
+            with pytest.raises(CorpusMetadataConflict):
+                finalizer.finalize_trusted(replace(first_candidate, publication_claim=uuid4()))
+            with pytest.raises(CorpusMetadataConflict, match="Staging commit"):
+                finalizer.finalize_trusted(
+                    replace(first_candidate, commit_sha=first_stage.stage_sha)
+                )
+            with pytest.raises(CorpusMetadataConflict):
+                finalizer.finalize_trusted(
+                    replace(first_candidate, publication_claim=first_stage.claim_id)
+                )
             assert (
                 stage_recorder.load_trusted(first_stage.operation_id, first_stage.claim_id)
                 == first_stage
@@ -1206,6 +1267,9 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             next_claim = claimer.claim(next_op)
             assert next_claim is not None
             stage_recorder.record_trusted(stage_for(next_claim))
+            next_publication = publication_claimer.claim(next_claim.operation_id)
+            assert next_publication is not None
+            publication_claims[next_claim.operation_id] = next_publication.publication_claim
             assert next_claim.hub_parent_sha == "b" * 40
             next_version = finalizer.finalize_trusted(candidate_for(next_claim, "c" * 40))
             assert next_version.sequence == 2
@@ -1229,6 +1293,11 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             competing_claim = claimer.claim(competing_op)
             assert competing_claim is not None
             stage_recorder.record_trusted(stage_for(competing_claim))
+            competing_publication = publication_claimer.claim(competing_claim.operation_id)
+            assert competing_publication is not None
+            publication_claims[competing_claim.operation_id] = (
+                competing_publication.publication_claim
+            )
             competing_barrier = threading.Barrier(2)
 
             def finalize_different(sha):
@@ -1260,6 +1329,144 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     if exc_type is None:
                         raise OSError("simulated lost commit acknowledgement")
                     return False
+
+            lost_pub_corpus, lost_pub_op = str(uuid4()), str(uuid4())
+            editor.reserve(users[2][0], lost_pub_corpus, "Lost publication", repo_type="dataset")
+            seed_provision, seed_claim = str(uuid4()), str(uuid4())
+            db.execute(
+                "INSERT INTO public.corpora_corpus_provision_ops "
+                "(id,corpus_id,actor_id,session_id,repo_id,repo_type) "
+                "SELECT %s,id,owner_id,%s,hf_repo_id,hf_repo_type "
+                "FROM public.corpora_corpus_metadata WHERE id=%s",
+                (seed_provision, str(uuid4()), lost_pub_corpus),
+            )
+            db.execute(
+                "UPDATE public.corpora_corpus_provision_ops SET state='executing',worker_claim=%s "
+                "WHERE id=%s",
+                (seed_claim, seed_provision),
+            )
+            with db.transaction():
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_bootstrap "
+                    "(corpus_id,operation_id,worker_claim,commit_sha) VALUES (%s,%s,%s,%s)",
+                    (lost_pub_corpus, seed_provision, seed_claim, "9" * 40),
+                )
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='completed' WHERE id=%s",
+                    (seed_provision,),
+                )
+            admission.admit(
+                users[2][0],
+                lost_pub_corpus,
+                lost_pub_op,
+                expected_sequence=0,
+                expected_parent_sha=None,
+                input_sha256="a" * 64,
+                input_format="zip",
+            )
+            lost_pub_stage_claim = claimer.claim(lost_pub_op)
+            assert lost_pub_stage_claim is not None
+            stage_recorder.record_trusted(stage_for(lost_pub_stage_claim))
+
+            class FailPublicationTransaction:
+                def __enter__(self):
+                    self.db = psycopg.connect(dsn, autocommit=True)
+                    return self
+
+                def __exit__(self, exc_type, exc, traceback):
+                    self.db.close()
+
+                def transaction(self):
+                    return self.db.transaction()
+
+                def execute(self, query, *args):
+                    result = self.db.execute(query, *args)
+                    if query.startswith("INSERT INTO public.corpora_corpus_publication_claims"):
+                        raise OSError("simulated connection loss")
+                    return result
+
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusPublicationClaimer(
+                    FailPublicationTransaction, assume_service_role=True
+                ).claim(UUID(lost_pub_op))
+            assert (
+                db.execute(
+                    "SELECT 1 FROM public.corpora_corpus_publication_claims WHERE operation_id=%s",
+                    (lost_pub_op,),
+                ).fetchone()
+                is None
+            )
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusPublicationClaimer(LostClaimResponse, assume_service_role=True).claim(
+                    UUID(lost_pub_op)
+                )
+            assert (
+                db.execute(
+                    "SELECT 1 FROM public.corpora_corpus_publication_claims WHERE operation_id=%s",
+                    (lost_pub_op,),
+                ).fetchone()
+                is not None
+            )
+            assert publication_claimer.claim(UUID(lost_pub_op)) is None
+
+            lost_pub_token = db.execute(
+                "SELECT publication_claim FROM public.corpora_corpus_publication_claims "
+                "WHERE operation_id=%s",
+                (lost_pub_op,),
+            ).fetchone()[0]
+            locked, release, writer_done = threading.Event(), threading.Event(), threading.Event()
+            race_results = []
+
+            def mark_uncertain():
+                with psycopg.connect(dsn, autocommit=True) as connection:
+                    with connection.transaction():
+                        connection.execute(
+                            "SELECT 1 FROM public.corpora_corpus_metadata WHERE id=%s FOR UPDATE",
+                            (lost_pub_corpus,),
+                        )
+                        connection.execute(
+                            "UPDATE public.corpora_corpus_write_ops SET state='uncertain' "
+                            "WHERE id=%s",
+                            (lost_pub_op,),
+                        )
+                        locked.set()
+                        assert release.wait(10)
+
+            def try_uncertain_version():
+                try:
+                    with psycopg.connect(dsn, autocommit=True) as connection:
+                        connection.execute(
+                            "INSERT INTO public.corpora_corpus_versions "
+                            "(corpus_id,sequence,commit_sha,parent_sha,operation_id,"
+                            "retained_ref,publication_claim) VALUES (%s,1,%s,NULL,%s,%s,%s)",
+                            (
+                                lost_pub_corpus,
+                                "b" * 40,
+                                lost_pub_op,
+                                "corpora-op-" + lost_pub_op,
+                                lost_pub_token,
+                            ),
+                        )
+                    race_results.append("inserted")
+                except psycopg.errors.RaiseException as error:
+                    race_results.append(error.diag.message_primary)
+                finally:
+                    writer_done.set()
+
+            changing_thread = threading.Thread(target=mark_uncertain, daemon=True)
+            writing_thread = threading.Thread(target=try_uncertain_version, daemon=True)
+            changing_thread.start()
+            try:
+                assert locked.wait(10)
+                writing_thread.start()
+                assert not writer_done.wait(0.3)
+            finally:
+                release.set()
+                changing_thread.join(timeout=10)
+                if writing_thread.ident is not None:
+                    writing_thread.join(timeout=10)
+            assert not changing_thread.is_alive() and not writing_thread.is_alive()
+            assert race_results == ["CORPUS_VERSION_OPERATION_INVALID"]
 
             lost_bootstrap = TrustedBootstrapAttestation(
                 admin_claim.corpus_id,
@@ -1346,6 +1553,11 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     LostClaimResponse, assume_service_role=True
                 ).record_trusted(recovered_stage)
             assert stage_recorder.record_trusted(recovered_stage) == recovered_stage
+            recovered_publication = publication_claimer.claim(recovered_claim.operation_id)
+            assert recovered_publication is not None
+            publication_claims[recovered_claim.operation_id] = (
+                recovered_publication.publication_claim
+            )
             lost_candidate = candidate_for(recovered_claim, "d" * 40)
             with pytest.raises(CorpusMetadataError, match="reconcile"):
                 CorpusSaveFinalizer(LostClaimResponse, assume_service_role=True).finalize_trusted(
@@ -1367,6 +1579,9 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             finalize_claim = claimer.claim(rollback_finalize_op)
             assert finalize_claim is not None
             stage_recorder.record_trusted(stage_for(finalize_claim))
+            finalize_publication = publication_claimer.claim(finalize_claim.operation_id)
+            assert finalize_publication is not None
+            publication_claims[finalize_claim.operation_id] = finalize_publication.publication_claim
             rollback_candidate = candidate_for(finalize_claim, "e" * 40)
 
             class TerminateFinalizeConnection(TerminateClaimConnection):
@@ -1408,6 +1623,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             for table in (
                 "corpora_corpus_heads",
                 "corpora_corpus_versions",
+                "corpora_corpus_publication_claims",
                 "corpora_corpus_staged_inputs",
                 "corpora_corpus_write_ops",
                 "corpora_corpus_bootstrap",
@@ -1421,6 +1637,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "corpora_corpus_validate_operation",
                 "corpora_corpus_validate_finalized_version",
                 "corpora_corpus_validate_staged_input",
+                "corpora_corpus_validate_publication_claim",
                 "corpora_corpus_validate_provision",
                 "corpora_corpus_validate_bootstrap",
                 "corpora_corpus_bootstrap_finalized",
