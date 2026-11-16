@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -105,11 +106,36 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             time.sleep(1)
             metadata = CorpusMetadataStore()
             identifier = str(uuid4())
-            metadata.reserve(users[0][0]["sub"], identifier, "Original", repo_type="dataset")
             lease = SessionBoundMetadataTransaction(
                 lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
             )
             editor = SessionBoundCorpusMetadata(lease)
+            reserved = editor.reserve(users[0][0], identifier, " Original ", repo_type="dataset")
+            assert reserved.state == "provisioning" and reserved.revision == 1
+            assert (
+                editor.reserve(users[0][0], identifier, "Original", repo_type="dataset") == reserved
+            )
+            with pytest.raises(CorpusMetadataConflict):
+                editor.reserve(users[0][0], identifier, "Different", repo_type="dataset")
+            with pytest.raises(CorpusMetadataConflict):
+                editor.reserve(users[1][0], identifier, "Original", repo_type="dataset")
+            duplicate_id = str(uuid4())
+            barrier = threading.Barrier(2)
+
+            def concurrent_reserve(_):
+                barrier.wait(timeout=10)
+                return editor.reserve(users[0][0], duplicate_id, "Concurrent", repo_type="dataset")
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                duplicates = list(pool.map(concurrent_reserve, range(2)))
+            assert duplicates[0] == duplicates[1]
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_metadata WHERE id=%s",
+                    (duplicate_id,),
+                ).fetchone()[0]
+                == 1
+            )
             updated = editor.update(
                 users[0][0], identifier, 1, {"title": "Revised", "language": "grc"}
             )
@@ -157,6 +183,44 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
 
                     return lease.run(claims, kill_after_write)
 
+            expiring_claims = {**users[0][0], "exp": int(time.time()) + 1}
+
+            class ExpiringLease:
+                def run(self, claims, operation):
+                    def expire_after_write(owner, connection):
+                        result = operation(owner, connection)
+                        while time.time() <= claims["exp"]:
+                            time.sleep(0.05)
+                        return result
+
+                    return lease.run(claims, expire_after_write)
+
+            expired_id = str(uuid4())
+            with pytest.raises(HTTPException) as expired:
+                SessionBoundCorpusMetadata(ExpiringLease()).reserve(
+                    expiring_claims, expired_id, "Expired", repo_type="dataset"
+                )
+            assert expired.value.status_code == 401
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_metadata WHERE id=%s", (expired_id,)
+                ).fetchone()[0]
+                == 0
+            )
+
+            rolled_back_id = str(uuid4())
+            with pytest.raises(HTTPException) as disconnected_reservation:
+                SessionBoundCorpusMetadata(DisconnectLease()).reserve(
+                    users[0][0], rolled_back_id, "No commit", repo_type="dataset"
+                )
+            assert disconnected_reservation.value.status_code == 503
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_metadata WHERE id=%s",
+                    (rolled_back_id,),
+                ).fetchone()[0]
+                == 0
+            )
             with pytest.raises(HTTPException) as disconnected:
                 SessionBoundCorpusMetadata(DisconnectLease()).update(
                     users[0][0], identifier, 3, {"title": "Must roll back"}
@@ -223,6 +287,9 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             with pytest.raises(HTTPException) as revoked_invalid:
                 editor.update(users[0][0], identifier, 4, {"state": "ready"})
             assert revoked_invalid.value.status_code == 401
+            with pytest.raises(HTTPException) as revoked_reservation:
+                editor.reserve(users[0][0], str(uuid4()), "After logout", repo_type="dataset")
+            assert revoked_reservation.value.status_code == 401
             assert metadata.get(users[2][0]["sub"], identifier).title == "Committed"
         finally:
             db.execute("DROP TABLE IF EXISTS public.corpora_corpus_metadata")

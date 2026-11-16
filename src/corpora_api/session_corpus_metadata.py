@@ -21,6 +21,7 @@ from corpora_api.corpus_metadata import (
     CorpusMetadataNotFound,
     CorpusMetadataStore,
     _normalize_changes,
+    _normalize_reservation,
     _same_json,
 )
 
@@ -72,10 +73,66 @@ class SessionBoundMetadataTransaction:
 
 
 class SessionBoundCorpusMetadata:
-    """Update editable fields while the same transaction holds the session lock."""
+    """Reserve and edit metadata while the transaction holds the session lock."""
 
     def __init__(self, lease: MetadataSessionTransaction) -> None:
         self.lease = lease
+
+    def reserve(
+        self,
+        verified_claims: Mapping[str, Any],
+        corpus_id: str,
+        title: str,
+        *,
+        repo_type: str,
+    ) -> CorpusMetadata:
+        """Reserve a stable link; this does not create a Hub repository."""
+
+        def operation(actor: str, db: Any) -> bytes:
+            try:
+                identifier, clean_title, repo_id = _normalize_reservation(
+                    corpus_id, title, repo_type
+                )
+            except CorpusMetadataError as error:
+                raise HTTPException(422, "Invalid corpus metadata reservation") from error
+            result = db.execute(
+                "INSERT INTO public.corpora_corpus_metadata "
+                "(id,owner_id,title,hf_repo_id,hf_repo_type) "
+                "VALUES (%s::uuid,%s::uuid,%s,%s,%s) ON CONFLICT DO NOTHING "
+                "RETURNING row_to_json(corpora_corpus_metadata)",
+                (str(identifier), actor, clean_title, repo_id, repo_type),
+            ).fetchone()
+            inserted = result is not None
+            if result is None:
+                result = db.execute(
+                    "SELECT row_to_json(corpora_corpus_metadata) "
+                    "FROM public.corpora_corpus_metadata WHERE id=%s::uuid AND owner_id=%s::uuid",
+                    (str(identifier), actor),
+                ).fetchone()
+                if result is None:
+                    return b'{"status":"reservation_conflict"}'
+            try:
+                row = CorpusMetadata.model_validate(result[0])
+                if (
+                    row.id != identifier
+                    or str(row.owner_id) != actor
+                    or row.hf_repo_id != repo_id
+                    or row.hf_repo_type != repo_type
+                    or row.title != clean_title
+                ):
+                    if not inserted:
+                        return b'{"status":"reservation_conflict"}'
+                    raise ValueError("Mismatched metadata")
+                if inserted and (row.state != "provisioning" or row.revision != 1):
+                    raise ValueError("Invalid initial state")
+                CorpusMetadataStore._check_link(row)
+                return json.dumps(
+                    {"status": "ok", "row": row.model_dump(mode="json")}, ensure_ascii=False
+                ).encode("utf-8")
+            except (ValueError, TypeError, ValidationError, CorpusMetadataError) as error:
+                raise HTTPException(503, "Corpus metadata reservation failed") from error
+
+        return self._run(verified_claims, operation)
 
     def update(
         self,
@@ -150,11 +207,19 @@ class SessionBoundCorpusMetadata:
                 raise HTTPException(503, "Corpus metadata update failed") from error
             return encoded.encode("utf-8")
 
+        return self._run(verified_claims, operation)
+
+    def _run(
+        self, verified_claims: Mapping[str, Any], operation: Callable[[str, Any], bytes]
+    ) -> CorpusMetadata:
         try:
             response = self.lease.run(verified_claims, operation)
         except HTTPException as error:
-            if error.status_code == 422 and error.detail == "Invalid corpus metadata update":
-                raise CorpusMetadataError("Invalid corpus metadata update") from error
+            if error.status_code == 422 and error.detail in {
+                "Invalid corpus metadata update",
+                "Invalid corpus metadata reservation",
+            }:
+                raise CorpusMetadataError(error.detail) from error
             raise
         try:
             result = json.loads(response)
@@ -162,6 +227,8 @@ class SessionBoundCorpusMetadata:
                 raise CorpusMetadataNotFound("Corpus not found")
             if result == {"status": "conflict"}:
                 raise CorpusMetadataConflict("Corpus metadata changed; reload before editing")
+            if result == {"status": "reservation_conflict"}:
+                raise CorpusMetadataConflict("Corpus metadata conflicts with an existing record")
             if (
                 not isinstance(result, dict)
                 or set(result) != {"status", "row"}
