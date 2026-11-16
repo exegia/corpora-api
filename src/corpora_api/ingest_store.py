@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 from corpora_schema_types import validate_graph
 
+from corpora_api.auth import current_user_token
 from corpora_api.ingest import MAX_GRAPH_BYTES, _slug
 
 
@@ -34,7 +35,7 @@ class IngestStoreCorrupt(Exception):
 
 @dataclass(frozen=True)
 class _IngestCredentials:
-    """Separate gateway and backend-role credentials; never render secrets."""
+    """Gateway key and request-scoped user credential; never render secrets."""
 
     api_key: str = field(repr=False)
     bearer_token: str = field(repr=False)
@@ -53,16 +54,18 @@ class IngestStore:
             f"https://{project_ref}.supabase.co" if project_ref else ""
         )
         api_key = os.getenv("SUPABASE_INGEST_API_KEY", "")
-        bearer = os.getenv("SUPABASE_INGEST_BEARER_TOKEN", "")
+        bearer = current_user_token.get() or ""
         bucket = os.getenv("SUPABASE_JOBS_BUCKET") or os.getenv("SUPABASE_STORAGE_BUCKET", "")
-        if not (url and api_key and bearer and bucket) or any(
+        if not (
+            url and api_key.startswith("sb_publishable_") and bearer and bucket == "conversion-jobs"
+        ) or any(
             not value.isascii() or any(ord(char) < 33 or ord(char) > 126 for char in value)
             for value in (api_key, bearer)
         ):
             raise IngestStoreError(
                 "Ingestion store requires SUPABASE_URL (or PROJECT_REF), "
-                "SUPABASE_INGEST_API_KEY, SUPABASE_INGEST_BEARER_TOKEN, and SUPABASE_JOBS_BUCKET "
-                "(or SUPABASE_STORAGE_BUCKET)"
+                "a publishable SUPABASE_INGEST_API_KEY, a signed-in user token, and "
+                "SUPABASE_JOBS_BUCKET=conversion-jobs"
             )
         return url.rstrip("/"), _IngestCredentials(api_key, bearer), bucket
 
@@ -98,7 +101,7 @@ class IngestStore:
         url, key, bucket = self._config()
         owner = self._owner(owner)
         job_id = self._id(job_id)
-        result_key = f"conversion-jobs/{job_id}.graph.json"
+        result_key = f"conversion-jobs/{owner}/{job_id}.graph.json"
         response = self._request(
             "GET", f"{url}/storage/v1/object/{bucket}/{result_key}", headers=self._headers(key)
         )
@@ -133,7 +136,7 @@ class IngestStore:
         job_id = self._id(job_id)
         if len(graph) > MAX_GRAPH_BYTES:
             raise IngestStoreError("Generated graph exceeds the hosted response limit")
-        result_key = f"conversion-jobs/{job_id}.graph.json"
+        result_key = f"conversion-jobs/{owner}/{job_id}.graph.json"
         object_url = f"{url}/storage/v1/object/{bucket}/{result_key}"
         try:
             response = self._request(
@@ -238,7 +241,7 @@ class IngestStore:
         row = rows[0]
         if not isinstance(row, dict) or row.get("owner") != owner or row.get("id") != job_id:
             raise IngestStoreError("Ingestion job store returned a mismatched row")
-        if row.get("result_key") != f"conversion-jobs/{job_id}.graph.json":
+        if row.get("result_key") != f"conversion-jobs/{owner}/{job_id}.graph.json":
             raise IngestNotFound("Ingestion job not found")
         return row
 
@@ -275,7 +278,7 @@ class IngestStore:
         job_id = self._id(job_id)
         if row.get("status") != "succeeded":
             raise IngestNotReady(f"Job is {row.get('status')}, not ready")
-        if row.get("result_key") != f"conversion-jobs/{job_id}.graph.json":
+        if row.get("result_key") != f"conversion-jobs/{self._owner(owner)}/{job_id}.graph.json":
             raise IngestStoreError("Ingestion job has an invalid result key")
         url, key, bucket = self._config()
         response = self._request(

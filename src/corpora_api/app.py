@@ -20,7 +20,13 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastmcp import FastMCP
 from starlette.background import BackgroundTask
 
-from corpora_api.auth import UserAuthError, current_user_id, require_user, verify_user_token
+from corpora_api.auth import (
+    UserAuthError,
+    current_user_id,
+    current_user_token,
+    require_user,
+    verify_user_token,
+)
 from corpora_api.conversion_artifacts import (
     ConversionArtifactError,
     ConversionArtifactInvalid,
@@ -208,9 +214,11 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     request.state.user_id = claims["sub"]
     request.state.user_claims = claims
     context_token = current_user_id.set(claims["sub"])
+    credential_context = current_user_token.set(credential)
     try:
         return await call_next(request)
     finally:
+        current_user_token.reset(credential_context)
         current_user_id.reset(context_token)
 
 

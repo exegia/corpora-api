@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from corpora_api import app as app_module
 from corpora_api.app import app
+from corpora_api.auth import current_user_token
 from corpora_api.ingest import build_plain_graph
 from corpora_api.ingest_requests import input_fingerprint, reserve_request
 from corpora_api.ingest_store import IngestStore, IngestStoreError
@@ -24,6 +25,10 @@ from corpora_api.ingest_worker import run_docling_worker
 
 ALICE = "b9a94f14-dfc2-4699-ab8c-77378136f2b4"
 BOB = "477db53d-74f4-4ae4-8c51-5f1d2282821d"
+
+
+def artifact_path(job_id: str) -> str:
+    return f"/storage/v1/object/conversion-jobs/conversion-jobs/{ALICE}/{job_id}.graph.json"
 
 
 @pytest.fixture
@@ -35,10 +40,10 @@ def store(
     reservations: dict[tuple[str, str], dict] = {}
 
     def respond(request: httpx.Request) -> httpx.Response:
-        assert request.headers["apikey"] == "test-ingest-api-placeholder"
-        assert request.headers["authorization"] == "Bearer test-ingest-bearer-placeholder"
+        assert request.headers["apikey"] == "sb_publishable_test_ingest_placeholder"
+        assert request.headers["authorization"] in {"Bearer alice-token", "Bearer bob-token"}
         path = request.url.path
-        if path.startswith("/storage/v1/object/jobs/"):
+        if path.startswith("/storage/v1/object/conversion-jobs/"):
             if request.method == "POST":
                 if path in artifacts:
                     return httpx.Response(409)
@@ -81,9 +86,9 @@ def store(
 
     transport = httpx.MockTransport(respond)
     monkeypatch.setenv("SUPABASE_URL", "https://supabase.example.test")
-    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "test-ingest-api-placeholder")
-    monkeypatch.setenv("SUPABASE_INGEST_BEARER_TOKEN", "test-ingest-bearer-placeholder")
-    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "jobs")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "sb_publishable_test_ingest_placeholder")
+    context = current_user_token.set("alice-token")
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "conversion-jobs")
     monkeypatch.setenv("CORPORA_API_TOKEN", "service-token-placeholder")
     monkeypatch.setattr(app_module, "ingest_store", IngestStore(httpx.Client(transport=transport)))
 
@@ -97,7 +102,8 @@ def store(
         raise UserAuthError("Invalid user token")
 
     monkeypatch.setattr(app_module, "verify_user_token", verify)
-    return artifacts, jobs, transport
+    yield artifacts, jobs, transport
+    current_user_token.reset(context)
 
 
 def headers(token: str) -> dict[str, str]:
@@ -129,11 +135,11 @@ def test_idempotent_save_recovers_existing_graph_after_lost_upload(store):
     job_id = str(uuid.uuid4())
     first_graph = json.dumps(build_plain_graph("a.txt", b"hello", name="First").to_wire()).encode()
     later_graph = json.dumps(build_plain_graph("a.txt", b"hello", name="Later").to_wire()).encode()
-    key = f"/storage/v1/object/jobs/conversion-jobs/{job_id}.graph.json"
+    key = artifact_path(job_id)
     artifacts[key] = first_graph
     ingest_store.save(ALICE, job_id, "a.txt", "Later", later_graph, retry=True)
     assert artifacts[key] == first_graph
-    assert jobs[job_id]["result_key"] == f"conversion-jobs/{job_id}.graph.json"
+    assert jobs[job_id]["result_key"] == f"conversion-jobs/{ALICE}/{job_id}.graph.json"
     assert jobs[job_id]["display_name"] == "First"
 
 
@@ -142,7 +148,7 @@ def test_retry_recovers_uploaded_graph_without_rerunning_builder(store, monkeypa
     fingerprint = input_fingerprint("a.txt", b"hello", name="", language="und", corpus_id="")
     job_id = reserve_request(app_module.ingest_store, ALICE, "recover-me", fingerprint)
     graph = json.dumps(build_plain_graph("a.txt", b"hello").to_wire()).encode()
-    artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job_id}.graph.json"] = graph
+    artifacts[artifact_path(job_id)] = graph
 
     def unexpected_builder(*args, **kwargs):
         raise AssertionError("Recovery must not run the builder")
@@ -166,7 +172,7 @@ def test_ambiguous_job_response_preserves_graph(store, outcome, failure):
     graph = json.dumps(build_plain_graph("source.txt", b"durable text").to_wire()).encode()
 
     def respond(request: httpx.Request) -> httpx.Response:
-        if request.url.path.startswith("/storage/v1/object/jobs/"):
+        if request.url.path.startswith("/storage/v1/object/conversion-jobs/"):
             if request.method == "POST":
                 artifacts[request.url.path] = request.content
                 return httpx.Response(201)
@@ -203,7 +209,7 @@ def test_ambiguous_job_response_preserves_graph(store, outcome, failure):
     else:
         with pytest.raises(IngestStoreError):
             adapter.save(ALICE, job, "source.txt", "Source", graph)
-    assert artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job}.graph.json"] == graph
+    assert artifacts[artifact_path(job)] == graph
     if outcome == "committed":
         assert adapter.status(ALICE, job)["download_ready"] is True
         downloaded, _filename = adapter.download(ALICE, job)
@@ -232,7 +238,7 @@ def test_ingest_returns_job_when_insert_response_is_lost(monkeypatch, store):
         assert result.status_code == 202, result.text
         job = result.json()["job_id"]
         assert jobs[job]["owner"] == ALICE
-        assert artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job}.graph.json"]
+        assert artifacts[artifact_path(job)]
         assert client.get(f"/v1/ingest/{job}", headers=headers("alice-token")).status_code == 200
 
 
@@ -254,7 +260,7 @@ def test_upload_poll_download_survives_store_recreation_and_isolates_owner(
         assert uuid.UUID(job_id)
         assert created.json()["status_url"] == f"/v1/ingest/{job_id}"
         assert jobs[job_id]["owner"] == ALICE
-        assert artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job_id}.graph.json"]
+        assert artifacts[artifact_path(job_id)]
 
         # A fresh adapter has no process-local job or graph state.
         monkeypatch.setattr(
@@ -356,7 +362,7 @@ def test_download_rejects_a_corrupted_stored_graph(
         )
         assert created.status_code == 202
         job_id = created.json()["job_id"]
-        artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job_id}.graph.json"] = bad_graph
+        artifacts[artifact_path(job_id)] = bad_graph
         download = client.get(f"/v1/ingest/{job_id}/download", headers=headers("alice-token"))
     assert download.status_code == 502
 

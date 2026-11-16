@@ -60,6 +60,7 @@ def test_verified_user_reaches_protected_handler(
     assert response.status_code == 200
     assert response.json() == {"user_id": USER_ID}
     assert auth.current_user_id.get() is None
+    assert auth.current_user_token.get() is None
     assert schema["paths"]["/v1/auth/me"]["get"]["security"] == [{"SupabaseUserJWT": []}]
     assert schema["paths"]["/v1/checks/structure"]["post"]["security"] == [{"BearerAuth": []}]
 
@@ -79,6 +80,18 @@ def test_user_token_cannot_call_service_route(
         )
     assert response.status_code == 401
     assert service_as_user.status_code == 401
+
+
+def test_expired_user_token_cannot_start_ingestion(signing_key: rsa.RSAPrivateKey) -> None:
+    token = user_token(signing_key, exp=datetime(2020, 1, 1, tzinfo=UTC))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/ingest",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("sample.txt", b"sample")},
+        )
+    assert response.status_code == 401
+    assert auth.current_user_token.get() is None
 
 
 @pytest.mark.parametrize(

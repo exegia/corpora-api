@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 from jwt import PyJWKClient
 
 current_user_id: ContextVar[str | None] = ContextVar("current_user_id", default=None)
+current_user_token: ContextVar[str | None] = ContextVar("current_user_token", default=None)
 
 
 class UserAuthError(Exception):
