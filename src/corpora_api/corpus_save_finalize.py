@@ -34,6 +34,7 @@ class TrustedCandidateAttestation:
     hub_parent_sha: str
     commit_sha: str
     input_sha256: str
+    input_format: str
     retained_ref: str
 
 
@@ -68,6 +69,7 @@ class CorpusSaveFinalizer:
             or candidate.hub_parent_sha == candidate.commit_sha
             or not isinstance(candidate.input_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", candidate.input_sha256)
+            or candidate.input_format not in ("zip", "corpus")
             or candidate.retained_ref != "corpora-op-" + str(candidate.operation_id)
             or (
                 candidate.parent_sha is not None
@@ -120,6 +122,7 @@ class CorpusSaveFinalizer:
                             or not 0 <= sequence < 2**63 - 1
                             or op["expected_parent_sha"] != candidate.parent_sha
                             or op["input_sha256"] != candidate.input_sha256
+                            or op["input_format"] != candidate.input_format
                             or (sequence == 0) != (candidate.parent_sha is None)
                         ):
                             raise ValueError("Candidate mismatch")

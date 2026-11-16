@@ -114,7 +114,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             # Test-only DML privilege; this is not a proposed hosted grant.
             db.execute(
                 "GRANT INSERT (id,corpus_id,actor_id,session_id,expected_sequence,"
-                "expected_parent_sha,input_sha256) ON public.corpora_corpus_write_ops "
+                "expected_parent_sha,input_sha256,input_format) ON public.corpora_corpus_write_ops "
                 "TO service_role"
             )
             db.execute(
@@ -194,8 +194,10 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_sequence=0,
                 expected_parent_sha=None,
                 input_sha256="a" * 64,
+                input_format="zip",
             )
             assert str(saved.operation_id) == operation_id and saved.state == "admitted"
+            assert saved.input_format == "zip"
             assert saved.retained_ref == "corpora-op-" + operation_id
             assert (
                 admission.admit(
@@ -205,6 +207,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
                 == saved
             )
@@ -224,6 +227,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
                 == saved
             )
@@ -234,7 +238,18 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     operation_id,
                     expected_sequence=0,
                     expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                    input_format="corpus",
+                )
+            with pytest.raises(CorpusMetadataConflict):
+                admission.admit(
+                    users[0][0],
+                    identifier,
+                    operation_id,
+                    expected_sequence=0,
+                    expected_parent_sha=None,
                     input_sha256="b" * 64,
+                    input_format="zip",
                 )
             with pytest.raises(CorpusMetadataConflict):
                 admission.admit(
@@ -244,6 +259,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
             with pytest.raises(CorpusMetadataNotFound):
                 admission.admit(
@@ -253,6 +269,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
             admin_save = admission.admit(
                 users[2][0],
@@ -261,6 +278,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_sequence=0,
                 expected_parent_sha=None,
                 input_sha256="a" * 64,
+                input_format="zip",
             )
             assert str(admin_save.actor_id) == users[2][0]["sub"]
             contested_corpus = str(uuid4())
@@ -277,6 +295,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                         expected_sequence=0,
                         expected_parent_sha=None,
                         input_sha256="a" * 64,
+                        input_format="zip",
                     ).state
                 except CorpusMetadataConflict:
                     return "conflict"
@@ -406,8 +425,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             db.execute(
                 "INSERT INTO public.corpora_corpus_write_ops "
                 "(id,corpus_id,actor_id,session_id,expected_sequence,"
-                "expected_parent_sha,input_sha256) "
-                "VALUES (%s,%s,%s,%s,0,NULL,%s)",
+                "expected_parent_sha,input_sha256,input_format) "
+                "VALUES (%s,%s,%s,%s,0,NULL,%s,'zip')",
                 (test_save_op, provision_corpus, users[0][0]["sub"], str(uuid4()), "a" * 64),
             )
             db.execute(
@@ -488,6 +507,22 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "WHERE corpus_id=%s",
                 (snapshot_corpus,),
             ).fetchone() == (snapshot.actor_id, snapshot.session_id)
+            mutable_claims = dict(users[0][0])
+            snapshot_save = SessionBoundCorpusSaveAdmission(MutatingLease()).admit(
+                mutable_claims,
+                snapshot_corpus,
+                str(uuid4()),
+                expected_sequence=0,
+                expected_parent_sha=None,
+                input_sha256="a" * 64,
+                input_format="zip",
+            )
+            assert str(snapshot_save.actor_id) == users[0][0]["sub"]
+            assert str(snapshot_save.session_id) == users[0][0]["session_id"]
+            assert db.execute(
+                "SELECT actor_id,session_id FROM public.corpora_corpus_write_ops WHERE id=%s",
+                (str(snapshot_save.operation_id),),
+            ).fetchone() == (snapshot_save.actor_id, snapshot_save.session_id)
             db.execute(
                 "UPDATE public.corpora_corpus_provision_ops SET state='uncertain' WHERE id=%s",
                 (str(snapshot.operation_id),),
@@ -585,6 +620,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
             assert expired_save.value.status_code == 401
             assert (
@@ -626,6 +662,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
             assert disconnected_admission.value.status_code == 503
             assert (
@@ -645,6 +682,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_sequence=0,
                 expected_parent_sha=None,
                 input_sha256="a" * 64,
+                input_format="zip",
             )
             rollback_claim_corpus, rollback_claim_op = str(uuid4()), str(uuid4())
             editor.reserve(
@@ -657,6 +695,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_sequence=0,
                 expected_parent_sha=None,
                 input_sha256="a" * 64,
+                input_format="zip",
             )
             rollback_finalize_corpus, rollback_finalize_op = str(uuid4()), str(uuid4())
             editor.reserve(
@@ -669,6 +708,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_sequence=0,
                 expected_parent_sha=None,
                 input_sha256="a" * 64,
+                input_format="zip",
             )
 
             race_corpus, race_op = str(uuid4()), str(uuid4())
@@ -700,6 +740,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                         expected_sequence=0,
                         expected_parent_sha=None,
                         input_sha256="a" * 64,
+                        input_format="zip",
                     )
                     race_results.append(str(result.operation_id))
                 except Exception as error:
@@ -748,6 +789,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
             assert revoked_race.value.status_code == 401
 
@@ -826,6 +868,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
             assert revoked_save.value.status_code == 401
             with pytest.raises(HTTPException) as revoked_provision:
@@ -842,6 +885,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=-1,
                     expected_parent_sha=None,
                     input_sha256="bad",
+                    input_format="zip",
                 )
             assert revoked_invalid_save.value.status_code == 401
             assert db.execute(
@@ -914,6 +958,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     expected_sequence=0,
                     expected_parent_sha=None,
                     input_sha256="a" * 64,
+                    input_format="zip",
                 )
 
             def candidate_for(claim, sha):
@@ -928,6 +973,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     commit_sha=sha,
                     input_sha256=claim.input_sha256,
                     retained_ref=claim.retained_ref,
+                    input_format=claim.input_format,
                 )
 
             finalizer = CorpusSaveFinalizer(
@@ -950,6 +996,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 finalizer.finalize_trusted(replace(first_candidate, claim_id=uuid4()))
             with pytest.raises(CorpusMetadataConflict):
                 finalizer.finalize_trusted(replace(first_candidate, input_sha256="c" * 64))
+            with pytest.raises(CorpusMetadataConflict):
+                finalizer.finalize_trusted(replace(first_candidate, input_format="corpus"))
             with pytest.raises(CorpusMetadataConflict):
                 finalizer.finalize_trusted(replace(first_candidate, hub_parent_sha="8" * 40))
             final_barrier = threading.Barrier(2)
@@ -980,6 +1028,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_sequence=1,
                 expected_parent_sha="b" * 40,
                 input_sha256="a" * 64,
+                input_format="zip",
             )
             next_claim = claimer.claim(next_op)
             assert next_claim is not None
@@ -996,6 +1045,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_sequence=2,
                 expected_parent_sha="c" * 40,
                 input_sha256="a" * 64,
+                input_format="zip",
             )
             competing_claim = claimer.claim(competing_op)
             assert competing_claim is not None

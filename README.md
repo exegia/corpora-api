@@ -106,7 +106,8 @@ cannot cancel or fence a remote Hub request that is already running.
 An unwired archive inventory hashes every regular entry in the original ZIP,
 including metadata and caches, with bounded full-stream decompression. It is
 not corpus validation or durable staging. An unwired preparation adapter binds
-the same immutable bytes to the claimed digest, inventory and real-loader
+the same immutable bytes and canonical archive format to the claimed digest,
+inventory and real-loader
 report; it requires the Text-Fabric and Context-Fabric checks to pass. It accepts
 `.corpus` and `.zip` inputs; profile-only `.ctei` and `.cusx` checks are not
 treated as Text-Fabric loading. Neither adapter publishes a version. The inventory

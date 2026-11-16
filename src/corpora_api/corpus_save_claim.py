@@ -27,6 +27,7 @@ class ClaimedCorpusSave:
     expected_parent_sha: str | None
     hub_parent_sha: str
     input_sha256: str
+    input_format: str
     repo_id: str
     repo_type: str
     metadata_revision: int
@@ -72,6 +73,7 @@ class CorpusSaveClaimer:
                             row["expected_parent_sha"],
                             row["input_sha256"],
                         )
+                        input_format = row["input_format"]
                         if (
                             UUID(row["id"]) != identifier
                             or UUID(row["worker_claim"]) != claim_id
@@ -83,6 +85,7 @@ class CorpusSaveClaimer:
                             or (parent is not None and not re.fullmatch(r"[0-9a-f]{40}", parent))
                             or not isinstance(digest, str)
                             or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                            or input_format not in ("zip", "corpus")
                         ):
                             raise ValueError("Invalid operation")
                         raw_metadata = db.execute(
@@ -133,6 +136,7 @@ class CorpusSaveClaimer:
                             expected_parent_sha=parent,
                             hub_parent_sha=hub_parent,
                             input_sha256=digest,
+                            input_format=input_format,
                             repo_id=metadata.hf_repo_id,
                             repo_type=metadata.hf_repo_type,
                             metadata_revision=metadata.revision,

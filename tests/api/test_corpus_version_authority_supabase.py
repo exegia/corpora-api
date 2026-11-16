@@ -154,8 +154,8 @@ def test_content_version_constraints_and_privileges():
                 db.execute(
                     "INSERT INTO public.corpora_corpus_write_ops "
                     "(id,corpus_id,actor_id,session_id,expected_sequence,"
-                    "expected_parent_sha,input_sha256) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    "expected_parent_sha,input_sha256,input_format) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,'zip')",
                     (op, cid, user, str(uuid4()), seq, parent, "a" * 64),
                 )
 
@@ -175,6 +175,23 @@ def test_content_version_constraints_and_privileges():
                 )
 
             operation(op1, corpus, 0, None)
+            for bad_format, expected_error in (
+                (None, psycopg.errors.NotNullViolation),
+                ("rar", psycopg.errors.CheckViolation),
+            ):
+                with pytest.raises(expected_error):
+                    db.execute(
+                        "INSERT INTO public.corpora_corpus_write_ops "
+                        "(id,corpus_id,actor_id,session_id,expected_sequence,"
+                        "expected_parent_sha,input_sha256,input_format) "
+                        "VALUES (%s,%s,%s,%s,0,NULL,%s,%s)",
+                        (str(uuid4()), corpus, user, str(uuid4()), "a" * 64, bad_format),
+                    )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET input_format='corpus' WHERE id=%s",
+                    (op1,),
+                )
             with pytest.raises(psycopg.errors.UniqueViolation):
                 operation(str(uuid4()), corpus, 0, None)
             with pytest.raises(psycopg.errors.RaiseException):

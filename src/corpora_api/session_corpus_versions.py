@@ -38,6 +38,7 @@ class AdmittedCorpusSave:
     expected_sequence: int
     expected_parent_sha: str | None
     input_sha256: str
+    input_format: str
     state: str
     retained_ref: str
 
@@ -61,12 +62,15 @@ class SessionBoundCorpusSaveAdmission:
         expected_sequence: int,
         expected_parent_sha: str | None,
         input_sha256: str,
+        input_format: str,
     ) -> AdmittedCorpusSave:
+        trusted_claims = dict(verified_claims)
+
         def operation(actor: str, db: Any) -> bytes:
             try:
                 corpus = UUID(corpus_id)
                 identifier = UUID(operation_id)
-                session = UUID(verified_claims["session_id"])
+                session = UUID(trusted_claims["session_id"])
                 if type(expected_sequence) is not int or not 0 <= expected_sequence < 2**63 - 1:
                     raise ValueError("Invalid expected sequence")
                 if (expected_sequence == 0) != (expected_parent_sha is None):
@@ -79,6 +83,8 @@ class SessionBoundCorpusSaveAdmission:
                     r"[0-9a-f]{64}", input_sha256
                 ):
                     raise ValueError("Invalid input hash")
+                if input_format not in ("zip", "corpus"):
+                    raise ValueError("Invalid input format")
             except (ValueError, TypeError, KeyError, AttributeError) as error:
                 raise HTTPException(422, "Invalid corpus save admission") from error
 
@@ -115,6 +121,7 @@ class SessionBoundCorpusSaveAdmission:
                     expected_sequence,
                     expected_parent_sha,
                     input_sha256,
+                    input_format,
                 )
 
             head = db.execute(
@@ -133,8 +140,8 @@ class SessionBoundCorpusSaveAdmission:
             inserted = db.execute(
                 "INSERT INTO public.corpora_corpus_write_ops "
                 "(id,corpus_id,actor_id,session_id,expected_sequence,"
-                "expected_parent_sha,input_sha256) "
-                "VALUES (%s::uuid,%s::uuid,%s::uuid,%s::uuid,%s,%s,%s) "
+                "expected_parent_sha,input_sha256,input_format) "
+                "VALUES (%s::uuid,%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s) "
                 "ON CONFLICT DO NOTHING RETURNING row_to_json(corpora_corpus_write_ops)",
                 (
                     str(identifier),
@@ -144,6 +151,7 @@ class SessionBoundCorpusSaveAdmission:
                     expected_sequence,
                     expected_parent_sha,
                     input_sha256,
+                    input_format,
                 ),
             ).fetchone()
             if inserted is None:
@@ -156,9 +164,10 @@ class SessionBoundCorpusSaveAdmission:
                 expected_sequence,
                 expected_parent_sha,
                 input_sha256,
+                input_format,
             )
 
-        data = self.lease.run(verified_claims, operation)
+        data = self.lease.run(trusted_claims, operation)
         try:
             value = json.loads(data)
             if value == {"status": "not_found"}:
@@ -178,6 +187,7 @@ class SessionBoundCorpusSaveAdmission:
                 expected_sequence=row["expected_sequence"],
                 expected_parent_sha=row["expected_parent_sha"],
                 input_sha256=row["input_sha256"],
+                input_format=row["input_format"],
                 state=row["state"],
                 retained_ref="corpora-op-" + str(UUID(row["id"])),
             )
@@ -193,6 +203,7 @@ def _receipt(
     sequence: int,
     parent: str | None,
     input_hash: str,
+    input_format: str,
 ) -> bytes:
     try:
         if not isinstance(row, dict) or (
@@ -203,6 +214,7 @@ def _receipt(
             or row["expected_sequence"] != sequence
             or row["expected_parent_sha"] != parent
             or row["input_sha256"] != input_hash
+            or row["input_format"] != input_format
             or row["state"] not in {"admitted", "executing", "uncertain", "completed", "failed"}
         ):
             return b'{"status":"conflict"}'

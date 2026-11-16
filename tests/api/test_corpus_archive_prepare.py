@@ -45,7 +45,7 @@ def test_preparation_binds_inventory_and_validator_to_same_immutable_bytes():
     data = zipped()
     validator = Validator({"path": "sample.zip", "valid": True, "checks": CHECKS})
     prepared = prepare_corpus_archive(
-        "sample.zip", data, hashlib.sha256(data).hexdigest(), validator
+        "sample.zip", data, hashlib.sha256(data).hexdigest(), validator, expected_format="zip"
     )
     assert prepared.archive is data and validator.seen == [("sample.zip", data)]
     assert validator.seen[0][1] is data
@@ -58,7 +58,9 @@ def test_invalid_or_nonboolean_verdict_never_prepares(valid):
     data = zipped()
     validator = Validator({"path": "sample.zip", "valid": valid, "checks": CHECKS})
     with pytest.raises(CorpusPreparationError):
-        prepare_corpus_archive("sample.zip", data, hashlib.sha256(data).hexdigest(), validator)
+        prepare_corpus_archive(
+            "sample.zip", data, hashlib.sha256(data).hexdigest(), validator, expected_format="zip"
+        )
 
 
 @pytest.mark.parametrize(
@@ -68,7 +70,11 @@ def test_malformed_or_mismatched_report_is_rejected(report):
     data = zipped()
     with pytest.raises(CorpusPreparationError):
         prepare_corpus_archive(
-            "sample.zip", data, hashlib.sha256(data).hexdigest(), Validator(report)
+            "sample.zip",
+            data,
+            hashlib.sha256(data).hexdigest(),
+            Validator(report),
+            expected_format="zip",
         )
 
 
@@ -84,6 +90,7 @@ def test_incomplete_real_loader_checks_never_prepare(change):
             data,
             hashlib.sha256(data).hexdigest(),
             Validator({"path": "sample.zip", "valid": True, "checks": checks}),
+            expected_format="zip",
         )
 
 
@@ -91,10 +98,38 @@ def test_corpus_extension_requires_shipped_cache_checks():
     data = zipped()
     validator = Validator({"path": "sample.corpus", "valid": True, "checks": CHECKS})
     with pytest.raises(CorpusPreparationError):
-        prepare_corpus_archive("sample.corpus", data, hashlib.sha256(data).hexdigest(), validator)
+        prepare_corpus_archive(
+            "sample.corpus",
+            data,
+            hashlib.sha256(data).hexdigest(),
+            validator,
+            expected_format="corpus",
+        )
     validator.report["checks"] = {**CHECKS, "shipped_cfm_load": True, "shipped_cfm_match": True}
     assert prepare_corpus_archive(
-        "sample.corpus", data, hashlib.sha256(data).hexdigest(), validator
+        "sample.corpus", data, hashlib.sha256(data).hexdigest(), validator, expected_format="corpus"
+    )
+
+
+def test_archive_format_must_match_the_claim_before_validation():
+    data = zipped()
+    validator = Validator({"path": "sample.zip", "valid": True, "checks": CHECKS})
+    for value in ("corpus", "ZIP", "", None):
+        with pytest.raises(CorpusPreparationError):
+            prepare_corpus_archive(
+                "sample.zip",
+                data,
+                hashlib.sha256(data).hexdigest(),
+                validator,
+                expected_format=value,
+            )
+    assert not validator.seen
+    validator.report["path"] = "sample.ZIP"
+    assert (
+        prepare_corpus_archive(
+            "sample.ZIP", data, hashlib.sha256(data).hexdigest(), validator, expected_format="zip"
+        ).archive
+        is data
     )
 
 
@@ -109,12 +144,16 @@ def test_bad_identity_format_digest_and_invalid_archive_fail_before_validator():
         ("sample.zip", bytearray(data), hashlib.sha256(data).hexdigest()),
     ]:
         with pytest.raises(CorpusPreparationError):
-            prepare_corpus_archive(name, raw, digest, validator)
+            prepare_corpus_archive(name, raw, digest, validator, expected_format="zip")
     assert validator.seen == []
     invalid_zip = b"not a zip"
     with pytest.raises(CorpusInventoryError):
         prepare_corpus_archive(
-            "sample.zip", invalid_zip, hashlib.sha256(invalid_zip).hexdigest(), validator
+            "sample.zip",
+            invalid_zip,
+            hashlib.sha256(invalid_zip).hexdigest(),
+            validator,
+            expected_format="zip",
         )
     assert validator.seen == []
 
@@ -123,7 +162,9 @@ def test_validator_failures_are_not_treated_as_success():
     data = zipped()
     validator = Validator(ValidationTimedOut("timed out"))
     with pytest.raises(ValidationTimedOut):
-        prepare_corpus_archive("sample.zip", data, hashlib.sha256(data).hexdigest(), validator)
+        prepare_corpus_archive(
+            "sample.zip", data, hashlib.sha256(data).hexdigest(), validator, expected_format="zip"
+        )
 
 
 def test_real_loader_fixture_when_configured():
@@ -134,6 +175,10 @@ def test_real_loader_fixture_when_configured():
     path = Path(fixture)
     data = path.read_bytes()
     prepared = prepare_corpus_archive(
-        path.name, data, hashlib.sha256(data).hexdigest(), ValidationBridge(executable)
+        path.name,
+        data,
+        hashlib.sha256(data).hexdigest(),
+        ValidationBridge(executable),
+        expected_format=path.suffix[1:].lower(),
     )
     assert prepared.archive == data and len(prepared.inventory.files) > 0

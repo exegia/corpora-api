@@ -39,6 +39,7 @@ CREATE TABLE public.corpora_corpus_write_ops (
     expected_sequence bigint NOT NULL CHECK (expected_sequence >= 0),
     expected_parent_sha text CHECK (expected_parent_sha IS NULL OR expected_parent_sha ~ '^[0-9a-f]{40}$'),
     input_sha256 text NOT NULL CHECK (input_sha256 ~ '^[0-9a-f]{64}$'),
+    input_format text NOT NULL CHECK (input_format IN ('zip', 'corpus')),
     state text NOT NULL DEFAULT 'admitted' CHECK (state IN ('admitted', 'executing', 'uncertain', 'completed', 'failed')),
     worker_claim uuid UNIQUE,
     claimed_at timestamptz,
@@ -247,6 +248,7 @@ BEGIN
        OR NEW.expected_sequence IS DISTINCT FROM OLD.expected_sequence
        OR NEW.expected_parent_sha IS DISTINCT FROM OLD.expected_parent_sha
        OR NEW.input_sha256 IS DISTINCT FROM OLD.input_sha256
+       OR NEW.input_format IS DISTINCT FROM OLD.input_format
        OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'CORPUS_OPERATION_IDENTITY_IMMUTABLE';
     END IF;

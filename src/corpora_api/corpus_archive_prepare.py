@@ -31,7 +31,12 @@ class PreparedCorpusArchive:
 
 
 def prepare_corpus_archive(
-    filename: str, archive: bytes, expected_sha256: str, validator: CorpusValidator
+    filename: str,
+    archive: bytes,
+    expected_sha256: str,
+    validator: CorpusValidator,
+    *,
+    expected_format: str,
 ) -> PreparedCorpusArchive:
     """Inventory and real-loader validate the exact immutable claimed bytes.
 
@@ -52,6 +57,10 @@ def prepare_corpus_archive(
         or Path(filename).suffix.lower() not in (".corpus", ".zip")
     ):
         raise CorpusPreparationError("Unsupported corpus archive filename")
+    if expected_format not in ("zip", "corpus") or (
+        Path(filename).suffix.lower() != "." + expected_format
+    ):
+        raise CorpusPreparationError("Corpus archive format does not match its claim")
     if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise CorpusPreparationError("Invalid claimed archive digest")
     if type(archive) is not bytes:
