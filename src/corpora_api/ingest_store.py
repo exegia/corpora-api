@@ -6,12 +6,14 @@ import json
 import os
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
 from corpora_schema_types import validate_graph
 
+from corpora_api.auth import current_user_token
 from corpora_api.ingest import MAX_GRAPH_BYTES, _slug
 
 
@@ -31,6 +33,14 @@ class IngestStoreCorrupt(Exception):
     """The stored artifact no longer satisfies the shared graph contract."""
 
 
+@dataclass(frozen=True)
+class _IngestCredentials:
+    """Gateway key and request-scoped user credential; never render secrets."""
+
+    api_key: str = field(repr=False)
+    bearer_token: str = field(repr=False)
+
+
 class IngestStore:
     """Use the existing `conversion_jobs` table and private result bucket."""
 
@@ -38,20 +48,26 @@ class IngestStore:
         self.client = client or httpx.Client(timeout=30)
 
     @staticmethod
-    def _config() -> tuple[str, str, str]:
+    def _config() -> tuple[str, _IngestCredentials, str]:
         project_ref = os.getenv("PROJECT_REF")
         url = os.getenv("SUPABASE_URL") or (
             f"https://{project_ref}.supabase.co" if project_ref else ""
         )
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        api_key = os.getenv("SUPABASE_INGEST_API_KEY", "")
+        bearer = current_user_token.get() or ""
         bucket = os.getenv("SUPABASE_JOBS_BUCKET") or os.getenv("SUPABASE_STORAGE_BUCKET", "")
-        if not (url and key and bucket):
+        if not (
+            url and api_key.startswith("sb_publishable_") and bearer and bucket == "conversion-jobs"
+        ) or any(
+            not value.isascii() or any(ord(char) < 33 or ord(char) > 126 for char in value)
+            for value in (api_key, bearer)
+        ):
             raise IngestStoreError(
                 "Ingestion store requires SUPABASE_URL (or PROJECT_REF), "
-                "SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_JOBS_BUCKET "
-                "(or SUPABASE_STORAGE_BUCKET)"
+                "a publishable SUPABASE_INGEST_API_KEY, a signed-in user token, and "
+                "SUPABASE_JOBS_BUCKET=conversion-jobs"
             )
-        return url.rstrip("/"), key, bucket
+        return url.rstrip("/"), _IngestCredentials(api_key, bearer), bucket
 
     @staticmethod
     def _id(value: str) -> str:
@@ -68,8 +84,11 @@ class IngestStore:
             raise IngestStoreError("Verified user identity is not a UUID") from error
 
     @staticmethod
-    def _headers(key: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {key}", "apikey": key}
+    def _headers(credentials: _IngestCredentials) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {credentials.bearer_token}",
+            "apikey": credentials.api_key,
+        }
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         try:
@@ -77,23 +96,88 @@ class IngestStore:
         except httpx.RequestError as error:
             raise IngestStoreError("Ingestion store request failed") from error
 
-    def save(self, owner: str, job_id: str, filename: str, title: str, graph: bytes) -> None:
+    def recover(self, owner: str, job_id: str, filename: str) -> bool:
+        """Finish a reserved job from its existing artifact without rerunning a worker."""
+        url, key, bucket = self._config()
+        owner = self._owner(owner)
+        job_id = self._id(job_id)
+        result_key = f"conversion-jobs/{owner}/{job_id}.graph.json"
+        response = self._request(
+            "GET", f"{url}/storage/v1/object/{bucket}/{result_key}", headers=self._headers(key)
+        )
+        if response.status_code == 404:
+            return False
+        if response.status_code == 400:
+            # Hosted Storage can wrap a missing object in HTTP 400 while the
+            # local stack returns 404. Do not treat other 400s as absence.
+            try:
+                error = response.json()
+            except ValueError:
+                error = None
+            if (
+                isinstance(error, dict)
+                and str(error.get("statusCode")) == "404"
+                and error.get("code") == "NoSuchKey"
+                and error.get("error") == "not_found"
+            ):
+                return False
+        if response.status_code != 200 or len(response.content) > MAX_GRAPH_BYTES:
+            raise IngestStoreError("Could not confirm ingestion artifact")
+        try:
+            graph = json.loads(response.content)
+            validate_graph(graph)
+            title = graph["work"]["title"]
+            if not isinstance(title, str):
+                raise ValueError("Invalid work title")
+        except (ValueError, KeyError, TypeError) as error:
+            raise IngestStoreError("Stored ingestion artifact failed validation") from error
+        self.save(owner, job_id, filename, title, response.content, retry=True)
+        return True
+
+    def save(
+        self,
+        owner: str,
+        job_id: str,
+        filename: str,
+        title: str,
+        graph: bytes,
+        *,
+        retry: bool = False,
+    ) -> None:
         """Publish result bytes first, then its completed metadata row."""
         url, key, bucket = self._config()
         owner = self._owner(owner)
         job_id = self._id(job_id)
         if len(graph) > MAX_GRAPH_BYTES:
             raise IngestStoreError("Generated graph exceeds the hosted response limit")
-        result_key = f"conversion-jobs/{job_id}.graph.json"
+        result_key = f"conversion-jobs/{owner}/{job_id}.graph.json"
         object_url = f"{url}/storage/v1/object/{bucket}/{result_key}"
-        response = self._request(
-            "POST",
-            object_url,
-            headers={**self._headers(key), "Content-Type": "application/json"},
-            content=graph,
-        )
-        if response.status_code not in (200, 201):
-            raise IngestStoreError(f"Ingestion artifact store returned {response.status_code}")
+        try:
+            response = self._request(
+                "POST",
+                object_url,
+                headers={**self._headers(key), "Content-Type": "application/json"},
+                content=graph,
+            )
+            if response.status_code not in (200, 201):
+                raise IngestStoreError(f"Ingestion artifact store returned {response.status_code}")
+        except IngestStoreError:
+            if not retry:
+                raise
+            # A different attempt for the same reserved request may have put
+            # the immutable object first, or this upload response may be lost.
+            existing = self._request("GET", object_url, headers=self._headers(key))
+            if existing.status_code != 200 or len(existing.content) > MAX_GRAPH_BYTES:
+                raise IngestStoreError("Could not confirm ingestion artifact") from None
+            try:
+                saved_graph = json.loads(existing.content)
+                validate_graph(saved_graph)
+                saved_title = saved_graph["work"]["title"]
+                if not isinstance(saved_title, str):
+                    raise ValueError("Invalid work title")
+                title = saved_title
+            except (ValueError, KeyError, TypeError) as error:
+                raise IngestStoreError("Stored ingestion artifact failed validation") from error
 
         now = time.time()
         row = {
@@ -171,7 +255,7 @@ class IngestStore:
         row = rows[0]
         if not isinstance(row, dict) or row.get("owner") != owner or row.get("id") != job_id:
             raise IngestStoreError("Ingestion job store returned a mismatched row")
-        if row.get("result_key") != f"conversion-jobs/{job_id}.graph.json":
+        if row.get("result_key") != f"conversion-jobs/{owner}/{job_id}.graph.json":
             raise IngestNotFound("Ingestion job not found")
         return row
 
@@ -208,7 +292,7 @@ class IngestStore:
         job_id = self._id(job_id)
         if row.get("status") != "succeeded":
             raise IngestNotReady(f"Job is {row.get('status')}, not ready")
-        if row.get("result_key") != f"conversion-jobs/{job_id}.graph.json":
+        if row.get("result_key") != f"conversion-jobs/{self._owner(owner)}/{job_id}.graph.json":
             raise IngestStoreError("Ingestion job has an invalid result key")
         url, key, bucket = self._config()
         response = self._request(

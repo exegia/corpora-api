@@ -3948,8 +3948,28 @@
     },
     "/v1/ingest": {
       "post": {
-        "description": "Upload one document (up to 3 MB). UTF-8 .txt runs in the API; PDF, DOCX, PPTX, HTML, and Markdown require a separately installed Docling Python worker. The API validates a Context Fabric v1 graph and stores the completed job and graph.json in the shared Supabase job store. A verified user token is required.",
+        "description": "Upload one document (up to 3 MB). UTF-8 .txt runs in the API; PDF, DOCX, PPTX, HTML, and Markdown require a separately installed Docling Python worker. The API validates a Context Fabric v1 graph and stores the completed job and graph.json in the shared Supabase job store. A verified user token is required. Supply the same Idempotency-Key when retrying identical input to reuse the same job. Reusing a key with different input returns 409.",
         "operationId": "create_ingestion_v1_ingest_post",
+        "parameters": [
+          {
+            "description": "1\u2013128 visible ASCII characters, scoped to the signed-in user.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "1\u2013128 visible ASCII characters, scoped to the signed-in user.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "multipart/form-data": {
@@ -3973,6 +3993,16 @@
           },
           "401": {
             "description": "Missing or invalid bearer token"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "413": {
             "content": {

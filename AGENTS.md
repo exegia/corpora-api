@@ -74,6 +74,7 @@ runners. Each stack has a skill with the conventions and pitfalls.
    **rotate it**. CI runs the same scan and blocks the PR anyway.
 3. **Branches are `<type>/<slug>`**, types `feat fix chore docs ci refactor test perf build style revert ai`.
    Work happens on a branch, never directly on `dev`, `next` or `main`.
+   **MULTIPLE FEATURE BRANCHES ARE ALLOWED ONLY WHEN THEY ARE RELATED AND FORM A STACK OF DEPENDENT PULL REQUESTS. OTHERWISE, MERGE THE CURRENT FEATURE INTO `dev` BEFORE STARTING ANOTHER FEATURE.**
 4. **PR titles are Conventional Commits** (`feat(scope)!: summary`). The title becomes the squash commit
    and drives the SemVer bump: `!` / `BREAKING CHANGE` major, `feat` minor, everything else patch.
 5. **Do not hand-edit** version numbers, `CHANGELOG.md` sections or tags: the release pipeline writes them.
