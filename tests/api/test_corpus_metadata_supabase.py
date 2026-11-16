@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -13,7 +14,8 @@ import httpx
 import pytest
 
 from corpora_api.auth import verify_user_token
-from corpora_api.corpus_hub_read import CorpusHubReader
+from corpora_api.corpus_hub_deadline import DeadlineCorpusHubReader
+from corpora_api.corpus_hub_read import CorpusHubReader, CorpusHubReadError
 from corpora_api.corpus_metadata import (
     CorpusMetadataConflict,
     CorpusMetadataNotFound,
@@ -116,6 +118,39 @@ def test_owner_superadmin_cas_and_browser_denial(monkeypatch):
                     with reader._open(users[1][0], identifier, revision, "otype.tf", max_bytes=100):
                         pytest.fail("foreign caller reached Hub")
                 assert len(hub_calls) == previous_calls
+
+            async def async_reader_check():
+                class MixedTransport(httpx.AsyncBaseTransport):
+                    def __init__(self):
+                        self.real = httpx.AsyncHTTPTransport()
+
+                    async def handle_async_request(self, request):
+                        if request.url.host == "huggingface.co":
+                            return hub_response(request)
+                        return await self.real.handle_async_request(request)
+
+                    async def aclose(self):
+                        await self.real.aclose()
+
+                async def read(actor):
+                    output = bytearray()
+
+                    async def sink(chunk):
+                        output.extend(chunk)
+
+                    await DeadlineCorpusHubReader(MixedTransport).transfer(
+                        actor, identifier, revision, "otype.tf", max_bytes=100, timeout=5, sink=sink
+                    )
+                    return bytes(output)
+
+                assert await read(users[0][0]) == files["otype.tf"]
+                assert await read(users[2][0]) == files["otype.tf"]
+                before = len(hub_calls)
+                with pytest.raises(CorpusHubReadError):
+                    await read(users[1][0])
+                assert len(hub_calls) == before
+
+            asyncio.run(async_reader_check())
             for _, token in users:
                 response = client.get(
                     url + "/rest/v1/corpora_corpus_metadata",

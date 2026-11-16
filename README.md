@@ -63,6 +63,14 @@ deadline. Routes must hold a verified live-session guard for the entire stream
 and provide a trusted revision before enabling it. Real private Hub access and
 the hosted runtime are unverified.
 
+An additional unwired async transfer adapter applies one deadline across the
+metadata lookup, Hub verification, file transfer and sink backpressure. It uses
+a dedicated HTTP client for each transfer and allows a short cleanup period
+after the deadline. Client setup is synchronous and must not block; its
+transport and sink must cooperate with cancellation. Partial bytes already
+delivered cannot be recalled. It does not integrate a live-session guard,
+authorize revisions, or replace the existing reader.
+
 Authenticated `/v1/ai/drafts` endpoints create, list, inspect and export private
 working drafts from a caller-owned completed conversion. They use the existing
 `corpora_ai_storage` Supabase RPC and private `corpus-ai-drafts` bucket from
