@@ -38,6 +38,18 @@ Ingestion uses the existing private `conversion_jobs` PostgREST table and result
 
 Storage uses `STORAGE_BACKEND=huggingface` by default, matching the current legacy `/storage` deployment. Set `HF_STORAGE_REPO`, `HF_STORAGE_REPO_TYPE` (`bucket`, `model`, `dataset`, or `space`), and `HF_TOKEN` for private reads. Hub publishing and deletion require a separate, write-scoped `HF_STORAGE_WRITE_TOKEN`; the read token is never used for writes. Publishing uses a conditional Hub commit to prevent concurrent overwrites. Hub buckets remain readable but do not support publishing because their upload API has no equivalent conditional commit. `STORAGE_BACKEND=supabase` uses the existing private `SUPABASE_STORAGE_BUCKET` with `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` or `PROJECT_REF`. A verified Supabase user JWT is required on every storage route. Publishing accepts only a completed `/convert` `job_id` owned by the caller; the API fetches and revalidates its private stored archive. It never accepts a server path. Hub archives are shared, while Supabase objects are addressed only at `{verified-user-id}/{filename}`. A delete is audit-logged with the verified user ID. List and inspect return the legacy `filename`, `size_bytes`, `repo_id`, and `url` fields, and download streams bytes without staging on the API server. Manifest, index, section, content, node, and version-history reads fetch only the verified owner's archive, read it with the packaged Context-Fabric cache, and keep no cross-request cache. Missing configuration returns 503, a missing archive or reference returns 404, corrupt archives return 422, and an upstream storage failure returns 502.
 
+The draft `corpora_corpus_metadata` migration and Python registry prepare the
+chosen per-corpus model: Supabase stores metadata, ownership, a unique Hub
+repository identifier and revision; the configured Hub organization owns the
+actual corpus files. The server generates a stable repository identifier from a
+caller-stable corpus UUID. Records begin in `provisioning`; this component does
+not create a Hub repository, prove that it is private, or mark it ready. It has
+no HTTP routes and callers must supply a verified live session. Browser roles
+have no direct table access. `CORPORA_SUPERADMIN_USER_ID` is a server-controlled
+user UUID, never a user-editable profile field. Review the migration, session
+enforcement, Hub provisioning and namespace before enabling this registry; the
+API does not apply its migrations.
+
 Authenticated `/v1/ai/drafts` endpoints create, list, inspect and export private
 working drafts from a caller-owned completed conversion. They use the existing
 `corpora_ai_storage` Supabase RPC and private `corpus-ai-drafts` bucket from
