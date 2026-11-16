@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -22,6 +23,7 @@ from corpora_api.corpus_metadata import (
     CorpusMetadataStore,
 )
 from corpora_api.corpus_save_claim import CorpusSaveClaimer
+from corpora_api.corpus_save_finalize import CorpusSaveFinalizer, TrustedCandidateAttestation
 from corpora_api.session_corpus_metadata import (
     SessionBoundCorpusMetadata,
     SessionBoundMetadataTransaction,
@@ -105,6 +107,15 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "GRANT UPDATE (state,worker_claim) ON public.corpora_corpus_write_ops "
                 "TO service_role"
             )
+            db.execute(
+                "GRANT INSERT (corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                "ON public.corpora_corpus_versions TO service_role"
+            )
+            db.execute(
+                "GRANT INSERT (corpus_id,sequence,commit_sha), UPDATE (sequence,commit_sha) "
+                "ON public.corpora_corpus_heads TO service_role"
+            )
+            db.execute("GRANT UPDATE (state) ON public.corpora_corpus_metadata TO service_role")
             db.execute(guard)
             db.execute(
                 "REVOKE ALL ON FUNCTION public.corpora_stored_lock_session(uuid,uuid,bigint) "
@@ -431,6 +442,18 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 expected_parent_sha=None,
                 input_sha256="a" * 64,
             )
+            rollback_finalize_corpus, rollback_finalize_op = str(uuid4()), str(uuid4())
+            editor.reserve(
+                users[0][0], rollback_finalize_corpus, "Rollback finalize", repo_type="dataset"
+            )
+            admission.admit(
+                users[0][0],
+                rollback_finalize_corpus,
+                rollback_finalize_op,
+                expected_sequence=0,
+                expected_parent_sha=None,
+                input_sha256="a" * 64,
+            )
 
             race_corpus, race_op = str(uuid4()), str(uuid4())
             editor.reserve(users[1][0], race_corpus, "Race", repo_type="dataset")
@@ -632,6 +655,106 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     input_sha256="a" * 64,
                 )
 
+            def candidate_for(claim, sha):
+                return TrustedCandidateAttestation(
+                    operation_id=claim.operation_id,
+                    claim_id=claim.claim_id,
+                    corpus_id=claim.corpus_id,
+                    repo_id=claim.repo_id,
+                    repo_type=claim.repo_type,
+                    parent_sha=claim.expected_parent_sha,
+                    commit_sha=sha,
+                    input_sha256=claim.input_sha256,
+                    retained_ref=claim.retained_ref,
+                )
+
+            finalizer = CorpusSaveFinalizer(
+                lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
+            )
+            uncertain_claim = claimer.claim(race_op)
+            assert uncertain_claim is not None
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s",
+                (race_op,),
+            )
+            with pytest.raises(CorpusMetadataConflict, match="reconciliation"):
+                finalizer.finalize_trusted(candidate_for(uncertain_claim, "f" * 40))
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s", (race_op,)
+            ).fetchone() == ("uncertain",)
+            # Synthetic assertions exercise database mechanics, not actual Hub verification.
+            first_candidate = candidate_for(winners[0], "b" * 40)
+            with pytest.raises(CorpusMetadataConflict):
+                finalizer.finalize_trusted(replace(first_candidate, claim_id=uuid4()))
+            with pytest.raises(CorpusMetadataConflict):
+                finalizer.finalize_trusted(replace(first_candidate, input_sha256="c" * 64))
+            final_barrier = threading.Barrier(2)
+
+            def finalize_same(_):
+                final_barrier.wait(timeout=10)
+                return finalizer.finalize_trusted(first_candidate)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                versions = list(pool.map(finalize_same, range(2)))
+            assert versions[0] == versions[1] and versions[0].sequence == 1
+            assert metadata.get(users[2][0]["sub"], identifier).state == "ready"
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_versions WHERE operation_id=%s",
+                    (operation_id,),
+                ).fetchone()[0]
+                == 1
+            )
+            with pytest.raises(CorpusMetadataConflict):
+                finalizer.finalize_trusted(replace(first_candidate, commit_sha="d" * 40))
+
+            next_op = str(uuid4())
+            admission.admit(
+                users[2][0],
+                identifier,
+                next_op,
+                expected_sequence=1,
+                expected_parent_sha="b" * 40,
+                input_sha256="a" * 64,
+            )
+            next_claim = claimer.claim(next_op)
+            assert next_claim is not None
+            next_version = finalizer.finalize_trusted(candidate_for(next_claim, "c" * 40))
+            assert next_version.sequence == 2
+            assert finalizer.finalize_trusted(first_candidate) == versions[0]
+
+            competing_op = str(uuid4())
+            admission.admit(
+                users[2][0],
+                identifier,
+                competing_op,
+                expected_sequence=2,
+                expected_parent_sha="c" * 40,
+                input_sha256="a" * 64,
+            )
+            competing_claim = claimer.claim(competing_op)
+            assert competing_claim is not None
+            competing_barrier = threading.Barrier(2)
+
+            def finalize_different(sha):
+                competing_barrier.wait(timeout=10)
+                try:
+                    finalizer.finalize_trusted(candidate_for(competing_claim, sha))
+                    return "completed"
+                except CorpusMetadataConflict:
+                    return "conflict"
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(finalize_different, ("1" * 40, "2" * 40)))
+            assert sorted(outcomes) == ["completed", "conflict"]
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_versions WHERE operation_id=%s",
+                    (competing_op,),
+                ).fetchone()[0]
+                == 1
+            )
+
             class LostClaimResponse:
                 def __enter__(self):
                     self.db = psycopg.connect(dsn, autocommit=True)
@@ -677,7 +800,64 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "SELECT state,worker_claim FROM public.corpora_corpus_write_ops WHERE id=%s",
                 (rollback_claim_op,),
             ).fetchone() == ("admitted", None)
-            assert claimer.claim(rollback_claim_op) is not None
+            recovered_claim = claimer.claim(rollback_claim_op)
+            assert recovered_claim is not None
+            lost_candidate = candidate_for(recovered_claim, "d" * 40)
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusSaveFinalizer(LostClaimResponse, assume_service_role=True).finalize_trusted(
+                    lost_candidate
+                )
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s",
+                (rollback_claim_op,),
+            ).fetchone() == ("completed",)
+            assert finalizer.finalize_trusted(lost_candidate).sequence == 1
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_versions WHERE operation_id=%s",
+                    (rollback_claim_op,),
+                ).fetchone()[0]
+                == 1
+            )
+
+            finalize_claim = claimer.claim(rollback_finalize_op)
+            assert finalize_claim is not None
+            rollback_candidate = candidate_for(finalize_claim, "e" * 40)
+
+            class TerminateFinalizeConnection(TerminateClaimConnection):
+                def execute(self, query, params=None):
+                    cursor = self.db.execute(query, params)
+                    if query.startswith("INSERT INTO public.corpora_corpus_versions"):
+                        pid = self.db.execute("SELECT pg_backend_pid()").fetchone()[0]
+                        assert db.execute("SELECT pg_terminate_backend(%s)", (pid,)).fetchone()[0]
+                    return cursor
+
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusSaveFinalizer(
+                    TerminateFinalizeConnection, assume_service_role=True
+                ).finalize_trusted(rollback_candidate)
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s",
+                (rollback_finalize_op,),
+            ).fetchone() == ("executing",)
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_versions WHERE operation_id=%s",
+                    (rollback_finalize_op,),
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_heads WHERE corpus_id=%s",
+                    (rollback_finalize_corpus,),
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                metadata.get(users[2][0]["sub"], rollback_finalize_corpus).state == "provisioning"
+            )
+            assert finalizer.finalize_trusted(rollback_candidate).sequence == 1
             assert metadata.get(users[2][0]["sub"], identifier).title == "Committed"
         finally:
             for table in (
