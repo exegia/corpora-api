@@ -1,6 +1,7 @@
 """Unwired, owner-bound reads from a private corpus Hub repository.
 
-The caller must enforce a verified live session until the response stream closes.
+The caller must verify a live session before admitting the request. An admitted
+download may finish after sign-out.
 No route uses this adapter; corpus readiness and revision authority are separate.
 """
 
