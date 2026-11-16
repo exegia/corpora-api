@@ -77,7 +77,40 @@ class IngestStore:
         except httpx.RequestError as error:
             raise IngestStoreError("Ingestion store request failed") from error
 
-    def save(self, owner: str, job_id: str, filename: str, title: str, graph: bytes) -> None:
+    def recover(self, owner: str, job_id: str, filename: str) -> bool:
+        """Finish a reserved job from its existing artifact without rerunning a worker."""
+        url, key, bucket = self._config()
+        owner = self._owner(owner)
+        job_id = self._id(job_id)
+        result_key = f"conversion-jobs/{job_id}.graph.json"
+        response = self._request(
+            "GET", f"{url}/storage/v1/object/{bucket}/{result_key}", headers=self._headers(key)
+        )
+        if response.status_code == 404:
+            return False
+        if response.status_code != 200 or len(response.content) > MAX_GRAPH_BYTES:
+            raise IngestStoreError("Could not confirm ingestion artifact")
+        try:
+            graph = json.loads(response.content)
+            validate_graph(graph)
+            title = graph["work"]["title"]
+            if not isinstance(title, str):
+                raise ValueError("Invalid work title")
+        except (ValueError, KeyError, TypeError) as error:
+            raise IngestStoreError("Stored ingestion artifact failed validation") from error
+        self.save(owner, job_id, filename, title, response.content, retry=True)
+        return True
+
+    def save(
+        self,
+        owner: str,
+        job_id: str,
+        filename: str,
+        title: str,
+        graph: bytes,
+        *,
+        retry: bool = False,
+    ) -> None:
         """Publish result bytes first, then its completed metadata row."""
         url, key, bucket = self._config()
         owner = self._owner(owner)
@@ -86,14 +119,32 @@ class IngestStore:
             raise IngestStoreError("Generated graph exceeds the hosted response limit")
         result_key = f"conversion-jobs/{job_id}.graph.json"
         object_url = f"{url}/storage/v1/object/{bucket}/{result_key}"
-        response = self._request(
-            "POST",
-            object_url,
-            headers={**self._headers(key), "Content-Type": "application/json"},
-            content=graph,
-        )
-        if response.status_code not in (200, 201):
-            raise IngestStoreError(f"Ingestion artifact store returned {response.status_code}")
+        try:
+            response = self._request(
+                "POST",
+                object_url,
+                headers={**self._headers(key), "Content-Type": "application/json"},
+                content=graph,
+            )
+            if response.status_code not in (200, 201):
+                raise IngestStoreError(f"Ingestion artifact store returned {response.status_code}")
+        except IngestStoreError:
+            if not retry:
+                raise
+            # A different attempt for the same reserved request may have put
+            # the immutable object first, or this upload response may be lost.
+            existing = self._request("GET", object_url, headers=self._headers(key))
+            if existing.status_code != 200 or len(existing.content) > MAX_GRAPH_BYTES:
+                raise IngestStoreError("Could not confirm ingestion artifact") from None
+            try:
+                saved_graph = json.loads(existing.content)
+                validate_graph(saved_graph)
+                saved_title = saved_graph["work"]["title"]
+                if not isinstance(saved_title, str):
+                    raise ValueError("Invalid work title")
+                title = saved_title
+            except (ValueError, KeyError, TypeError) as error:
+                raise IngestStoreError("Stored ingestion artifact failed validation") from error
 
         now = time.time()
         row = {

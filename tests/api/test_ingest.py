@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from corpora_api import app as app_module
 from corpora_api.app import app
 from corpora_api.ingest import build_plain_graph
+from corpora_api.ingest_requests import input_fingerprint, reserve_request
 from corpora_api.ingest_store import IngestStore, IngestStoreError
 from corpora_api.ingest_worker import run_docling_worker
 
@@ -31,11 +32,14 @@ def store(
 ) -> tuple[dict[str, bytes], dict[str, dict], httpx.MockTransport]:
     artifacts: dict[str, bytes] = {}
     jobs: dict[str, dict] = {}
+    reservations: dict[tuple[str, str], dict] = {}
 
     def respond(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.startswith("/storage/v1/object/jobs/"):
             if request.method == "POST":
+                if path in artifacts:
+                    return httpx.Response(409)
                 artifacts[path] = request.content
                 return httpx.Response(201, json={"Key": path})
             if request.method == "GET":
@@ -46,6 +50,21 @@ def store(
             if request.method == "DELETE":
                 artifacts.pop(path, None)
                 return httpx.Response(204)
+        if path == "/rest/v1/corpora_ingest_requests":
+            if request.method == "POST":
+                row = json.loads(request.content)
+                key = (row["owner_id"], row["request_key_hash"])
+                if key in reservations:
+                    return httpx.Response(409)
+                reservations[key] = row
+                return httpx.Response(201)
+            if request.method == "GET":
+                key = (
+                    request.url.params["owner_id"].removeprefix("eq."),
+                    request.url.params["request_key_hash"].removeprefix("eq."),
+                )
+                row = reservations.get(key)
+                return httpx.Response(200, json=[row] if row else [])
         if path == "/rest/v1/conversion_jobs":
             if request.method == "POST":
                 row = json.loads(request.content)
@@ -80,6 +99,60 @@ def store(
 
 def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_idempotent_upload_reuses_job_and_rejects_changed_input(store):
+    artifacts, jobs, _ = store
+    client = TestClient(app)
+    auth = {**headers("alice-token"), "Idempotency-Key": "request-1"}
+    first = client.post("/v1/ingest", headers=auth, files={"file": ("a.txt", b"hello")})
+    second = client.post("/v1/ingest", headers=auth, files={"file": ("a.txt", b"hello")})
+    changed = client.post("/v1/ingest", headers=auth, files={"file": ("a.txt", b"changed")})
+    other = client.post(
+        "/v1/ingest",
+        headers={**headers("bob-token"), "Idempotency-Key": "request-1"},
+        files={"file": ("a.txt", b"hello")},
+    )
+    assert first.status_code == second.status_code == other.status_code == 202
+    assert first.json() == second.json()
+    assert other.json()["job_id"] != first.json()["job_id"]
+    assert changed.status_code == 409
+    assert len(jobs) == len(artifacts) == 2
+
+
+def test_idempotent_save_recovers_existing_graph_after_lost_upload(store):
+    artifacts, jobs, transport = store
+    ingest_store = IngestStore(httpx.Client(transport=transport))
+    job_id = str(uuid.uuid4())
+    first_graph = json.dumps(build_plain_graph("a.txt", b"hello", name="First").to_wire()).encode()
+    later_graph = json.dumps(build_plain_graph("a.txt", b"hello", name="Later").to_wire()).encode()
+    key = f"/storage/v1/object/jobs/conversion-jobs/{job_id}.graph.json"
+    artifacts[key] = first_graph
+    ingest_store.save(ALICE, job_id, "a.txt", "Later", later_graph, retry=True)
+    assert artifacts[key] == first_graph
+    assert jobs[job_id]["result_key"] == f"conversion-jobs/{job_id}.graph.json"
+    assert jobs[job_id]["display_name"] == "First"
+
+
+def test_retry_recovers_uploaded_graph_without_rerunning_builder(store, monkeypatch):
+    artifacts, jobs, _ = store
+    fingerprint = input_fingerprint("a.txt", b"hello", name="", language="und", corpus_id="")
+    job_id = reserve_request(app_module.ingest_store, ALICE, "recover-me", fingerprint)
+    graph = json.dumps(build_plain_graph("a.txt", b"hello").to_wire()).encode()
+    artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job_id}.graph.json"] = graph
+
+    def unexpected_builder(*args, **kwargs):
+        raise AssertionError("Recovery must not run the builder")
+
+    monkeypatch.setattr(app_module, "build_plain_graph", unexpected_builder)
+    response = TestClient(app).post(
+        "/v1/ingest",
+        headers={**headers("alice-token"), "Idempotency-Key": "recover-me"},
+        files={"file": ("a.txt", b"hello")},
+    )
+    assert response.status_code == 202
+    assert response.json()["job_id"] == job_id
+    assert jobs[job_id]["owner"] == ALICE
 
 
 @pytest.mark.parametrize("outcome", ["committed", "missing", "mismatch", "foreign", "read_failed"])

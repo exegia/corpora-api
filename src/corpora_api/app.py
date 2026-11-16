@@ -46,6 +46,7 @@ from corpora_api.ingest import (
     build_plain_graph,
     validate_ingest_options,
 )
+from corpora_api.ingest_requests import IngestRequestConflict, input_fingerprint, reserve_request
 from corpora_api.ingest_store import (
     IngestNotFound,
     IngestNotReady,
@@ -644,10 +645,13 @@ async def validate_corpus_upload(
         "Upload one document (up to 3 MB). UTF-8 .txt runs in the API; PDF, DOCX, PPTX, "
         "HTML, and Markdown require a separately installed Docling Python worker. The API "
         "validates a Context Fabric v1 graph and stores the completed job and graph.json in "
-        "the shared Supabase job store. A verified user token is required."
+        "the shared Supabase job store. A verified user token is required. Supply the same "
+        "Idempotency-Key when retrying identical input to reuse the same job. Reusing a key "
+        "with different input returns 409."
     ),
     responses={
         401: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
         413: {"model": ErrorResponse},
         415: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
@@ -662,6 +666,13 @@ async def create_ingestion(
     name: Annotated[str, Form()] = "",
     language: Annotated[str, Form()] = "und",
     corpus_id: Annotated[str, Form()] = "",
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            description="1–128 visible ASCII characters, scoped to the signed-in user.",
+        ),
+    ] = None,
 ) -> IngestCreated:
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()
@@ -674,6 +685,43 @@ async def create_ingestion(
     source = await file.read(MAX_INGEST_BYTES + 1)
     if len(source) > MAX_INGEST_BYTES:
         raise HTTPException(status_code=413, detail=f"Upload exceeds {MAX_INGEST_BYTES} bytes")
+    job_id = str(uuid.uuid4())
+    if idempotency_key is not None:
+        fingerprint = input_fingerprint(
+            filename, source, name=name, language=language, corpus_id=corpus_id
+        )
+        try:
+            job_id = await run_in_threadpool(
+                reserve_request, ingest_store, _user_id, idempotency_key, fingerprint
+            )
+            try:
+                existing = await run_in_threadpool(ingest_store.get, _user_id, job_id)
+            except IngestNotFound:
+                existing = None
+            if existing is not None:
+                if (
+                    existing.get("name") != filename
+                    or existing.get("status") != "succeeded"
+                    or existing.get("output_format") != "corpus"
+                ):
+                    raise IngestStoreError("Reserved ingestion job is inconsistent")
+                return IngestCreated(
+                    job_id=job_id,
+                    status_url=f"/v1/ingest/{job_id}",
+                    download_url=f"/v1/ingest/{job_id}/download",
+                )
+            if await run_in_threadpool(ingest_store.recover, _user_id, job_id, filename):
+                return IngestCreated(
+                    job_id=job_id,
+                    status_url=f"/v1/ingest/{job_id}",
+                    download_url=f"/v1/ingest/{job_id}/download",
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except IngestRequestConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except IngestStoreError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
     try:
         builder = build_plain_graph if suffix == ".txt" else run_docling_worker
         graph = await run_in_threadpool(
@@ -696,10 +744,17 @@ async def create_ingestion(
     )
     if len(graph_bytes) > MAX_GRAPH_BYTES:
         raise HTTPException(status_code=413, detail="Generated graph exceeds hosted response limit")
-    job_id = str(uuid.uuid4())
     title = str(graph.work["title"])
     try:
-        await run_in_threadpool(ingest_store.save, _user_id, job_id, filename, title, graph_bytes)
+        await run_in_threadpool(
+            ingest_store.save,
+            _user_id,
+            job_id,
+            filename,
+            title,
+            graph_bytes,
+            retry=idempotency_key is not None,
+        )
     except IngestStoreError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return IngestCreated(
