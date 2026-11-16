@@ -35,6 +35,7 @@ Override a task with `<TASK>_CMD`, e.g. `make test TEST_CMD="..."`.
 
 - **Branches:** `<type>/<slug>` with type `feat|fix|chore|docs|ci|refactor|test|perf|build|style|revert|ai`,
   opened as PRs into `dev` (the default branch). Promotion: `dev` -> `next` -> `release/vX.Y.Z` -> `main`.
+  Multiple feature branches require related work in a dependent PR stack; otherwise merge the current feature into `dev` before starting another.
 - **PR titles:** Conventional Commits, `feat(scope)!: summary`. They set the SemVer bump (`!` major,
   `feat` minor, else patch). Do not edit versions, tags or `CHANGELOG.md` by hand.
 - **Release changelog:** the generator must leave no trailing blank line; run `make selftest` after edits.
