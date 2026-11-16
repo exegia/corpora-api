@@ -149,6 +149,25 @@ def test_foreign_metadata_never_contacts_hub(monkeypatch):
     assert all(body.closed for body in bodies)
 
 
+def test_file_limit_closes_response_without_delivering_excess(monkeypatch):
+    owner, corpus, handler, bodies, _ = setup(monkeypatch)
+
+    async def run():
+        output = bytearray()
+
+        async def sink(chunk):
+            output.extend(chunk)
+
+        with pytest.raises(CorpusHubReadError, match="size limit"):
+            await DeadlineCorpusHubReader(lambda: httpx.MockTransport(handler)).transfer(
+                owner, corpus, REVISION, "tf/x.tf", max_bytes=3, timeout=1, sink=sink
+            )
+        assert len(output) <= 3
+
+    asyncio.run(run())
+    assert all(body.closed for body in bodies)
+
+
 @pytest.mark.parametrize("error", [ValueError("sink error"), TimeoutError("sink timeout")])
 def test_sink_exceptions_are_not_rewritten(monkeypatch, error):
     owner, corpus, handler, bodies, _ = setup(monkeypatch)
