@@ -7,6 +7,7 @@ its schema bindings, and corpora-admin with the Docling extra to test Markdown.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import socket
 import subprocess
@@ -21,10 +22,73 @@ import pytest
 from corpora_schema_types import validate_graph
 
 from corpora_api.auth import verify_user_token
+from corpora_api.ingest import build_plain_graph
+from corpora_api.ingest_store import IngestStore
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_TEST_LOCAL_SUPABASE"), reason="requires disposable local Supabase"
 )
+
+
+def test_ingest_confirms_committed_job_after_lost_response(monkeypatch):
+    """Discard a real PostgREST insert response after the database commits."""
+    psycopg = pytest.importorskip("psycopg")
+    url, dsn = os.environ["API_URL"].rstrip("/"), os.environ["DB_URL"]
+    assert urlparse(url).hostname in {"localhost", "127.0.0.1", "::1"}
+    assert urlparse(dsn).hostname in {"localhost", "127.0.0.1", "::1"}
+    service = os.environ["SERVICE_ROLE_KEY"]
+    bucket, owner, job = "ingest-recovery-" + uuid4().hex, str(uuid4()), str(uuid4())
+    monkeypatch.setenv("SUPABASE_URL", url)
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", service)
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", bucket)
+    headers = {"apikey": service, "Authorization": "Bearer " + service}
+    graph = json.dumps(build_plain_graph("source.txt", b"Recovery text").to_wire()).encode()
+    bucket_created = False
+
+    class LostInsertResponse(httpx.BaseTransport):
+        def __init__(self):
+            self.inner = httpx.HTTPTransport()
+            self.discarded = False
+
+        def handle_request(self, request):
+            response = self.inner.handle_request(request)
+            if request.method == "POST" and request.url.path == "/rest/v1/conversion_jobs":
+                response.read()
+                assert response.status_code in (200, 201, 204)
+                response.close()
+                self.discarded = True
+                raise httpx.ReadTimeout("simulated lost response", request=request)
+            return response
+
+        def close(self):
+            self.inner.close()
+
+    with httpx.Client(timeout=15) as client, psycopg.connect(dsn, autocommit=True) as db:
+        try:
+            response = client.post(
+                url + "/storage/v1/bucket",
+                headers=headers,
+                json={"id": bucket, "name": bucket, "public": False},
+            )
+            response.raise_for_status()
+            bucket_created = True
+            transport = LostInsertResponse()
+            with httpx.Client(transport=transport, timeout=15) as simulated:
+                store = IngestStore(simulated)
+                store.save(owner, job, "source.txt", "Source", graph)
+                assert transport.discarded
+                assert store.status(owner, job)["download_ready"] is True
+                assert store.download(owner, job)[0] == graph
+        finally:
+            db.execute("DELETE FROM public.conversion_jobs WHERE id=%s", (job,))
+            if bucket_created:
+                client.delete(
+                    f"{url}/storage/v1/object/{bucket}/conversion-jobs/{job}.graph.json",
+                    headers=headers,
+                ).raise_for_status()
+                client.delete(
+                    url + "/storage/v1/bucket/" + bucket, headers=headers
+                ).raise_for_status()
 
 
 @contextmanager
