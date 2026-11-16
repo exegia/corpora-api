@@ -53,8 +53,8 @@ The draft registry can update title, description, language and structured
 properties with a revision check; properties are replaced as one object. It
 does not expose these edits through an API or enforce a live session itself.
 Properties are user-editable metadata and must not determine authorization.
-An unwired session-bound editor uses the same database transaction for the
-session lock and metadata update. It requires signature-verified claims, a
+An unwired session-bound registry uses the same database transaction for the
+session lock and metadata reservation or update. It requires signature-verified claims, a
 reviewed session lease and the proposed database privileges; it does not apply
 those privileges or expose a route. A lost commit response can leave the caller
 uncertain whether an update committed, so callers must reload before retrying.

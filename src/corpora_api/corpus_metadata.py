@@ -67,6 +67,25 @@ def _same_json(left: Any, right: Any) -> bool:
     return True
 
 
+def _normalize_reservation(corpus_id: str, title: str, repo_type: str) -> tuple[UUID, str, str]:
+    organization = os.getenv("HF_CORPUS_ORGANIZATION", "")
+    try:
+        identifier = UUID(corpus_id)
+        repo_id = f"{organization}/corpus-{identifier}"
+        if not organization or "/" in organization:
+            raise ValueError("Invalid organization")
+        validate_repo_id(repo_id)
+        if repo_type not in {"dataset", "model"} or not isinstance(title, str):
+            raise ValueError("Invalid metadata")
+        clean_title = title.strip()
+        if not 1 <= len(clean_title) <= 512 or "\x00" in clean_title:
+            raise ValueError("Invalid title")
+        clean_title.encode("utf-8")
+    except (ValueError, TypeError, AttributeError, UnicodeError, HFValidationError) as error:
+        raise CorpusMetadataError("Corpus metadata or organization is invalid") from error
+    return identifier, clean_title, repo_id
+
+
 def _normalize_changes(revision: int, fields: dict[str, Any]) -> dict[str, Any]:
     if (
         type(revision) is not int
@@ -197,26 +216,14 @@ class CorpusMetadataStore:
     ) -> CorpusMetadata:
         """Reserve a stable link; this does not create or verify a Hub repository."""
         owner = self._actor(verified_user)
-        organization = os.getenv("HF_CORPUS_ORGANIZATION", "")
-        try:
-            identifier = UUID(corpus_id)
-            repo_id = f"{organization}/corpus-{identifier}"
-            if not organization or "/" in organization:
-                raise ValueError("Invalid organization")
-            validate_repo_id(repo_id)
-            if repo_type not in {"dataset", "model"} or not isinstance(title, str):
-                raise ValueError("Invalid metadata")
-            if not 1 <= len(title.strip()) <= 512:
-                raise ValueError("Invalid title")
-        except (ValueError, TypeError, AttributeError, HFValidationError) as error:
-            raise CorpusMetadataError("Corpus metadata or organization is invalid") from error
+        identifier, title, repo_id = _normalize_reservation(corpus_id, title, repo_type)
         try:
             rows = self._request(
                 "POST",
                 json={
                     "id": str(identifier),
                     "owner_id": owner,
-                    "title": title.strip(),
+                    "title": title,
                     "hf_repo_id": repo_id,
                     "hf_repo_type": repo_type,
                 },
@@ -227,7 +234,7 @@ class CorpusMetadataStore:
             except CorpusMetadataNotFound:
                 raise error from None
             if (
-                existing.title != title.strip()
+                existing.title != title
                 or existing.hf_repo_id != repo_id
                 or existing.hf_repo_type != repo_type
                 or str(existing.owner_id) != owner
@@ -238,11 +245,7 @@ class CorpusMetadataStore:
             raise CorpusMetadataError("Corpus metadata registry returned invalid data")
         if rows[0].hf_repo_id != repo_id or rows[0].hf_repo_type != repo_type:
             raise CorpusMetadataError("Corpus metadata registry returned invalid data")
-        if (
-            rows[0].state != "provisioning"
-            or rows[0].title != title.strip()
-            or rows[0].revision != 1
-        ):
+        if rows[0].state != "provisioning" or rows[0].title != title or rows[0].revision != 1:
             raise CorpusMetadataError("Corpus metadata registry returned invalid data")
         return rows[0]
 

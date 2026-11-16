@@ -160,3 +160,43 @@ def test_transaction_never_returns_result_when_session_guard_fails(failure_on):
         )
     assert caught.value.status_code == 401 and not db.committed
     assert called == ([] if failure_on == 1 else [True])
+
+
+def test_session_reservation_uses_verified_owner_and_stable_link(monkeypatch):
+    owner, corpus = str(uuid4()), str(uuid4())
+    monkeypatch.setenv("HF_CORPUS_ORGANIZATION", "fixture-org")
+    db = Database(record(owner, corpus, title="Original", revision=1))
+    lease = Lease(db)
+    reserved = SessionBoundCorpusMetadata(lease).reserve(
+        {"sub": owner}, corpus, " Original ", repo_type="dataset"
+    )
+    assert str(reserved.owner_id) == owner and reserved.state == "provisioning" and lease.committed
+    assert db.calls[0][1] == (
+        corpus,
+        owner,
+        "Original",
+        f"fixture-org/corpus-{corpus}",
+        "dataset",
+    )
+
+
+def test_session_reservation_conflicts_without_disclosing_owner(monkeypatch):
+    owner, corpus = str(uuid4()), str(uuid4())
+    monkeypatch.setenv("HF_CORPUS_ORGANIZATION", "fixture-org")
+    with pytest.raises(CorpusMetadataConflict):
+        SessionBoundCorpusMetadata(Lease(Database())).reserve(
+            {"sub": owner}, corpus, "Original", repo_type="dataset"
+        )
+
+
+def test_session_reservation_bad_insert_result_aborts_lease(monkeypatch):
+    owner, corpus = str(uuid4()), str(uuid4())
+    monkeypatch.setenv("HF_CORPUS_ORGANIZATION", "fixture-org")
+    row = record(owner, corpus, title="Original", revision=1)
+    row["state"] = "ready"
+    lease = Lease(Database(row))
+    with pytest.raises(HTTPException) as bad:
+        SessionBoundCorpusMetadata(lease).reserve(
+            {"sub": owner}, corpus, "Original", repo_type="dataset"
+        )
+    assert bad.value.status_code == 503 and not lease.committed
