@@ -19,12 +19,29 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from corpora_api.conversion_artifacts import (
+    ConversionArtifactError,
+    ConversionArtifactInvalid,
+    ConversionArtifactNotFound,
+    ConversionArtifactNotReady,
+    ConversionArtifactStore,
+    ConversionArtifactTooLarge,
+)
 from corpora_api.drafts import MAX_DRAFT_VIEW_RESPONSE_BYTES, DraftStore
-from corpora_api.validation import MAX_VALIDATION_ARCHIVE_BYTES
+from corpora_api.validation import (
+    MAX_VALIDATION_ARCHIVE_BYTES,
+    ValidationBridge,
+    ValidationProtocolError,
+    ValidationTimedOut,
+    ValidationTooLarge,
+    ValidationUnavailable,
+    ValidationUnsupported,
+)
 
 MAX_READ_SECONDS = 30.0
+MAX_PREPARE_SECONDS = 120.0
 _ENV_NAMES = ("PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "PYTHONPATH", "SYSTEMROOT")
-_ERROR_STATUSES = frozenset({404, 409, 413, 422, 423, 503})
+_ERROR_STATUSES = frozenset({404, 409, 413, 415, 422, 423, 502, 503, 504})
 
 
 def read_draft_timed(
@@ -41,7 +58,7 @@ def read_draft_timed(
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
         or not math.isfinite(timeout)
-        or not 0 < timeout <= MAX_READ_SECONDS
+        or not 0 < timeout <= (MAX_PREPARE_SECONDS if view == "prepare" else MAX_READ_SECONDS)
     ):
         raise ValueError("Invalid draft read timeout")
     try:
@@ -62,6 +79,7 @@ def read_draft_timed(
         "list",
         "info",
         "archive",
+        "prepare",
     }:
         raise ValueError("Unsupported draft view")
     url, headers = store._config()
@@ -122,6 +140,12 @@ def read_draft_timed(
             if set(result) != {"drafts", "next_offset"} or not isinstance(result["drafts"], list):
                 raise ValueError("Invalid draft list")
             return result
+        if view == "prepare":
+            if set(result) not in ({"existing"}, {"provision"}):
+                raise ValueError("Invalid draft preparation")
+            if not isinstance(next(iter(result.values())), dict):
+                raise ValueError("Invalid draft preparation")
+            return result
         expected = (
             {"draft", "archive"}
             if view == "archive"
@@ -166,7 +190,19 @@ def _main() -> None:
             request["view"],
             request["params"],
         )
-        if view == "list":
+        if view == "prepare":
+            job_url, job_key, bucket = params["job_url"], params["job_key"], params["bucket"]
+            if not all(isinstance(value, str) and value for value in (job_url, job_key, bucket)):
+                raise ValueError("Invalid conversion job configuration")
+
+            class ConfiguredJobs(ConversionArtifactStore):
+                @staticmethod
+                def _config() -> tuple[str, str, str]:
+                    return job_url, job_key, bucket
+
+            validator = ValidationBridge(executable=params["validator"])
+            result = store.prepare_create(owner, draft_id, ConfiguredJobs(), validator)
+        elif view == "list":
             result = store.list(owner, params["limit"], params["offset"])
         elif view in {"info", "archive"}:
             head = store.resolve(owner, draft_id)
@@ -178,6 +214,22 @@ def _main() -> None:
         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > MAX_DRAFT_VIEW_RESPONSE_BYTES + 1024:
             raise HTTPException(413, "Working draft view exceeds response limit")
+    except ConversionArtifactNotFound:
+        encoded = json.dumps({"error": 404})
+    except ConversionArtifactNotReady:
+        encoded = json.dumps({"error": 409})
+    except (ConversionArtifactTooLarge, ValidationTooLarge):
+        encoded = json.dumps({"error": 413})
+    except ConversionArtifactInvalid:
+        encoded = json.dumps({"error": 422})
+    except ValidationUnsupported:
+        encoded = json.dumps({"error": 415})
+    except ValidationTimedOut:
+        encoded = json.dumps({"error": 504})
+    except ValidationProtocolError:
+        encoded = json.dumps({"error": 502})
+    except (ConversionArtifactError, ValidationUnavailable):
+        encoded = json.dumps({"error": 503})
     except HTTPException as error:
         status = error.status_code if error.status_code in _ERROR_STATUSES else 503
         encoded = json.dumps({"error": status})

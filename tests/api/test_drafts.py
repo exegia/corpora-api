@@ -35,6 +35,13 @@ def mock_draft_lease(monkeypatch):
             return data
 
     monkeypatch.setattr(app_module, "configured_draft_lease", lambda: Lease())
+    monkeypatch.setattr(
+        app_module,
+        "create_session_draft",
+        lambda _lease, store, claims, job, jobs, validator: store.create(
+            claims["sub"], job, jobs, validator
+        ),
+    )
 
     def read(store, owner, draft, view, params):
         if view == "list":
@@ -69,6 +76,44 @@ def test_draft_view_limits_the_complete_response_envelope(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         store.read(owner, document, "node", node=1)
     assert caught.value.status_code == 413
+
+
+def test_draft_preparation_stages_without_publishing(monkeypatch):
+    owner, job = str(uuid4()), str(uuid4())
+    data = b"validated archive fixture"
+    actions = []
+    client = httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(201)))
+    store = DraftStore(client)
+    monkeypatch.setattr(store, "_require_capability", lambda _owner: None)
+    monkeypatch.setattr(store, "resolve", lambda *_: (_ for _ in ()).throw(HTTPException(404)))
+    monkeypatch.setattr(store, "_download", lambda _head: data)
+    monkeypatch.setattr(
+        drafts_module, "read_archive", lambda *_: {"version": "1.0", "name": "Mini"}
+    )
+    monkeypatch.setenv("SUPABASE_URL", "https://example.test")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "placeholder")
+    monkeypatch.setattr(store, "_rpc", lambda action, *_args: actions.append(action))
+    jobs = type("Jobs", (), {"fetch": lambda _self, _owner, _job: ("mini.corpus", data)})()
+    validator = type("Validator", (), {"validate": lambda _self, *_args: {"valid": True}})()
+    staged = store.prepare_create(owner, job, jobs, validator)
+    assert actions == []
+    assert staged["provision"]["job_id"] == job
+    assert staged["provision"]["corpus"] == "draft:" + staged["provision"]["document_id"]
+
+
+def test_failed_validation_never_stages_a_draft(monkeypatch):
+    owner, job = str(uuid4()), str(uuid4())
+    uploaded = []
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: uploaded.append(request)))
+    store = DraftStore(client)
+    monkeypatch.setattr(store, "_require_capability", lambda _owner: None)
+    monkeypatch.setattr(store, "resolve", lambda *_: (_ for _ in ()).throw(HTTPException(404)))
+    monkeypatch.setattr(drafts_module, "read_archive", lambda *_: {"version": "1.0"})
+    jobs = type("Jobs", (), {"fetch": lambda _self, *_: ("mini.corpus", b"invalid")})()
+    validator = type("Validator", (), {"validate": lambda _self, *_: {"valid": False}})()
+    with pytest.raises(HTTPException) as denied:
+        store.prepare_create(owner, job, jobs, validator)
+    assert denied.value.status_code == 422 and not uploaded
 
 
 def test_large_draft_node_returns_413_with_real_corpus(monkeypatch, tmp_path, mock_draft_lease):

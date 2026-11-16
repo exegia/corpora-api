@@ -48,7 +48,7 @@ no caller-supplied storage path is accepted.
 Draft manifest, index, version, node, section and content reads return the
 immutable draft revision alongside each result so callers can detect changes
 between related reads.
-Listing, metadata, archive downloads and these six views require a live
+Draft creation, listing, metadata, archive downloads and these six views require a live
 Supabase session. Configure the server-only
 `CORPORA_SESSION_DB_HOST`, `CORPORA_SESSION_DB_ADDRESS` (one numeric address),
 `CORPORA_SESSION_DB_PORT`, `CORPORA_SESSION_DB_NAME`, `CORPORA_SESSION_DB_USER`,
@@ -59,6 +59,10 @@ be reviewed and provisioned in the target database. Missing configuration
 or database access makes these reads fail closed with HTTP 503. The required
 role can bypass RLS and the proposed session privilege can update session expiry;
 neither should be provisioned without security review.
+Creation validates and stages the private archive before publishing its registry
+entry under the session lock. If the session ends during staging, publication
+is rejected and an unreferenced staged object can remain. Safe reconciliation
+of unreferenced objects is not yet implemented.
 The source-pinned legacy database setup is in `supabase/migrations/`; apply it
 only after reviewing it against the target database and verifying its existing
 tables and policies. The API does not apply migrations automatically.

@@ -104,6 +104,7 @@ from corpora_api.models import (
 from corpora_api.references import reference
 from corpora_api.session_drafts import (
     configured_draft_lease,
+    create_session_draft,
     read_session_draft,
     read_session_draft_archive,
 )
@@ -797,11 +798,19 @@ _STORAGE_DETAIL_RESPONSES = {
     "/v1/ai/drafts", tags=["ai"], response_model=DraftInfo, responses=_STORAGE_DETAIL_RESPONSES
 )
 async def create_working_draft(
-    body: DraftCreateRequest, response: Response, user_id: Annotated[str, Depends(require_user)]
+    body: DraftCreateRequest,
+    response: Response,
+    claims: Annotated[dict[str, Any], Depends(require_user_claims)],
 ) -> dict[str, Any]:
     response.headers["Cache-Control"] = "private, no-store"
     return await run_in_threadpool(
-        draft_store.create, user_id, body.job_id, conversion_artifact_store, validator
+        create_session_draft,
+        configured_draft_lease(),
+        draft_store,
+        claims,
+        body.job_id,
+        conversion_artifact_store,
+        validator,
     )
 
 

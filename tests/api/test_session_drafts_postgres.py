@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import socket
@@ -10,12 +11,14 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from uuid import uuid4
+from types import SimpleNamespace
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 from fastapi import HTTPException
 
 from corpora_api import session_drafts
+from corpora_api.drafts import DraftStore
 from corpora_api.session_read import SessionBoundRead
 
 pytestmark = pytest.mark.skipif(
@@ -138,6 +141,102 @@ def test_logout_waits_for_draft_read_then_revoked_session_is_denied(monkeypatch)
             with pytest.raises(HTTPException) as denied:
                 session_drafts.read_session_draft(lease, None, claims, draft, "manifest")
             assert denied.value.status_code == 401
+
+            # Staging is outside the transaction. Revocation during staging
+            # must prevent publication when the final transaction starts.
+            job, new_session = str(uuid4()), str(uuid4())
+            document = str(uuid5(NAMESPACE_URL, json.dumps(["ai-draft", owner, job])))
+            digest = "sha256:" + "a" * 64
+            revision = str(uuid5(UUID(document), digest))
+            payload = {
+                "document_id": document,
+                "corpus": "draft:" + document,
+                "bucket": "corpus-ai-drafts",
+                "object_key": f"{owner}/ai/{document}/{revision}.corpus",
+                "revision": revision,
+                "digest": digest,
+                "version": "1.0",
+                "job_id": job,
+                "name": "Mini",
+            }
+            with psycopg.connect(dsn, autocommit=True) as db:
+                db.execute("CREATE TABLE public.test_draft_publications(id uuid PRIMARY KEY)")
+                db.execute("GRANT INSERT, SELECT ON public.test_draft_publications TO service_role")
+                db.execute("""
+                    CREATE FUNCTION public.corpora_ai_storage(
+                        action text, principal uuid, payload jsonb)
+                    RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER AS $$
+                    BEGIN
+                        INSERT INTO public.test_draft_publications VALUES
+                            ((payload->>'document_id')::uuid);
+                        IF payload->>'name' = 'slow' THEN PERFORM pg_sleep(3); END IF;
+                        RETURN (payload - 'job_id' - 'name') ||
+                            jsonb_build_object('owner', principal, 'state', 'draft');
+                    END $$
+                """)
+                db.execute(
+                    "GRANT EXECUTE ON FUNCTION public.corpora_ai_storage(text,uuid,jsonb) "
+                    "TO service_role"
+                )
+                db.execute(
+                    "INSERT INTO auth.sessions(id,user_id) VALUES (%s,%s)", (new_session, owner)
+                )
+            ready.clear()
+            release.clear()
+            errors.clear()
+            create_results = []
+
+            def prepare(*_args, **_kwargs):
+                ready.set()
+                assert release.wait(15)
+                return {"provision": payload}
+
+            monkeypatch.setattr(session_drafts, "read_draft_timed", prepare)
+            jobs = SimpleNamespace(_config=lambda: ("http://local", "placeholder", "jobs"))
+            validator = SimpleNamespace(executable="placeholder")
+            create_claims = {"sub": owner, "session_id": new_session, "exp": int(time.time()) + 120}
+
+            def create():
+                try:
+                    create_results.append(
+                        session_drafts.create_session_draft(
+                            lease, DraftStore(), create_claims, job, jobs, validator
+                        )
+                    )
+                except Exception as error:
+                    errors.append(error)
+                    ready.set()
+
+            creator = threading.Thread(target=create)
+            creator.start()
+            try:
+                assert ready.wait(15) and not errors
+                with psycopg.connect(dsn, autocommit=True) as db:
+                    db.execute("DELETE FROM auth.sessions WHERE id=%s", (new_session,))
+            finally:
+                release.set()
+                creator.join(20)
+            assert not creator.is_alive() and not create_results
+            assert len(errors) == 1 and errors[0].status_code == 401
+            with psycopg.connect(dsn, autocommit=True) as db:
+                rows = db.execute("SELECT count(*) FROM public.test_draft_publications").fetchone()
+                assert rows == (0,)
+                db.execute(
+                    "INSERT INTO auth.sessions(id,user_id) VALUES (%s,%s)", (new_session, owner)
+                )
+
+            # If a token expires while the registry write is running, the
+            # second session check rolls the write back with the transaction.
+            payload["name"] = "slow"
+            create_claims["exp"] = int(time.time()) + 2
+            with pytest.raises(HTTPException) as expired:
+                session_drafts.create_session_draft(
+                    lease, DraftStore(), create_claims, job, jobs, validator
+                )
+            assert expired.value.status_code == 401
+            with psycopg.connect(dsn, autocommit=True) as db:
+                rows = db.execute("SELECT count(*) FROM public.test_draft_publications").fetchone()
+                assert rows == (0,)
         finally:
             subprocess.run(
                 [ctl, "-D", str(cluster), "-m", "immediate", "stop"],

@@ -5,18 +5,21 @@ from __future__ import annotations
 import io
 import json
 import os
+import threading
 import time
 import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 import pytest
+from cfabric import Fabric as ContextFabric
 from fastapi.testclient import TestClient
 from tf.fabric import Fabric
 
 from corpora_api import app as app_module
+from corpora_api import session_drafts
 from corpora_api.drafts import DraftStore
 from corpora_api.session_read import SessionBoundRead
 
@@ -33,6 +36,7 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
     anon, service = os.environ["ANON_KEY"], os.environ["SERVICE_ROLE_KEY"]
     monkeypatch.setenv("SUPABASE_URL", url)
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", service)
+    monkeypatch.setenv("SUPABASE_JOBS_BUCKET", "corpora-test-source-jobs")
     monkeypatch.setenv("SUPABASE_JWKS_URL", url + "/auth/v1/.well-known/jwks.json")
     monkeypatch.setenv("SUPABASE_JWT_ISSUER", url + "/auth/v1")
     monkeypatch.setattr(app_module, "draft_store", DraftStore())
@@ -60,6 +64,7 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
             },
         },
     )
+    assert ContextFabric(locations=str(root), silent="deep").loadAll(silent="deep")
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
         zipped.writestr("manifest.yml", "name: Mini\nversion: '1.0'\n")
@@ -69,6 +74,8 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
     data = archive.getvalue()
     service_headers = {"apikey": service, "Authorization": "Bearer " + service}
     users, bucket_created, object_key, grant_applied = [], False, None, False
+    jobs_bucket_created, job_key, created_key = False, None, None
+    race_job_key, race_created_key = None, None
     migration = (
         Path(__file__).resolve().parents[2]
         / "supabase/migrations/20261115165514_stored_session_reads.sql"
@@ -83,6 +90,7 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
         assert db.execute(
             "SELECT to_regclass('public.corpora_test_draft_heads') IS NULL"
         ).fetchone()[0]
+        assert db.execute("SELECT to_regclass('public.conversion_jobs') IS NULL").fetchone()[0]
         assert db.execute(
             "SELECT to_regprocedure('public.corpora_ai_storage(text,uuid,jsonb)') IS NULL"
         ).fetchone()[0]
@@ -123,12 +131,30 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
             db.execute(
                 "REVOKE ALL ON public.corpora_test_draft_heads FROM PUBLIC, anon, authenticated"
             )
-            db.execute("GRANT SELECT ON public.corpora_test_draft_heads TO service_role")
+            db.execute("GRANT SELECT, INSERT ON public.corpora_test_draft_heads TO service_role")
+            db.execute("""
+                CREATE TABLE public.conversion_jobs (
+                    id uuid, owner uuid, status text, result_key text, name text,
+                    display_name text, output_format text, validation jsonb
+                )
+            """)
+            db.execute("ALTER TABLE public.conversion_jobs ENABLE ROW LEVEL SECURITY")
+            db.execute("REVOKE ALL ON public.conversion_jobs FROM PUBLIC, anon, authenticated")
+            db.execute("GRANT SELECT ON public.conversion_jobs TO service_role")
             db.execute("""
                 CREATE FUNCTION public.corpora_ai_storage(
                     p_action text, p_owner uuid, p_payload jsonb)
-                RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path='' AS $$
-                    SELECT CASE
+                RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path='' AS $$
+                DECLARE result jsonb;
+                BEGIN
+                    IF p_action='provision' THEN
+                        result := (p_payload - 'job_id' - 'name') ||
+                            jsonb_build_object('owner', p_owner, 'state', 'draft');
+                        INSERT INTO public.corpora_test_draft_heads VALUES
+                            (p_owner,(p_payload->>'document_id')::uuid,result);
+                        RETURN result;
+                    END IF;
+                    RETURN (SELECT CASE
                         WHEN p_action='capabilities' THEN '{"draft_api":1}'::jsonb
                         WHEN p_action='drafts' THEN (
                             SELECT coalesce(jsonb_agg(head), '[]'::jsonb) FROM (
@@ -143,7 +169,8 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                             WHERE owner=p_owner
                               AND 'draft:' || document_id::text = p_payload->>'corpus'
                         )
-                    END
+                    END);
+                END
                 $$
             """)
             db.execute(
@@ -170,6 +197,17 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
             )
             response.raise_for_status()
             bucket_created = True
+            response = client.post(
+                url + "/storage/v1/bucket",
+                headers=service_headers,
+                json={
+                    "id": "corpora-test-source-jobs",
+                    "name": "corpora-test-source-jobs",
+                    "public": False,
+                },
+            )
+            response.raise_for_status()
+            jobs_bucket_created = True
             owner, document, revision = users[0][0], str(uuid4()), str(uuid4())
             object_key = f"{owner}/ai/{document}/{revision}.corpus"
             client.post(
@@ -192,6 +230,22 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
             db.execute(
                 "INSERT INTO public.corpora_test_draft_heads VALUES (%s,%s,%s::jsonb)",
                 (owner, document, json.dumps(head)),
+            )
+            job = str(uuid4())
+            job_key = f"conversion-jobs/{job}.corpus"
+            created_id = str(uuid5(NAMESPACE_URL, json.dumps(["ai-draft", owner, job])))
+            created_digest = "sha256:" + hashlib.sha256(data).hexdigest()
+            created_revision = str(uuid5(UUID(created_id), created_digest))
+            created_key = f"{owner}/ai/{created_id}/{created_revision}.corpus"
+            client.post(
+                f"{url}/storage/v1/object/corpora-test-source-jobs/{job_key}",
+                headers=service_headers,
+                content=data,
+            ).raise_for_status()
+            db.execute(
+                "INSERT INTO public.conversion_jobs VALUES (%s,%s,'succeeded',%s,'Mini',NULL,"
+                "'corpus',%s::jsonb)",
+                (job, owner, job_key, '{"valid": true}'),
             )
             time.sleep(1)
             with TestClient(app_module.app) as api:
@@ -219,8 +273,79 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                     f"/v1/ai/drafts/{document}/archive", headers=foreign_headers
                 )
                 assert foreign_archive.status_code == 404
-                response = client.post(url + "/auth/v1/logout", headers={"apikey": anon, **headers})
-                assert response.status_code in (200, 204)
+                created = api.post("/v1/ai/drafts", headers=headers, json={"job_id": job})
+                assert created.status_code == 200, (created.status_code, created.text)
+                created_info = created.json()
+                assert (created_info["id"], created_info["revision"]) == (
+                    created_id,
+                    created_revision,
+                )
+                retry = api.post("/v1/ai/drafts", headers=headers, json={"job_id": job})
+                assert retry.json() == created_info
+                assert (
+                    api.post(
+                        "/v1/ai/drafts", headers=foreign_headers, json={"job_id": job}
+                    ).status_code
+                    == 404
+                )
+                race_job = str(uuid4())
+                race_job_key = f"conversion-jobs/{race_job}.corpus"
+                race_id = str(uuid5(NAMESPACE_URL, json.dumps(["ai-draft", owner, race_job])))
+                race_revision = str(uuid5(UUID(race_id), created_digest))
+                race_created_key = f"{owner}/ai/{race_id}/{race_revision}.corpus"
+                client.post(
+                    f"{url}/storage/v1/object/corpora-test-source-jobs/{race_job_key}",
+                    headers=service_headers,
+                    content=data,
+                ).raise_for_status()
+                db.execute(
+                    "INSERT INTO public.conversion_jobs VALUES (%s,%s,'succeeded',%s,'Mini',NULL,"
+                    "'corpus',%s::jsonb)",
+                    (race_job, owner, race_job_key, '{"valid": true}'),
+                )
+                ready, release, outcome, errors = threading.Event(), threading.Event(), [], []
+                real_worker = session_drafts.read_draft_timed
+
+                def paused_worker(*args, **kwargs):
+                    result = real_worker(*args, **kwargs)
+                    ready.set()
+                    assert release.wait(20)
+                    return result
+
+                monkeypatch.setattr(session_drafts, "read_draft_timed", paused_worker)
+
+                def create_during_logout():
+                    try:
+                        outcome.append(
+                            api.post(
+                                "/v1/ai/drafts", headers=headers, json={"job_id": race_job}
+                            ).status_code
+                        )
+                    except Exception as error:
+                        errors.append(error)
+                        ready.set()
+
+                thread = threading.Thread(target=create_during_logout)
+                thread.start()
+                try:
+                    assert ready.wait(30) and not errors
+                    response = client.post(
+                        url + "/auth/v1/logout", headers={"apikey": anon, **headers}
+                    )
+                    assert response.status_code in (200, 204)
+                finally:
+                    release.set()
+                    thread.join(30)
+                assert not thread.is_alive() and not errors and outcome == [401]
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM public.corpora_test_draft_heads WHERE document_id=%s",
+                        (race_id,),
+                    ).fetchone()[0]
+                    == 0
+                )
+                after_logout = api.post("/v1/ai/drafts", headers=headers, json={"job_id": job})
+                assert after_logout.status_code == 401
                 for path in ("", f"/{document}", f"/{document}/archive"):
                     assert api.get(f"/v1/ai/drafts{path}", headers=headers).status_code == 401
                 for view in ("manifest", "index", "versions", "nodes/1", "sections", "content"):
@@ -229,12 +354,27 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                         == 401
                     )
         finally:
-            if object_key:
+            if object_key or created_key or race_created_key:
                 client.request(
                     "DELETE",
                     url + "/storage/v1/object/corpus-ai-drafts",
                     headers=service_headers,
-                    json={"prefixes": [object_key]},
+                    json={
+                        "prefixes": [
+                            key for key in (object_key, created_key, race_created_key) if key
+                        ]
+                    },
+                ).raise_for_status()
+            if job_key or race_job_key:
+                client.request(
+                    "DELETE",
+                    url + "/storage/v1/object/corpora-test-source-jobs",
+                    headers=service_headers,
+                    json={"prefixes": [key for key in (job_key, race_job_key) if key]},
+                ).raise_for_status()
+            if jobs_bucket_created:
+                client.delete(
+                    url + "/storage/v1/bucket/corpora-test-source-jobs", headers=service_headers
                 ).raise_for_status()
             if bucket_created:
                 client.delete(
@@ -246,6 +386,7 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                 ).raise_for_status()
             db.execute("DROP FUNCTION IF EXISTS public.corpora_ai_storage(text,uuid,jsonb)")
             db.execute("DROP TABLE IF EXISTS public.corpora_test_draft_heads")
+            db.execute("DROP TABLE IF EXISTS public.conversion_jobs")
             db.execute(
                 "DROP FUNCTION IF EXISTS public.corpora_stored_lock_session(uuid,uuid,bigint)"
             )

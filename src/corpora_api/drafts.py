@@ -176,6 +176,13 @@ class DraftStore:
         return result
 
     def create(self, owner: str, job_id: str, jobs: Any, validator: Any) -> dict[str, Any]:
+        staged = self.prepare_create(owner, job_id, jobs, validator)
+        if "existing" in staged:
+            return staged["existing"]
+        return self.provision_create(owner, staged["provision"])
+
+    def prepare_create(self, owner: str, job_id: str, jobs: Any, validator: Any) -> dict[str, Any]:
+        """Validate and stage bytes without publishing a new draft registry entry."""
         try:
             owner, job_id = str(UUID(owner)), str(UUID(job_id))
         except ValueError as error:
@@ -186,7 +193,7 @@ class DraftStore:
             raise HTTPException(status_code=422, detail="Working drafts require a corpus archive")
         document_id = str(uuid5(NAMESPACE_URL, json.dumps(["ai-draft", owner, job_id])))
         try:
-            return self._info(self.resolve(owner, document_id))
+            return {"existing": self._info(self.resolve(owner, document_id))}
         except HTTPException as error:
             if error.status_code != 404:
                 raise
@@ -233,13 +240,15 @@ class DraftStore:
         if response.status_code not in (200, 201, 400, 409):
             raise HTTPException(status_code=503, detail="Working draft archive could not be staged")
         self._download(head)
-        row = self._rpc(
-            "provision",
-            owner,
-            {
+        return {
+            "provision": {
                 **head.model_dump(mode="json", exclude={"owner", "state"}),
                 "job_id": job_id,
                 "name": str(manifest.get("name") or name)[:512],
             },
-        )
-        return self._info(self._head(row, owner, document_id))
+        }
+
+    def provision_create(self, owner: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Publish a staged archive through the configured registry adapter."""
+        row = self._rpc("provision", owner, payload)
+        return self._info(self._head(row, owner, payload["document_id"]))
