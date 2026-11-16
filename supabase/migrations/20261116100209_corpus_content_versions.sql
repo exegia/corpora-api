@@ -30,14 +30,17 @@ CREATE TABLE public.corpora_corpus_versions (
     retained_ref text NOT NULL CHECK (retained_ref = 'corpora-op-' || operation_id::text),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (corpus_id, sequence),
+    UNIQUE (corpus_id, commit_sha),
     UNIQUE (corpus_id, sequence, commit_sha),
     FOREIGN KEY (operation_id, corpus_id)
         REFERENCES public.corpora_corpus_write_ops(id, corpus_id) ON DELETE RESTRICT,
-    CHECK ((sequence = 1) = (parent_sha IS NULL))
+    CHECK ((sequence = 1) = (parent_sha IS NULL)),
+    CHECK (parent_sha IS NULL OR parent_sha <> commit_sha)
 );
 
--- A head can point only to a recorded version for this exact corpus. Admission
--- and head advance must occur in the same database transaction.
+-- A head can point only to a recorded version for this exact corpus. In the
+-- later finalization transaction, version insertion, head advance and operation
+-- completion must commit together; initial admission commits separately.
 CREATE TABLE public.corpora_corpus_heads (
     corpus_id uuid PRIMARY KEY REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,
     sequence bigint NOT NULL CHECK (sequence > 0),
@@ -103,6 +106,69 @@ CREATE TRIGGER corpora_corpus_heads_no_delete BEFORE DELETE
     ON public.corpora_corpus_heads FOR EACH ROW
     EXECUTE FUNCTION public.corpora_corpus_preserve_history();
 
+CREATE FUNCTION public.corpora_corpus_validate_operation()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.state <> 'admitted' THEN
+            RAISE EXCEPTION 'CORPUS_OPERATION_STATE_INVALID';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.id IS DISTINCT FROM OLD.id OR NEW.corpus_id IS DISTINCT FROM OLD.corpus_id
+       OR NEW.actor_id IS DISTINCT FROM OLD.actor_id OR NEW.session_id IS DISTINCT FROM OLD.session_id
+       OR NEW.expected_sequence IS DISTINCT FROM OLD.expected_sequence
+       OR NEW.expected_parent_sha IS DISTINCT FROM OLD.expected_parent_sha
+       OR NEW.input_sha256 IS DISTINCT FROM OLD.input_sha256
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'CORPUS_OPERATION_IDENTITY_IMMUTABLE';
+    END IF;
+    IF (OLD.state IN ('completed', 'failed') AND NEW.state <> OLD.state)
+       OR (OLD.state = 'uncertain' AND NEW.state = 'admitted') THEN
+        RAISE EXCEPTION 'CORPUS_OPERATION_STATE_INVALID';
+    END IF;
+    IF NEW.state = 'completed' AND OLD.state <> 'completed' AND NOT EXISTS (
+        SELECT 1 FROM public.corpora_corpus_versions v
+        JOIN public.corpora_corpus_heads h ON h.corpus_id = v.corpus_id
+            AND h.sequence = v.sequence AND h.commit_sha = v.commit_sha
+        WHERE v.operation_id = NEW.id
+    ) THEN
+        RAISE EXCEPTION 'CORPUS_OPERATION_RESULT_MISSING';
+    END IF;
+    IF NEW.state = 'failed' AND EXISTS (
+        SELECT 1 FROM public.corpora_corpus_versions v WHERE v.operation_id = NEW.id
+    ) THEN
+        RAISE EXCEPTION 'CORPUS_OPERATION_RESULT_EXISTS';
+    END IF;
+    NEW.updated_at := clock_timestamp();
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER corpora_corpus_validate_operation BEFORE INSERT OR UPDATE
+    ON public.corpora_corpus_write_ops FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_validate_operation();
+CREATE TRIGGER corpora_corpus_write_ops_no_delete BEFORE DELETE
+    ON public.corpora_corpus_write_ops FOR EACH ROW
+    EXECUTE FUNCTION public.corpora_corpus_preserve_history();
+
+CREATE FUNCTION public.corpora_corpus_validate_finalized_version()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM public.corpora_corpus_write_ops o
+        JOIN public.corpora_corpus_heads h ON h.corpus_id = o.corpus_id
+        WHERE o.id = NEW.operation_id AND o.corpus_id = NEW.corpus_id
+          AND o.state = 'completed' AND h.sequence >= NEW.sequence
+    ) THEN
+        RAISE EXCEPTION 'CORPUS_VERSION_NOT_FINALIZED';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER corpora_corpus_version_finalized
+    AFTER INSERT ON public.corpora_corpus_versions DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION public.corpora_corpus_validate_finalized_version();
+
 ALTER TABLE public.corpora_corpus_write_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.corpora_corpus_heads ENABLE ROW LEVEL SECURITY;
@@ -114,5 +180,6 @@ REVOKE ALL ON public.corpora_corpus_write_ops, public.corpora_corpus_versions,
 GRANT SELECT ON public.corpora_corpus_write_ops, public.corpora_corpus_versions,
     public.corpora_corpus_heads TO service_role;
 REVOKE ALL ON FUNCTION public.corpora_corpus_validate_version(),
-    public.corpora_corpus_validate_head(), public.corpora_corpus_preserve_history()
+    public.corpora_corpus_validate_head(), public.corpora_corpus_preserve_history(),
+    public.corpora_corpus_validate_operation(), public.corpora_corpus_validate_finalized_version()
     FROM PUBLIC, anon, authenticated, service_role;

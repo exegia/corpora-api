@@ -25,6 +25,7 @@ from corpora_api.session_corpus_metadata import (
     SessionBoundCorpusMetadata,
     SessionBoundMetadataTransaction,
 )
+from corpora_api.session_corpus_versions import SessionBoundCorpusSaveAdmission
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_TEST_LOCAL_SUPABASE") or not os.getenv("CORPORA_SESSION_GUARD_ROOT"),
@@ -54,7 +55,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
     guard = (root / "supabase/migrations/20261115165514_stored_session_reads.sql").read_text()
     guard = guard.split("CREATE FUNCTION public.corpora_stored_session_get", 1)[0]
     auth_dsn = psycopg.conninfo.make_conninfo(dsn, user="supabase_auth_admin")
-    users, granted = [], False
+    users, credentials, granted = [], [], False
     with (
         psycopg.connect(dsn, autocommit=True) as db,
         psycopg.connect(auth_dsn, autocommit=True) as auth_db,
@@ -83,6 +84,22 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             granted = True
             db.execute(migration)
+            version_migration = next(
+                (Path(__file__).resolve().parents[2] / "supabase/migrations").glob(
+                    "*_corpus_content_versions.sql"
+                )
+            )
+            db.execute(version_migration.read_text())
+            assert not db.execute(
+                "SELECT has_column_privilege('service_role',"
+                "'public.corpora_corpus_write_ops','id','INSERT')"
+            ).fetchone()[0]
+            # Test-only DML privilege; this is not a proposed hosted grant.
+            db.execute(
+                "GRANT INSERT (id,corpus_id,actor_id,session_id,expected_sequence,"
+                "expected_parent_sha,input_sha256) ON public.corpora_corpus_write_ops "
+                "TO service_role"
+            )
             db.execute(guard)
             db.execute(
                 "REVOKE ALL ON FUNCTION public.corpora_stored_lock_session(uuid,uuid,bigint) "
@@ -94,14 +111,16 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             db.execute("NOTIFY pgrst, 'reload schema'")
             for _ in range(3):
+                email, password = f"{uuid4()}@example.org", str(uuid4())
                 response = api.post(
                     url + "/auth/v1/signup",
                     headers={"apikey": anon},
-                    json={"email": f"{uuid4()}@example.org", "password": str(uuid4())},
+                    json={"email": email, "password": password},
                 )
                 response.raise_for_status()
                 token = response.json()["access_token"]
                 users.append((verify_user_token(token), token))
+                credentials.append((email, password))
             monkeypatch.setenv("CORPORA_SUPERADMIN_USER_ID", users[2][0]["sub"])
             time.sleep(1)
             metadata = CorpusMetadataStore()
@@ -136,16 +155,117 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 ).fetchone()[0]
                 == 1
             )
+            admission = SessionBoundCorpusSaveAdmission(lease)
+            operation_id = str(uuid4())
+            saved = admission.admit(
+                users[0][0],
+                identifier,
+                operation_id,
+                expected_sequence=0,
+                expected_parent_sha=None,
+                input_sha256="a" * 64,
+            )
+            assert str(saved.operation_id) == operation_id and saved.state == "admitted"
+            assert saved.retained_ref == "corpora-op-" + operation_id
+            assert (
+                admission.admit(
+                    users[0][0],
+                    identifier,
+                    operation_id,
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+                == saved
+            )
+            login = api.post(
+                url + "/auth/v1/token?grant_type=password",
+                headers={"apikey": anon},
+                json={"email": credentials[0][0], "password": credentials[0][1]},
+            )
+            login.raise_for_status()
+            second_session = verify_user_token(login.json()["access_token"])
+            assert second_session["session_id"] != users[0][0]["session_id"]
+            assert (
+                admission.admit(
+                    second_session,
+                    identifier,
+                    operation_id,
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+                == saved
+            )
+            with pytest.raises(CorpusMetadataConflict):
+                admission.admit(
+                    users[0][0],
+                    identifier,
+                    operation_id,
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="b" * 64,
+                )
+            with pytest.raises(CorpusMetadataConflict):
+                admission.admit(
+                    users[0][0],
+                    identifier,
+                    str(uuid4()),
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+            with pytest.raises(CorpusMetadataNotFound):
+                admission.admit(
+                    users[1][0],
+                    identifier,
+                    str(uuid4()),
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+            admin_save = admission.admit(
+                users[2][0],
+                duplicate_id,
+                str(uuid4()),
+                expected_sequence=0,
+                expected_parent_sha=None,
+                input_sha256="a" * 64,
+            )
+            assert str(admin_save.actor_id) == users[2][0]["sub"]
+            contested_corpus = str(uuid4())
+            editor.reserve(users[0][0], contested_corpus, "Contested", repo_type="dataset")
+            contest_barrier = threading.Barrier(2)
+
+            def compete(_):
+                contest_barrier.wait(timeout=10)
+                try:
+                    return admission.admit(
+                        users[0][0],
+                        contested_corpus,
+                        str(uuid4()),
+                        expected_sequence=0,
+                        expected_parent_sha=None,
+                        input_sha256="a" * 64,
+                    ).state
+                except CorpusMetadataConflict:
+                    return "conflict"
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                assert sorted(pool.map(compete, range(2))) == ["admitted", "conflict"]
             assert str(editor.get(users[0][0], identifier).id) == identifier
             with pytest.raises(CorpusMetadataNotFound):
                 editor.get(users[1][0], identifier)
             assert str(editor.get(users[2][0], identifier).id) == identifier
-            expected_ids = sorted([identifier, duplicate_id])
+            expected_ids = sorted([identifier, duplicate_id, contested_corpus])
             first_page, cursor = editor.list_owned(users[0][0], limit=1)
             assert [str(row.id) for row in first_page] == expected_ids[:1]
             assert cursor == expected_ids[0]
             second_page, cursor = editor.list_owned(users[0][0], limit=1, after=cursor)
-            assert [str(row.id) for row in second_page] == expected_ids[1:] and cursor is None
+            assert [str(row.id) for row in second_page] == expected_ids[1:2]
+            assert cursor == expected_ids[1]
+            third_page, cursor = editor.list_owned(users[0][0], limit=1, after=cursor)
+            assert [str(row.id) for row in third_page] == expected_ids[2:] and cursor is None
             admin_page, _ = editor.list_owned(users[2][0], owner_id=users[0][0]["sub"])
             assert [str(row.id) for row in admin_page] == expected_ids
             with pytest.raises(CorpusMetadataNotFound):
@@ -222,6 +342,27 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 == 0
             )
 
+            expired_save_corpus, expired_save_id = str(uuid4()), str(uuid4())
+            editor.reserve(users[0][0], expired_save_corpus, "Expired save", repo_type="dataset")
+            expiring_save_claims = {**users[0][0], "exp": int(time.time()) + 1}
+            with pytest.raises(HTTPException) as expired_save:
+                SessionBoundCorpusSaveAdmission(ExpiringLease()).admit(
+                    expiring_save_claims,
+                    expired_save_corpus,
+                    expired_save_id,
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+            assert expired_save.value.status_code == 401
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_write_ops WHERE id=%s",
+                    (expired_save_id,),
+                ).fetchone()[0]
+                == 0
+            )
+
             rolled_back_id = str(uuid4())
             with pytest.raises(HTTPException) as disconnected_reservation:
                 SessionBoundCorpusMetadata(DisconnectLease()).reserve(
@@ -242,6 +383,106 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             assert disconnected.value.status_code == 503
             assert metadata.get(users[0][0]["sub"], identifier).revision == 3
             assert metadata.get(users[0][0]["sub"], identifier).title == "Revised"
+
+            disconnected_corpus, disconnected_op = str(uuid4()), str(uuid4())
+            editor.reserve(users[0][0], disconnected_corpus, "Disconnected", repo_type="dataset")
+            with pytest.raises(HTTPException) as disconnected_admission:
+                SessionBoundCorpusSaveAdmission(DisconnectLease()).admit(
+                    users[0][0],
+                    disconnected_corpus,
+                    disconnected_op,
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+            assert disconnected_admission.value.status_code == 503
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_corpus_write_ops WHERE id=%s",
+                    (disconnected_op,),
+                ).fetchone()[0]
+                == 0
+            )
+
+            race_corpus, race_op = str(uuid4()), str(uuid4())
+            editor.reserve(users[1][0], race_corpus, "Race", repo_type="dataset")
+            race_entered, race_release, race_logout_done = (
+                threading.Event(),
+                threading.Event(),
+                threading.Event(),
+            )
+            race_results, race_failures = [], []
+
+            class PausedAdmission:
+                def run(self, claims, operation):
+                    def pause_after_insert(owner, connection):
+                        result = operation(owner, connection)
+                        race_entered.set()
+                        if not race_release.wait(15):
+                            raise RuntimeError("test release timed out")
+                        return result
+
+                    return lease.run(claims, pause_after_insert)
+
+            def admit_before_logout():
+                try:
+                    result = SessionBoundCorpusSaveAdmission(PausedAdmission()).admit(
+                        users[1][0],
+                        race_corpus,
+                        race_op,
+                        expected_sequence=0,
+                        expected_parent_sha=None,
+                        input_sha256="a" * 64,
+                    )
+                    race_results.append(str(result.operation_id))
+                except Exception as error:
+                    race_failures.append(error)
+                    race_entered.set()
+
+            def race_logout():
+                try:
+                    with httpx.Client(timeout=15) as client:
+                        response = client.post(
+                            url + "/auth/v1/logout",
+                            headers={"apikey": anon, "Authorization": "Bearer " + users[1][1]},
+                        )
+                        race_results.append(response.status_code)
+                except Exception as error:
+                    race_failures.append(error)
+                finally:
+                    race_logout_done.set()
+
+            admission_thread = threading.Thread(target=admit_before_logout, daemon=True)
+            signout_thread = threading.Thread(target=race_logout, daemon=True)
+            admission_thread.start()
+            try:
+                assert race_entered.wait(10) and not race_failures
+                signout_thread.start()
+                assert not race_logout_done.wait(0.5)
+            finally:
+                race_release.set()
+                admission_thread.join(timeout=10)
+                if signout_thread.ident is not None:
+                    signout_thread.join(timeout=10)
+            assert (
+                not admission_thread.is_alive()
+                and not signout_thread.is_alive()
+                and not race_failures
+            )
+            assert sorted(str(value) for value in race_results) == sorted(["204", race_op])
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s", (race_op,)
+            ).fetchone() == ("admitted",)
+            with pytest.raises(HTTPException) as revoked_race:
+                admission.admit(
+                    users[1][0],
+                    race_corpus,
+                    str(uuid4()),
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+            assert revoked_race.value.status_code == 401
 
             entered, release, logout_done = threading.Event(), threading.Event(), threading.Event()
             results, failures = [], []
@@ -310,8 +551,45 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             with pytest.raises(HTTPException) as revoked_list:
                 editor.list_owned(users[0][0])
             assert revoked_list.value.status_code == 401
+            with pytest.raises(HTTPException) as revoked_save:
+                admission.admit(
+                    users[0][0],
+                    identifier,
+                    operation_id,
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+            assert revoked_save.value.status_code == 401
+            with pytest.raises(HTTPException) as revoked_invalid_save:
+                admission.admit(
+                    users[0][0],
+                    identifier,
+                    "bad-id",
+                    expected_sequence=-1,
+                    expected_parent_sha=None,
+                    input_sha256="bad",
+                )
+            assert revoked_invalid_save.value.status_code == 401
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s", (operation_id,)
+            ).fetchone() == ("admitted",)
             assert metadata.get(users[2][0]["sub"], identifier).title == "Committed"
         finally:
+            for table in (
+                "corpora_corpus_heads",
+                "corpora_corpus_versions",
+                "corpora_corpus_write_ops",
+            ):
+                db.execute("DROP TABLE IF EXISTS public." + table + " CASCADE")
+            for fn in (
+                "corpora_corpus_validate_version",
+                "corpora_corpus_validate_head",
+                "corpora_corpus_preserve_history",
+                "corpora_corpus_validate_operation",
+                "corpora_corpus_validate_finalized_version",
+            ):
+                db.execute("DROP FUNCTION IF EXISTS public." + fn + "()")
             db.execute("DROP TABLE IF EXISTS public.corpora_corpus_metadata")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_metadata_stamp()")
             db.execute(

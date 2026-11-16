@@ -65,28 +65,69 @@ def test_content_version_constraints_and_privileges():
                 operation(str(uuid4()), corpus, 0, None)
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET state='completed' WHERE id=%s",
+                    (op1,),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET session_id=%s WHERE id=%s",
+                    (str(uuid4()), op1),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute("DELETE FROM public.corpora_corpus_write_ops WHERE id=%s", (op1,))
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s", (op1,)
+            )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET state='admitted' WHERE id=%s",
+                    (op1,),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
                     "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
                     "VALUES (%s,2,%s,%s,%s,%s)",
                     (corpus, "b" * 40, "c" * 40, op1, "corpora-op-" + op1),
                 )
-            db.execute(
-                "INSERT INTO public.corpora_corpus_versions "
-                "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                "VALUES (%s,1,%s,NULL,%s,%s)",
-                (corpus, "b" * 40, op1, "corpora-op-" + op1),
-            )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "INSERT INTO public.corpora_corpus_heads VALUES (%s,1,%s)", (other, "b" * 40)
                 )
-            db.execute(
-                "INSERT INTO public.corpora_corpus_heads VALUES (%s,1,%s)", (corpus, "b" * 40)
-            )
-            db.execute(
-                "UPDATE public.corpora_corpus_write_ops SET state='completed' WHERE id=%s", (op1,)
-            )
+            with pytest.raises(psycopg.errors.RaiseException):
+                with db.transaction():
+                    db.execute(
+                        "INSERT INTO public.corpora_corpus_versions "
+                        "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                        "VALUES (%s,1,%s,NULL,%s,%s)",
+                        (corpus, "b" * 40, op1, "corpora-op-" + op1),
+                    )
+            with db.transaction():
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_versions "
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                    "VALUES (%s,1,%s,NULL,%s,%s)",
+                    (corpus, "b" * 40, op1, "corpora-op-" + op1),
+                )
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_heads VALUES (%s,1,%s)", (corpus, "b" * 40)
+                )
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET state='completed' WHERE id=%s",
+                    (op1,),
+                )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET state='failed' WHERE id=%s", (op1,)
+                )
             operation(op2, corpus, 1, "b" * 40)
+            with pytest.raises(psycopg.IntegrityError):
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_versions "
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                    "VALUES (%s,2,%s,%s,%s,%s)",
+                    (corpus, "b" * 40, "b" * 40, op2, "corpora-op-" + op2),
+                )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "
@@ -94,17 +135,22 @@ def test_content_version_constraints_and_privileges():
                     "VALUES (%s,2,%s,%s,%s,%s)",
                     (corpus, "c" * 40, "d" * 40, op2, "corpora-op-" + op2),
                 )
-            db.execute(
-                "INSERT INTO public.corpora_corpus_versions "
-                "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
-                "VALUES (%s,2,%s,%s,%s,%s)",
-                (corpus, "c" * 40, "b" * 40, op2, "corpora-op-" + op2),
-            )
-            db.execute(
-                "UPDATE public.corpora_corpus_heads SET sequence=2,commit_sha=%s "
-                "WHERE corpus_id=%s",
-                ("c" * 40, corpus),
-            )
+            with db.transaction():
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_versions "
+                    "(corpus_id,sequence,commit_sha,parent_sha,operation_id,retained_ref) "
+                    "VALUES (%s,2,%s,%s,%s,%s)",
+                    (corpus, "c" * 40, "b" * 40, op2, "corpora-op-" + op2),
+                )
+                db.execute(
+                    "UPDATE public.corpora_corpus_heads SET sequence=2,commit_sha=%s "
+                    "WHERE corpus_id=%s",
+                    ("c" * 40, corpus),
+                )
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET state='completed' WHERE id=%s",
+                    (op2,),
+                )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "UPDATE public.corpora_corpus_versions SET commit_sha=%s "
@@ -152,6 +198,8 @@ def test_content_version_constraints_and_privileges():
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_version()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_head()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_preserve_history()")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_operation()")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_validate_finalized_version()")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_metadata_stamp()")
             if user:
                 client.delete(

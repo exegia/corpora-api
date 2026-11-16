@@ -63,14 +63,24 @@ reviewed session lease and the proposed database privileges; it does not apply
 those privileges or expose a route. A lost commit response can leave the caller
 uncertain whether an update committed, so callers must reload before retrying.
 A separate draft schema records content write operations, immutable-commit
-versions and a current head, distinct from the metadata revision counter. It
-grants the service role read access only; no admission, verified Hub write,
-finalization, restore, reconciliation, readiness transition or route is
-implemented. A recorded commit must remain reachable through its retained Hub
-reference, and these constraints do not themselves verify remote bytes.
-Before enabling a writer, enforce immutable operation identity and valid state
-transitions, bind admission to the owner and live session, and atomically
-finalize the operation, version and head. Readiness does not yet require a head.
+versions and a current head, distinct from the metadata revision counter. An
+unwired adapter admits an owner or superadmin save inside a live-session
+transaction, before any Hub work. It expects a trusted hash of validated input;
+it does not perform validation or Hub writes. The migration grants the service
+role read access only, so admission needs a separately reviewed write boundary.
+No finalization, restore, reconciliation, readiness transition or route is
+implemented. Recorded commits must remain reachable through their retained Hub
+references; the schema does not itself verify remote bytes. Before enabling a
+writer, implement atomic finalization of the operation, version and head, and
+enforce the intended ready-state/head relationship. Repeated requests can return
+the same admitted operation; a future dispatcher needs a durable exclusive
+execution claim and reconciliation, and must not launch work merely because an
+admission receipt exists. A lost database commit response can leave an admitted
+operation that requires lookup; it must not trigger Hub work from the failed
+response. A newly authenticated session for the same actor can reattach to an
+identical operation; the originally admitted session remains recorded. Receipt
+state is a snapshot and must not substitute for a locked or compare-and-swap
+worker claim.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
