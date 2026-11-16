@@ -49,6 +49,10 @@ have no direct table access. `CORPORA_SUPERADMIN_USER_ID` is a server-controlled
 user UUID, never a user-editable profile field. Review the migration, session
 enforcement, Hub provisioning and namespace before enabling this registry; the
 API does not apply its migrations.
+The draft registry can update title, description, language and structured
+properties with a revision check; properties are replaced as one object. It
+does not expose these edits through an API or enforce a live session itself.
+Properties are user-editable metadata and must not determine authorization.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
