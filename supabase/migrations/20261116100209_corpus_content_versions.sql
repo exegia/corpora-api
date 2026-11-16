@@ -3,7 +3,8 @@
 -- publishing it. No endpoint currently calls these tables.
 -- The first logical corpus version has no earlier published corpus version,
 -- but its Hub commit still needs a real Git parent. A trusted provisioner must
--- verify and record the repository's initial commit before the first claim.
+-- verify and record a pinned repository baseline before the first claim. This
+-- baseline is not a claim about the provider's original creation commit.
 CREATE TABLE public.corpora_corpus_provision_ops (
     id uuid PRIMARY KEY,
     corpus_id uuid NOT NULL UNIQUE REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,

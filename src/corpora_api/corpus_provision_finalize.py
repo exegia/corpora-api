@@ -1,9 +1,10 @@
 """Unwired database finalization of independently verified repository creation.
 
 The attestation is an internal assertion, not a verifier. Never accept it from
-clients or use an observed repository head as proof of initial provenance.
-The caller must verify exclusive writer control, repository identity, privacy,
-commit provenance and worker liveness before invoking this database adapter.
+clients or treat an observed repository head as proof of the creation commit.
+The caller must verify the confirmed creation, repository identity, privacy,
+observed baseline and worker liveness before invoking this database adapter.
+Publishing a corpus version also requires complete tree and content validation.
 """
 
 from __future__ import annotations
