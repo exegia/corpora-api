@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -120,10 +121,17 @@ def test_real_worker_reads_owner_bound_archive(monkeypatch):
         result = timed_draft_read.read_draft_timed(DraftStore(), owner, draft, "manifest", {})
         assert result["draft"]["id"] == draft
         assert result["data"]["name"] == "Mini"
+        info = timed_draft_read.read_draft_timed(DraftStore(), owner, draft, "info", {})
+        assert info["draft"]["id"] == draft
+        exported = timed_draft_read.read_draft_timed(DraftStore(), owner, draft, "archive", {})
+        assert base64.b64decode(exported["archive"]) == data
         fact["digest"] = "sha256:" + "0" * 64
         with pytest.raises(HTTPException) as tampered:
             timed_draft_read.read_draft_timed(DraftStore(), owner, draft, "manifest", {})
         assert tampered.value.status_code == 409
+        with pytest.raises(HTTPException) as tampered_archive:
+            timed_draft_read.read_draft_timed(DraftStore(), owner, draft, "archive", {})
+        assert tampered_archive.value.status_code == 409
     finally:
         server.shutdown()
         server.server_close()

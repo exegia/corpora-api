@@ -76,6 +76,9 @@ def test_all_draft_views_reject_a_revoked_session(monkeypatch):
     calls = []
     monkeypatch.setattr(session_drafts, "read_draft_timed", lambda *_args: calls.append(True))
     with TestClient(app_module.app) as api:
+        for path in ("", f"/{draft}", f"/{draft}/archive"):
+            response = api.get(f"/v1/ai/drafts{path}", headers={"Authorization": "Bearer fixture"})
+            assert response.status_code == 401
         for view in ("manifest", "index", "versions", "nodes/1", "sections", "content"):
             response = api.get(
                 f"/v1/ai/drafts/{draft}/{view}", headers={"Authorization": "Bearer fixture"}

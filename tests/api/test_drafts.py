@@ -1,5 +1,6 @@
 """Draft object and registry operations preserve owner and digest boundaries."""
 
+import base64
 import io
 import json
 import threading
@@ -28,17 +29,25 @@ def mock_draft_lease(monkeypatch):
     """Use the existing in-memory Storage fixture while exercising route behavior."""
 
     class Lease:
-        def read(self, claims, callback, *, max_bytes):
+        def read(self, claims, callback, *, max_bytes=3_000_000):
             data = callback(claims["sub"])
             assert len(data) <= max_bytes
             return data
 
     monkeypatch.setattr(app_module, "configured_draft_lease", lambda: Lease())
-    monkeypatch.setattr(
-        session_drafts,
-        "read_draft_timed",
-        lambda store, owner, draft, view, params: store.read(owner, draft, view, **params),
-    )
+
+    def read(store, owner, draft, view, params):
+        if view == "list":
+            return store.list(owner, **params)
+        if view in {"info", "archive"}:
+            head = store.resolve(owner, draft)
+            result = {"draft": store._info(head)}
+            if view == "archive":
+                result["archive"] = base64.b64encode(store._download(head)).decode("ascii")
+            return result
+        return store.read(owner, draft, view, **params)
+
+    monkeypatch.setattr(session_drafts, "read_draft_timed", read)
 
 
 def test_draft_view_limits_the_complete_response_envelope(monkeypatch):

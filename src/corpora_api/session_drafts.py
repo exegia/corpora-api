@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Mapping
@@ -35,7 +36,7 @@ def read_session_draft(
     lease: SessionBoundRead,
     store: DraftStore,
     claims: Mapping[str, Any],
-    draft_id: str,
+    draft_id: str | None,
     view: str,
     **params: Any,
 ) -> dict[str, Any]:
@@ -47,3 +48,18 @@ def read_session_draft(
 
     payload = lease.read(claims, read, max_bytes=MAX_DRAFT_VIEW_RESPONSE_BYTES)
     return json.loads(payload)
+
+
+def read_session_draft_archive(
+    lease: SessionBoundRead, store: DraftStore, claims: Mapping[str, Any], draft_id: str
+) -> tuple[dict[str, Any], bytes]:
+    """Hold the session through the verified archive read, returning only after its final check."""
+    heads: list[dict[str, Any]] = []
+
+    def download(owner: str) -> bytes:
+        result = read_draft_timed(store, owner, draft_id, "archive", {})
+        heads.append(result["draft"])
+        return base64.b64decode(result["archive"], validate=True)
+
+    data = lease.read(claims, download)
+    return heads[0], data

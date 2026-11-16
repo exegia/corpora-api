@@ -102,7 +102,11 @@ from corpora_api.models import (
     ValidationResponse,
 )
 from corpora_api.references import reference
-from corpora_api.session_drafts import configured_draft_lease, read_session_draft
+from corpora_api.session_drafts import (
+    configured_draft_lease,
+    read_session_draft,
+    read_session_draft_archive,
+)
 from corpora_api.storage import (
     CorpusStorage,
     StorageError,
@@ -809,12 +813,21 @@ async def create_working_draft(
 )
 async def list_working_drafts(
     response: Response,
-    user_id: Annotated[str, Depends(require_user)],
+    claims: Annotated[dict[str, Any], Depends(require_user_claims)],
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     response.headers["Cache-Control"] = "private, no-store"
-    return await run_in_threadpool(draft_store.list, user_id, limit, offset)
+    return await run_in_threadpool(
+        read_session_draft,
+        configured_draft_lease(),
+        draft_store,
+        claims,
+        None,
+        "list",
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get(
@@ -824,27 +837,32 @@ async def list_working_drafts(
     responses=_STORAGE_DETAIL_RESPONSES,
 )
 async def get_working_draft(
-    draft_id: str, response: Response, user_id: Annotated[str, Depends(require_user)]
+    draft_id: str,
+    response: Response,
+    claims: Annotated[dict[str, Any], Depends(require_user_claims)],
 ) -> dict[str, Any]:
     response.headers["Cache-Control"] = "private, no-store"
-    head = await run_in_threadpool(draft_store.resolve, user_id, draft_id)
-    return draft_store._info(head)
+    result = await run_in_threadpool(
+        read_session_draft, configured_draft_lease(), draft_store, claims, draft_id, "info"
+    )
+    return result["draft"]
 
 
 @app.get("/v1/ai/drafts/{draft_id}/archive", tags=["ai"], responses=_STORAGE_DETAIL_RESPONSES)
 async def download_working_draft(
-    draft_id: str, user_id: Annotated[str, Depends(require_user)]
+    draft_id: str, claims: Annotated[dict[str, Any], Depends(require_user_claims)]
 ) -> Response:
-    head = await run_in_threadpool(draft_store.resolve, user_id, draft_id)
-    data = await run_in_threadpool(draft_store._download, head)
+    head, data = await run_in_threadpool(
+        read_session_draft_archive, configured_draft_lease(), draft_store, claims, draft_id
+    )
     return Response(
         data,
         media_type="application/zip",
         headers={
             "Cache-Control": "private, no-store",
-            "Content-Disposition": f'attachment; filename="{head.document_id}.corpus"',
-            "ETag": f'"{head.digest}"',
-            "X-Draft-Revision": str(head.revision),
+            "Content-Disposition": f'attachment; filename="{head["id"]}.corpus"',
+            "ETag": f'"{head["digest"]}"',
+            "X-Draft-Revision": str(head["revision"]),
         },
     )
 

@@ -48,14 +48,15 @@ no caller-supplied storage path is accepted.
 Draft manifest, index, version, node, section and content reads return the
 immutable draft revision alongside each result so callers can detect changes
 between related reads.
-These six views require a live Supabase session. Configure the server-only
+Listing, metadata, archive downloads and these six views require a live
+Supabase session. Configure the server-only
 `CORPORA_SESSION_DB_HOST`, `CORPORA_SESSION_DB_ADDRESS` (one numeric address),
 `CORPORA_SESSION_DB_PORT`, `CORPORA_SESSION_DB_NAME`, `CORPORA_SESSION_DB_USER`,
 and `CORPORA_SESSION_DB_PASSWORD` for a reviewed PostgreSQL login; the host is
 verified with TLS and the login assumes `service_role` for the transaction.
 The session lock function and its separately proposed column privileges must
 be reviewed and provisioned in the target database. Missing configuration
-or database access makes these views fail closed with HTTP 503. The required
+or database access makes these reads fail closed with HTTP 503. The required
 role can bypass RLS and the proposed session privilege can update session expiry;
 neither should be provisioned without security review.
 The source-pinned legacy database setup is in `supabase/migrations/`; apply it

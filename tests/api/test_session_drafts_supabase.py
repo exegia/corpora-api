@@ -128,9 +128,22 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                 CREATE FUNCTION public.corpora_ai_storage(
                     p_action text, p_owner uuid, p_payload jsonb)
                 RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path='' AS $$
-                    SELECT head FROM public.corpora_test_draft_heads
-                    WHERE p_action='resolve' AND owner=p_owner
-                      AND 'draft:' || document_id::text = p_payload->>'corpus'
+                    SELECT CASE
+                        WHEN p_action='capabilities' THEN '{"draft_api":1}'::jsonb
+                        WHEN p_action='drafts' THEN (
+                            SELECT coalesce(jsonb_agg(head), '[]'::jsonb) FROM (
+                                SELECT head FROM public.corpora_test_draft_heads
+                                WHERE owner=p_owner ORDER BY document_id
+                                LIMIT (p_payload->>'limit')::integer
+                                OFFSET (p_payload->>'offset')::integer
+                            ) page
+                        )
+                        WHEN p_action='resolve' THEN (
+                            SELECT head FROM public.corpora_test_draft_heads
+                            WHERE owner=p_owner
+                              AND 'draft:' || document_id::text = p_payload->>'corpus'
+                        )
+                    END
                 $$
             """)
             db.execute(
@@ -183,6 +196,12 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
             time.sleep(1)
             with TestClient(app_module.app) as api:
                 headers = {"Authorization": "Bearer " + users[0][1]}
+                listed = api.get("/v1/ai/drafts", headers=headers)
+                assert listed.status_code == 200 and listed.json()["drafts"][0]["id"] == document
+                info = api.get(f"/v1/ai/drafts/{document}", headers=headers)
+                assert info.status_code == 200 and info.json()["id"] == document
+                exported = api.get(f"/v1/ai/drafts/{document}/archive", headers=headers)
+                assert exported.status_code == 200 and exported.content == data
                 for view in ("manifest", "index", "versions", "nodes/1", "sections", "content"):
                     response = api.get(f"/v1/ai/drafts/{document}/{view}", headers=headers)
                     assert response.status_code == 200, (view, response.status_code, response.text)
@@ -192,8 +211,18 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                     headers={"Authorization": "Bearer " + users[1][1]},
                 )
                 assert foreign.status_code == 404
+                foreign_headers = {"Authorization": "Bearer " + users[1][1]}
+                assert api.get("/v1/ai/drafts", headers=foreign_headers).json()["drafts"] == []
+                foreign_info = api.get(f"/v1/ai/drafts/{document}", headers=foreign_headers)
+                assert foreign_info.status_code == 404
+                foreign_archive = api.get(
+                    f"/v1/ai/drafts/{document}/archive", headers=foreign_headers
+                )
+                assert foreign_archive.status_code == 404
                 response = client.post(url + "/auth/v1/logout", headers={"apikey": anon, **headers})
                 assert response.status_code in (200, 204)
+                for path in ("", f"/{document}", f"/{document}/archive"):
+                    assert api.get(f"/v1/ai/drafts{path}", headers=headers).status_code == 401
                 for view in ("manifest", "index", "versions", "nodes/1", "sections", "content"):
                     assert (
                         api.get(f"/v1/ai/drafts/{document}/{view}", headers=headers).status_code
