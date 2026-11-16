@@ -112,17 +112,40 @@ class IngestStore:
             "display_name": title,
             "validation": None,
         }
-        response = self._request(
-            "POST",
-            f"{url}/rest/v1/conversion_jobs",
-            headers={**self._headers(key), "Prefer": "return=minimal"},
-            json=row,
+        try:
+            response = self._request(
+                "POST",
+                f"{url}/rest/v1/conversion_jobs",
+                headers={**self._headers(key), "Prefer": "return=minimal"},
+                json=row,
+            )
+            if response.status_code in (200, 201, 204):
+                return
+            error = IngestStoreError(f"Ingestion job store returned {response.status_code}")
+        except IngestStoreError as request_error:
+            error = request_error
+
+        # The row may have committed even when the gateway failed. A successful
+        # owner-scoped read can confirm this exact job; a missing or failed read
+        # cannot prove the insert will not commit later, so retain the object.
+        try:
+            saved = self.get(owner, job_id)
+        except (IngestNotFound, IngestStoreError):
+            raise error from None
+        fields = (
+            "id",
+            "owner",
+            "source_format",
+            "output_format",
+            "name",
+            "display_name",
+            "status",
+            "result_key",
+            "error",
         )
-        if response.status_code not in (200, 201, 204):
-            # A gateway error can arrive after the row committed. Deleting here
-            # could leave that durable row pointing at a missing graph. A later
-            # reconciliation process must handle genuinely unreferenced objects.
-            raise IngestStoreError(f"Ingestion job store returned {response.status_code}")
+        if all(field in saved and saved[field] == row[field] for field in fields):
+            return
+        raise error
 
     def get(self, owner: str, job_id: str) -> dict[str, Any]:
         """Query by both verified owner and UUID; foreign jobs appear absent."""
