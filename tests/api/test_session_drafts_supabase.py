@@ -285,6 +285,14 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                 )
                 retry = api.post("/v1/ai/drafts", headers=headers, json={"job_id": job})
                 assert retry.json() == created_info
+                source_url = f"{url}/storage/v1/object/corpora-test-source-jobs/{job_key}"
+                upsert_headers = {**service_headers, "x-upsert": "true"}
+                client.post(
+                    source_url, headers=upsert_headers, content=b"tampered conversion"
+                ).raise_for_status()
+                tampered_retry = api.post("/v1/ai/drafts", headers=headers, json={"job_id": job})
+                assert tampered_retry.status_code == 422
+                client.post(source_url, headers=upsert_headers, content=data).raise_for_status()
                 assert (
                     api.post(
                         "/v1/ai/drafts", headers=foreign_headers, json={"job_id": job}

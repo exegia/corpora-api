@@ -6,6 +6,7 @@ import json
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -22,6 +23,24 @@ from corpora_api.app import app
 from corpora_api.auth import UserAuthError
 from corpora_api.drafts import DraftHead, DraftStore
 from corpora_api.validation import ValidationBridge
+
+
+def test_session_draft_retry_revalidates_downloaded_conversion(monkeypatch):
+    owner, job = str(uuid4()), str(uuid4())
+    store = DraftStore()
+    monkeypatch.setattr(store, "_require_capability", lambda *_: None)
+    resolved = []
+    monkeypatch.setattr(store, "resolve", lambda *_: resolved.append(True) or object())
+    monkeypatch.setattr(store, "_info", lambda _: {"id": "existing"})
+    data = [b"valid"]
+    jobs = SimpleNamespace(fetch=lambda *_args: ("source.corpus", data[0]))
+    validator = SimpleNamespace(validate=lambda _name, content: {"valid": content == b"valid"})
+    assert store.prepare_create(owner, job, jobs, validator) == {"existing": {"id": "existing"}}
+    data[0] = b"tampered"
+    with pytest.raises(HTTPException) as caught:
+        store.prepare_create(owner, job, jobs, validator)
+    assert caught.value.status_code == 422
+    assert resolved == [True]
 
 
 @pytest.fixture
