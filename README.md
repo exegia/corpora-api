@@ -88,6 +88,10 @@ finish after sign-out; a new creation request requires an active session. The
 adapter does no Hub I/O, and a receipt alone does not prove that a worker was
 already dispatched. The dispatch boundary, uncertain-outcome reconciliation,
 and a restricted production privilege boundary remain unresolved.
+An internal read-only reconciliation inspector can report whether the expected
+private Hub repository is currently visible, mismatched or inconclusive. Its
+observation neither proves creation provenance nor establishes worker termination;
+it never adopts, retries or finalizes the operation.
 An unwired finalizer can record a bootstrap from a trusted assertion, but no
 component verifies that assertion; save claims fail closed when it is missing.
 Before recording a new content version, a future worker must replace and verify the complete
