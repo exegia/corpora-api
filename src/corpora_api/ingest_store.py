@@ -107,6 +107,20 @@ class IngestStore:
         )
         if response.status_code == 404:
             return False
+        if response.status_code == 400:
+            # Hosted Storage can wrap a missing object in HTTP 400 while the
+            # local stack returns 404. Do not treat other 400s as absence.
+            try:
+                error = response.json()
+            except ValueError:
+                error = None
+            if (
+                isinstance(error, dict)
+                and str(error.get("statusCode")) == "404"
+                and error.get("code") == "NoSuchKey"
+                and error.get("error") == "not_found"
+            ):
+                return False
         if response.status_code != 200 or len(response.content) > MAX_GRAPH_BYTES:
             raise IngestStoreError("Could not confirm ingestion artifact")
         try:

@@ -110,6 +110,29 @@ def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.mark.parametrize(
+    ("status", "payload", "missing"),
+    [
+        (404, {}, True),
+        (400, {"statusCode": "404", "error": "not_found", "code": "NoSuchKey"}, True),
+        (400, {"statusCode": "404", "error": "not_found", "code": "other"}, False),
+        (400, {"statusCode": "403", "error": "not_found", "code": "NoSuchKey"}, False),
+        (403, {}, False),
+    ],
+)
+def test_recover_recognizes_only_missing_storage_objects(store, status, payload, missing):
+    adapter = IngestStore(
+        httpx.Client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status, json=payload))
+        )
+    )
+    if missing:
+        assert adapter.recover(ALICE, str(uuid.uuid4()), "a.txt") is False
+    else:
+        with pytest.raises(IngestStoreError):
+            adapter.recover(ALICE, str(uuid.uuid4()), "a.txt")
+
+
 def test_idempotent_upload_reuses_job_and_rejects_changed_input(store):
     artifacts, jobs, _ = store
     client = TestClient(app)
