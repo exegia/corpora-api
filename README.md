@@ -57,6 +57,14 @@ The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
 multi-namespace transition; this component does not perform either operation.
+The draft Hub provisioning adapter uses the server-only
+`HF_CORPUS_PROVISION_TOKEN`, verifies the configured namespace is an actual Hub
+organization, requests a private repository, and checks its returned identity
+and privacy. It does not adopt an existing name or retry an ambiguous write.
+This adapter is not exposed by an API or background job: request-wide time
+limits, live-session enforcement, reconciliation, upload and readiness
+transitions are still required. Privacy must also be checked at later sensitive
+operations; one successful observation does not keep a repository private.
 
 An unwired corpus-file reader checks owner-bound metadata, a ready state, a
 specific Hub commit and point-in-time private visibility before streaming a
