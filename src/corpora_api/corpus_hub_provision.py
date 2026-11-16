@@ -7,6 +7,7 @@ before using this adapter. It deliberately does not mark metadata ready.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import quote
@@ -44,18 +45,29 @@ class VerifiedPrivateRepository:
 class CorpusHubProvisioner:
     """Create one private repository without adopting an existing name."""
 
-    def __init__(self, metadata: CorpusMetadataStore, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        metadata: CorpusMetadataStore,
+        client: httpx.Client | None = None,
+        *,
+        token: str | None = None,
+    ) -> None:
         self.metadata = metadata
         self.client = client or httpx.Client(timeout=15, follow_redirects=False)
+        self._token = token
 
-    def create_private(self, verified_user: str, corpus_id: str) -> VerifiedPrivateRepository:
+    def _create_private(
+        self, verified_user: str, corpus_id: str, *, deadline: float | None = None
+    ) -> VerifiedPrivateRepository:
         """Create and observe a private repository; never delete or adopt on failure."""
         record = self.metadata.get(verified_user, corpus_id)
         if record.state != "provisioning":
             raise CorpusHubProvisionError("Corpus is not awaiting repository provisioning")
         # get() verifies the owner and the configured organization and UUID binding.
         self.metadata._check_link(record)
-        token = os.getenv("HF_CORPUS_PROVISION_TOKEN", "")
+        token = self._token
+        if token is None:
+            token = os.getenv("HF_CORPUS_PROVISION_TOKEN", "")
         if not token:
             raise CorpusHubProvisionError("Corpus repository provisioning is unavailable")
         organization, name = record.hf_repo_id.split("/", 1)
@@ -80,6 +92,8 @@ class CorpusHubProvisioner:
             "type": record.hf_repo_type,
             "visibility": "private",
         }
+        if deadline is not None and time.monotonic() >= deadline:
+            raise CorpusHubProvisionUncertain("Repository creation needs reconciliation")
         try:
             created = self.client.post(
                 _HUB + "/api/repos/create",

@@ -61,10 +61,18 @@ The draft Hub provisioning adapter uses the server-only
 `HF_CORPUS_PROVISION_TOKEN`, verifies the configured namespace is an actual Hub
 organization, requests a private repository, and checks its returned identity
 and privacy. It does not adopt an existing name or retry an ambiguous write.
-This adapter is not exposed by an API or background job: request-wide time
-limits, live-session enforcement, reconciliation, upload and readiness
-transitions are still required. Privacy must also be checked at later sensitive
-operations; one successful observation does not keep a repository private.
+An unwired POSIX worker wrapper applies a request deadline, bounds worker
+output, and accepts a trusted live-session lease. If the request times out,
+an acquired lease stays held until the worker stops while its database
+connection remains alive; the Hub write may still have been accepted and needs
+reconciliation. If that connection is lost, PostgreSQL releases its lock and
+the worker can still send a Hub write after logout. The current design does not
+fence that case and must not be enabled for user-facing writes. Abrupt
+application-process death and the hosted worker environment are also unverified.
+This adapter is not exposed by an API or background job: a safe session-bound
+write architecture, reconciliation, upload and readiness transitions are still
+required. Privacy must also be checked at later sensitive operations; one successful observation does not keep
+a repository private.
 
 An unwired corpus-file reader checks owner-bound metadata, a ready state, a
 specific Hub commit and point-in-time private visibility before streaming a

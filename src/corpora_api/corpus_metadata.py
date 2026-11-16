@@ -83,7 +83,10 @@ class CorpusMetadataStore:
 
     @staticmethod
     def _check_link(row: CorpusMetadata) -> None:
-        organization = os.getenv("HF_CORPUS_ORGANIZATION", "")
+        CorpusMetadataStore._check_link_in_org(row, os.getenv("HF_CORPUS_ORGANIZATION", ""))
+
+    @staticmethod
+    def _check_link_in_org(row: CorpusMetadata, organization: str) -> None:
         expected = f"{organization}/corpus-{row.id}"
         if not organization or row.hf_repo_id != expected:
             raise CorpusMetadataError("Corpus metadata has an invalid repository link")

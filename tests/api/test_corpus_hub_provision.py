@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -81,7 +82,7 @@ def test_creates_private_repository_and_verifies_identity(corpus, repo_type):
         return httpx.Response(200, json={"id": record.hf_repo_id, "private": True})
 
     client = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True)
-    receipt = CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+    receipt = CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
     assert (str(receipt.corpus_id), receipt.repo_id, receipt.repo_type) == (
         identifier,
         record.hf_repo_id,
@@ -102,7 +103,7 @@ def test_existing_repository_is_not_adopted_or_modified(corpus):
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
     with pytest.raises(CorpusHubProvisionConflict):
-        CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
     assert [request.method for request in requests] == ["GET", "POST"]
 
 
@@ -118,7 +119,7 @@ def test_unexpected_creation_url_is_uncertain_and_not_followed(corpus):
 
     client = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True)
     with pytest.raises(CorpusHubProvisionUncertain):
-        CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
     assert [request.method for request in requests] == ["GET", "POST"]
 
 
@@ -128,8 +129,24 @@ def test_non_provisioning_record_does_not_call_hub(corpus):
     requests = []
     client = httpx.Client(transport=httpx.MockTransport(lambda request: requests.append(request)))
     with pytest.raises(CorpusHubProvisionError, match="not awaiting"):
-        CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
     assert not requests
+
+
+def test_deadline_expired_after_organization_lookup_never_sends_create(corpus):
+    owner, identifier, _, metadata = corpus
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"name": "fixture-org"})
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    with pytest.raises(CorpusHubProvisionUncertain):
+        CorpusHubProvisioner(metadata, client)._create_private(
+            owner, identifier, deadline=time.monotonic() - 1
+        )
+    assert [request.method for request in requests] == ["GET"]
 
 
 @pytest.mark.parametrize(
@@ -157,7 +174,7 @@ def test_privacy_and_identity_must_be_verified(corpus, bad_info):
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
     with pytest.raises(CorpusHubProvisionUncertain):
-        CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
 
 
 def test_lost_create_response_is_uncertain_and_not_retried(corpus):
@@ -172,7 +189,7 @@ def test_lost_create_response_is_uncertain_and_not_retried(corpus):
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
     with pytest.raises(CorpusHubProvisionUncertain):
-        CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
     assert [request.method for request in requests] == ["GET", "POST"]
 
 
@@ -189,7 +206,7 @@ def test_non_success_may_have_committed_and_is_not_retried(corpus, status):
 
     client = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True)
     with pytest.raises(CorpusHubProvisionUncertain):
-        CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
     assert len(requests) == 2 and all(r.url.host == "huggingface.co" for r in requests)
 
 
@@ -204,7 +221,7 @@ def test_unverified_organization_prevents_creation(corpus, status, name):
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
     with pytest.raises(CorpusHubProvisionError, match="organization"):
-        CorpusHubProvisioner(metadata, client).create_private(owner, identifier)
+        CorpusHubProvisioner(metadata, client)._create_private(owner, identifier)
     assert [request.method for request in requests] == ["GET"]
 
 
@@ -214,12 +231,12 @@ def test_missing_credential_wrong_owner_or_bad_link_fail_before_hub_call(corpus,
     client = httpx.Client(transport=httpx.MockTransport(lambda request: requests.append(request)))
     provisioner = CorpusHubProvisioner(metadata, client)
     with pytest.raises(CorpusMetadataNotFound):
-        provisioner.create_private(str(uuid4()), identifier)
+        provisioner._create_private(str(uuid4()), identifier)
     monkeypatch.delenv("HF_CORPUS_PROVISION_TOKEN")
     with pytest.raises(CorpusHubProvisionError):
-        provisioner.create_private(owner, identifier)
+        provisioner._create_private(owner, identifier)
     monkeypatch.setenv("HF_CORPUS_PROVISION_TOKEN", "placeholder")
     record.hf_repo_id = "other-org/corpus-" + identifier
     with pytest.raises(CorpusMetadataError, match="invalid repository link"):
-        provisioner.create_private(owner, identifier)
+        provisioner._create_private(owner, identifier)
     assert not requests
