@@ -103,6 +103,13 @@ actor can reattach to an identical operation; the originally admitted session
 remains recorded. Receipt state is a snapshot, not an execution claim. The
 finalizer checks the exact claim ID and operation state, but a database claim
 cannot cancel or fence a remote Hub request that is already running.
+An unwired archive inventory hashes every regular entry in the original ZIP,
+including metadata and caches, with bounded full-stream decompression. It is
+not corpus validation or durable staging; callers must validate the same input
+and require a successful real-loader report before publication. The inventory
+currently accepts stored and DEFLATE ZIP entries and rejects ZIP64 entry sizes
+and other compression methods; expanding that support remains required before
+wiring it for archives using those methods.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
