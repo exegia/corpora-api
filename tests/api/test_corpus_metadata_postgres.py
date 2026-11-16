@@ -67,6 +67,18 @@ def test_registry_enforces_private_unique_immutable_links_and_revision():
                     "(id,owner_id,title,hf_repo_id,hf_repo_type) VALUES (%s,%s,%s,%s,%s)",
                     (corpus, owner, "Mini", "Exegia/corpus-one", "dataset"),
                 )
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    db.execute(
+                        "INSERT INTO public.corpora_corpus_metadata "
+                        "(id,owner_id,title,hf_repo_id,hf_repo_type,state) "
+                        "VALUES (%s,%s,%s,%s,%s,%s)",
+                        (str(uuid4()), owner, "Other", "Exegia/corpus-two", "dataset", "ready"),
+                    )
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    db.execute(
+                        "UPDATE public.corpora_corpus_metadata SET state='ready' WHERE id=%s",
+                        (corpus,),
+                    )
                 with pytest.raises(psycopg.errors.UniqueViolation):
                     db.execute(
                         "INSERT INTO public.corpora_corpus_metadata "

@@ -46,7 +46,9 @@ CREATE TRIGGER corpora_corpus_metadata_stamp BEFORE UPDATE
 
 ALTER TABLE public.corpora_corpus_metadata ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.corpora_corpus_metadata FROM PUBLIC, anon, authenticated, service_role;
-GRANT SELECT, INSERT ON public.corpora_corpus_metadata TO service_role;
-GRANT UPDATE (title, description, language, properties, state)
+GRANT SELECT ON public.corpora_corpus_metadata TO service_role;
+GRANT INSERT (id, owner_id, title, hf_repo_id, hf_repo_type)
+    ON public.corpora_corpus_metadata TO service_role;
+GRANT UPDATE (title, description, language, properties)
     ON public.corpora_corpus_metadata TO service_role;
 REVOKE ALL ON FUNCTION public.corpora_corpus_metadata_stamp() FROM PUBLIC, anon, authenticated;
