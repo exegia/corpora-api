@@ -88,6 +88,9 @@ gh pr create --draft --base dev --title "feat: add parser"
 gh pr ready                                # starts hygiene, test, check
 ```
 
+Multiple feature branches are allowed only for related work in a dependent PR stack. Otherwise,
+merge the current feature into `dev` before starting another feature.
+
 The docs package runs `docs/scripts/patch-openapi-example.mjs` after install.
 Keep its version guard aligned with the pinned `fumadocs-openapi` dependency.
 

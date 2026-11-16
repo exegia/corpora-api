@@ -20,7 +20,15 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastmcp import FastMCP
 from starlette.background import BackgroundTask
 
-from corpora_api.auth import UserAuthError, current_user_id, require_user, verify_user_token
+from corpora_api.auth import (
+    SessionCheckUnavailable,
+    UserAuthError,
+    current_user_id,
+    current_user_token,
+    ingest_session_active,
+    require_user,
+    verify_user_token,
+)
 from corpora_api.conversion_artifacts import (
     ConversionArtifactError,
     ConversionArtifactInvalid,
@@ -38,6 +46,7 @@ from corpora_api.conversions import (
     ConversionUnavailable,
 )
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreRejected, CoreUnavailable
+from corpora_api.drafts import DraftStore
 from corpora_api.ingest import (
     MAX_GRAPH_BYTES,
     MAX_INGEST_BYTES,
@@ -45,6 +54,7 @@ from corpora_api.ingest import (
     build_plain_graph,
     validate_ingest_options,
 )
+from corpora_api.ingest_requests import IngestRequestConflict, input_fingerprint, reserve_request
 from corpora_api.ingest_store import (
     IngestNotFound,
     IngestNotReady,
@@ -73,6 +83,9 @@ from corpora_api.models import (
     CorpusNodeDetailResponse,
     CorpusSectionPageResponse,
     DiagnosticReport,
+    DraftCreateRequest,
+    DraftInfo,
+    DraftListResponse,
     ErrorResponse,
     IngestCreated,
     IngestJobStatus,
@@ -117,6 +130,7 @@ validator = ValidationBridge()
 ingest_store = IngestStore()
 conversion_artifact_store = ConversionArtifactStore()
 corpus_storage = CorpusStorage()
+draft_store = DraftStore()
 logger = logging.getLogger(__name__)
 mcp = FastMCP("Corpora checks and Text-Fabric validator")
 mcp_app = mcp.http_app(path="/", stateless_http=True)
@@ -127,6 +141,8 @@ def user_auth_path(path: str) -> bool:
     return (
         path in USER_AUTH_PATHS
         or path.startswith("/v1/storage/")
+        or path == "/v1/ai/drafts"
+        or path.startswith("/v1/ai/drafts/")
         or path == "/v1/ai/providers"
         or path == "/v1/ai/validate"
         or path == "/v1/ai/chat"
@@ -197,12 +213,22 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     except UserAuthError:
         return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
 
+    if request.url.path == "/v1/ingest" or request.url.path.startswith("/v1/ingest/"):
+        try:
+            active = await run_in_threadpool(ingest_session_active, credential)
+        except SessionCheckUnavailable:
+            return JSONResponse(status_code=503, content={"detail": "Session check unavailable"})
+        if not active:
+            return JSONResponse(status_code=401, content={"detail": "Session is no longer active"})
+
     request.state.user_id = claims["sub"]
     request.state.user_claims = claims
     context_token = current_user_id.set(claims["sub"])
+    credential_context = current_user_token.set(credential)
     try:
         return await call_next(request)
     finally:
+        current_user_token.reset(credential_context)
         current_user_id.reset(context_token)
 
 
@@ -637,10 +663,13 @@ async def validate_corpus_upload(
         "Upload one document (up to 3 MB). UTF-8 .txt runs in the API; PDF, DOCX, PPTX, "
         "HTML, and Markdown require a separately installed Docling Python worker. The API "
         "validates a Context Fabric v1 graph and stores the completed job and graph.json in "
-        "the shared Supabase job store. A verified user token is required."
+        "the shared Supabase job store. A verified user token is required. Supply the same "
+        "Idempotency-Key when retrying identical input to reuse the same job. Reusing a key "
+        "with different input returns 409."
     ),
     responses={
         401: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
         413: {"model": ErrorResponse},
         415: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
@@ -655,6 +684,13 @@ async def create_ingestion(
     name: Annotated[str, Form()] = "",
     language: Annotated[str, Form()] = "und",
     corpus_id: Annotated[str, Form()] = "",
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            description="1–128 visible ASCII characters, scoped to the signed-in user.",
+        ),
+    ] = None,
 ) -> IngestCreated:
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()
@@ -667,6 +703,43 @@ async def create_ingestion(
     source = await file.read(MAX_INGEST_BYTES + 1)
     if len(source) > MAX_INGEST_BYTES:
         raise HTTPException(status_code=413, detail=f"Upload exceeds {MAX_INGEST_BYTES} bytes")
+    job_id = str(uuid.uuid4())
+    if idempotency_key is not None:
+        fingerprint = input_fingerprint(
+            filename, source, name=name, language=language, corpus_id=corpus_id
+        )
+        try:
+            job_id = await run_in_threadpool(
+                reserve_request, ingest_store, _user_id, idempotency_key, fingerprint
+            )
+            try:
+                existing = await run_in_threadpool(ingest_store.get, _user_id, job_id)
+            except IngestNotFound:
+                existing = None
+            if existing is not None:
+                if (
+                    existing.get("name") != filename
+                    or existing.get("status") != "succeeded"
+                    or existing.get("output_format") != "corpus"
+                ):
+                    raise IngestStoreError("Reserved ingestion job is inconsistent")
+                return IngestCreated(
+                    job_id=job_id,
+                    status_url=f"/v1/ingest/{job_id}",
+                    download_url=f"/v1/ingest/{job_id}/download",
+                )
+            if await run_in_threadpool(ingest_store.recover, _user_id, job_id, filename):
+                return IngestCreated(
+                    job_id=job_id,
+                    status_url=f"/v1/ingest/{job_id}",
+                    download_url=f"/v1/ingest/{job_id}/download",
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except IngestRequestConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except IngestStoreError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
     try:
         builder = build_plain_graph if suffix == ".txt" else run_docling_worker
         graph = await run_in_threadpool(
@@ -689,10 +762,17 @@ async def create_ingestion(
     )
     if len(graph_bytes) > MAX_GRAPH_BYTES:
         raise HTTPException(status_code=413, detail="Generated graph exceeds hosted response limit")
-    job_id = str(uuid.uuid4())
     title = str(graph.work["title"])
     try:
-        await run_in_threadpool(ingest_store.save, _user_id, job_id, filename, title, graph_bytes)
+        await run_in_threadpool(
+            ingest_store.save,
+            _user_id,
+            job_id,
+            filename,
+            title,
+            graph_bytes,
+            retry=idempotency_key is not None,
+        )
     except IngestStoreError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return IngestCreated(
@@ -774,6 +854,66 @@ _STORAGE_DETAIL_RESPONSES = {
 }
 
 
+@app.post(
+    "/v1/ai/drafts", tags=["ai"], response_model=DraftInfo, responses=_STORAGE_DETAIL_RESPONSES
+)
+async def create_working_draft(
+    body: DraftCreateRequest, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return await run_in_threadpool(
+        draft_store.create, user_id, body.job_id, conversion_artifact_store, validator
+    )
+
+
+@app.get(
+    "/v1/ai/drafts",
+    tags=["ai"],
+    response_model=DraftListResponse,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def list_working_drafts(
+    response: Response,
+    user_id: Annotated[str, Depends(require_user)],
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    return await run_in_threadpool(draft_store.list, user_id, limit, offset)
+
+
+@app.get(
+    "/v1/ai/drafts/{draft_id}",
+    tags=["ai"],
+    response_model=DraftInfo,
+    responses=_STORAGE_DETAIL_RESPONSES,
+)
+async def get_working_draft(
+    draft_id: str, response: Response, user_id: Annotated[str, Depends(require_user)]
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    head = await run_in_threadpool(draft_store.resolve, user_id, draft_id)
+    return draft_store._info(head)
+
+
+@app.get("/v1/ai/drafts/{draft_id}/archive", tags=["ai"], responses=_STORAGE_DETAIL_RESPONSES)
+async def download_working_draft(
+    draft_id: str, user_id: Annotated[str, Depends(require_user)]
+) -> Response:
+    head = await run_in_threadpool(draft_store.resolve, user_id, draft_id)
+    data = await run_in_threadpool(draft_store._download, head)
+    return Response(
+        data,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{head.document_id}.corpus"',
+            "ETag": f'"{head.digest}"',
+            "X-Draft-Revision": str(head.revision),
+        },
+    )
+
+
 @app.get("/v1/ai/providers", tags=["ai"], response_model=AIProvidersResponse)
 async def ai_providers(_user_id: Annotated[str, Depends(require_user)]) -> AIProvidersResponse:
     return AIProvidersResponse(
@@ -835,7 +975,7 @@ async def ai_validate(
     from corpora_api.ai_validation import validate_scope
 
     return await run_in_threadpool(
-        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope
+        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope, validator
     )
 
 

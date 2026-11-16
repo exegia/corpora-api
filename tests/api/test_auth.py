@@ -6,6 +6,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -60,6 +61,7 @@ def test_verified_user_reaches_protected_handler(
     assert response.status_code == 200
     assert response.json() == {"user_id": USER_ID}
     assert auth.current_user_id.get() is None
+    assert auth.current_user_token.get() is None
     assert schema["paths"]["/v1/auth/me"]["get"]["security"] == [{"SupabaseUserJWT": []}]
     assert schema["paths"]["/v1/checks/structure"]["post"]["security"] == [{"BearerAuth": []}]
 
@@ -79,6 +81,61 @@ def test_user_token_cannot_call_service_route(
         )
     assert response.status_code == 401
     assert service_as_user.status_code == 401
+
+
+def test_expired_user_token_cannot_start_ingestion(signing_key: rsa.RSAPrivateKey) -> None:
+    token = user_token(signing_key, exp=datetime(2020, 1, 1, tzinfo=UTC))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/ingest",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("sample.txt", b"sample")},
+        )
+    assert response.status_code == 401
+    assert auth.current_user_token.get() is None
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_ingestion_rejects_inactive_or_uncheckable_sessions(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey, unavailable: bool
+) -> None:
+    import importlib
+
+    app_module = importlib.import_module("corpora_api.app")
+
+    def check(_token: str) -> bool:
+        if unavailable:
+            raise auth.SessionCheckUnavailable()
+        return False
+
+    monkeypatch.setattr(app_module, "ingest_session_active", check)
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/ingest/00000000-0000-0000-0000-000000000000",
+            headers={"Authorization": f"Bearer {user_token(signing_key)}"},
+        )
+    assert response.status_code == (503 if unavailable else 401)
+
+
+@pytest.mark.parametrize(
+    ("status", "value", "expected"),
+    [(200, True, True), (200, False, False), (200, {"active": True}, None), (503, {}, None)],
+)
+def test_ingestion_session_rpc_is_fail_closed(monkeypatch, status, value, expected):
+    monkeypatch.setenv("SUPABASE_URL", "https://supabase.example.test")
+    monkeypatch.setenv("SUPABASE_INGEST_API_KEY", "sb_publishable_test_placeholder")
+
+    def post(url, *, headers, json, timeout):
+        assert url.endswith("/rest/v1/rpc/corpora_ingest_session_active")
+        assert headers["Authorization"] == "Bearer user-placeholder"
+        return httpx.Response(status, json=value)
+
+    monkeypatch.setattr(auth.httpx, "post", post)
+    if expected is None:
+        with pytest.raises(auth.SessionCheckUnavailable):
+            auth.ingest_session_active("user-placeholder")
+    else:
+        assert auth.ingest_session_active("user-placeholder") is expected
 
 
 @pytest.mark.parametrize(
