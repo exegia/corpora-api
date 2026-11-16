@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -29,6 +29,7 @@ from corpora_api.corpus_provision_finalize import (
 )
 from corpora_api.corpus_save_claim import CorpusSaveClaimer
 from corpora_api.corpus_save_finalize import CorpusSaveFinalizer, TrustedCandidateAttestation
+from corpora_api.corpus_stage_observation import CorpusStageObservationLookup
 from corpora_api.corpus_stage_receipt import CorpusStageReceiptRecorder
 from corpora_api.session_corpus_metadata import (
     SessionBoundCorpusMetadata,
@@ -201,6 +202,13 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             assert str(saved.operation_id) == operation_id and saved.state == "admitted"
             assert saved.input_format == "zip"
+            stage_lookup = CorpusStageObservationLookup(
+                lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
+            )
+            with pytest.raises(CorpusMetadataConflict):
+                stage_lookup.load_trusted(UUID(operation_id))
+            with pytest.raises(CorpusMetadataConflict):
+                stage_lookup.load_trusted(uuid4())
             assert saved.retained_ref == "corpora-op-" + operation_id
             assert (
                 admission.admit(
@@ -1021,8 +1029,19 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
 
             uncertain_claim = claimer.claim(race_op)
             assert uncertain_claim is not None
+            observation_target = stage_lookup.load_trusted(UUID(race_op))
+            assert observation_target.operation_id == uncertain_claim.operation_id
+            assert observation_target.claim_id == uncertain_claim.claim_id
+            assert observation_target.observed_state == "executing"
+            assert observation_target.input_sha256 == uncertain_claim.input_sha256
+            with monkeypatch.context() as modified:
+                modified.setenv("HF_CORPUS_ORGANIZATION", "wrong-org")
+                with pytest.raises(CorpusMetadataError):
+                    stage_lookup.load_trusted(UUID(race_op))
             uncertain_stage = stage_for(uncertain_claim)
             assert stage_recorder.record_trusted(uncertain_stage) == uncertain_stage
+            with pytest.raises(CorpusMetadataConflict):
+                stage_lookup.load_trusted(UUID(race_op))
             assert (
                 stage_recorder.load_trusted(uncertain_stage.operation_id, uncertain_stage.claim_id)
                 == uncertain_stage
@@ -1194,6 +1213,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             assert stage_recorder.record_trusted(first_stage) == first_stage
             with pytest.raises(CorpusMetadataConflict):
                 stage_recorder.load_trusted(first_stage.operation_id, first_stage.claim_id)
+            with pytest.raises(CorpusMetadataConflict):
+                stage_lookup.load_trusted(first_stage.operation_id)
 
             competing_op = str(uuid4())
             admission.admit(
@@ -1277,6 +1298,18 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s", (lost_claim_op,)
             ).fetchone() == ("executing",)
             assert claimer.claim(lost_claim_op) is None
+            assert stage_lookup.load_trusted(UUID(lost_claim_op)).observed_state == "executing"
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s",
+                (lost_claim_op,),
+            )
+            assert stage_lookup.load_trusted(UUID(lost_claim_op)).observed_state == "uncertain"
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='failed' WHERE id=%s",
+                (lost_claim_op,),
+            )
+            with pytest.raises(CorpusMetadataConflict):
+                stage_lookup.load_trusted(UUID(lost_claim_op))
 
             class TerminateClaimConnection:
                 def __enter__(self):

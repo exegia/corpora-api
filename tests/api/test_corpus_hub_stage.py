@@ -12,6 +12,7 @@ import pytest
 
 from corpora_api.corpus_hub_stage import CorpusHubStager, CorpusStageError, CorpusStageUncertain
 from corpora_api.corpus_save_claim import ClaimedCorpusSave
+from corpora_api.corpus_stage_observation import StageObservationTarget
 
 CHECKS = {
     key: True
@@ -289,3 +290,77 @@ def test_recovery_strips_auth_on_cdn_redirect(monkeypatch):
         == data
     )
     assert len(requests) == 2
+
+
+def observation_target(claim, state="uncertain"):
+    return StageObservationTarget(
+        claim.corpus_id,
+        claim.operation_id,
+        claim.claim_id,
+        claim.repo_id,
+        claim.repo_type,
+        claim.input_format,
+        claim.input_sha256,
+        claim.hub_parent_sha,
+        state,
+    )
+
+
+@pytest.mark.parametrize("state", ["executing", "uncertain"])
+def test_unreceipted_observation_is_read_only(monkeypatch, state):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    observed = CorpusHubStager(hub, client, "test-token").observe_unreceipted(
+        observation_target(claim, state), Validator()
+    )
+    assert observed.archive_size == len(data) and observed.stage_sha == hub.commit
+    assert observed.target.observed_state == state
+    assert [call[0] for call in hub.calls] == ["info", "info", "info"]
+    assert not hasattr(observed, "claim_id")  # Not a stage receipt or execution claim.
+
+
+@pytest.mark.parametrize("failure", ["baseline", "private", "digest", "format", "state"])
+def test_unreceipted_observation_never_retries_or_adopts(monkeypatch, failure):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    target = observation_target(claim)
+    if failure == "baseline":
+        hub.commit = hub.parent
+    elif failure == "private":
+        hub.private_after = False
+    elif failure == "digest":
+        target = replace(target, input_sha256="f" * 64)
+    elif failure == "format":
+        target = replace(target, input_format="corpus")
+    else:
+        target = replace(target, observed_state="completed")
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, client, "test-token").observe_unreceipted(target, Validator())
+    assert not any(call[0] in ("branch", "commit") for call in hub.calls)
+
+
+def test_unreceipted_observation_enforces_maximum_without_length_header(monkeypatch):
+    claim, _, hub, _, _ = setup(monkeypatch)
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(b"x" * 3_000_001))
+        )
+    )
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, client, "test-token").observe_unreceipted(
+            observation_target(claim), Validator()
+        )
+    assert not any(call[0] in ("branch", "commit") for call in hub.calls)
+
+
+def test_unreceipted_observation_rejects_forged_content_length(monkeypatch):
+    claim, data, hub, _, _ = setup(monkeypatch)
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, headers={"Content-Length": str(len(data) + 1)}, stream=httpx.ByteStream(data)
+            )
+        )
+    )
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, client, "test-token").observe_unreceipted(
+            observation_target(claim), Validator()
+        )

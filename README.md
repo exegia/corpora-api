@@ -125,6 +125,10 @@ ref, and revalidate the bytes at its pinned commit. It does not renew a worker
 claim or authorize redispatch; the claim and head can change after the read.
 Remote
 calls lack an end-to-end deadline, and interrupted work requires reconciliation.
+A separate read-only observation can inspect a deterministic staging ref and
+verify its bytes even when no receipt was recorded. A missing ref or a matching
+observation does not establish whether the earlier worker is still running and
+does not authorize a retry, receipt insertion or publication.
 A separate staging claim, safe dispatcher, cleanup policy and Hub parent
 verification are still required.
 The configured Hub organization is part of each immutable repository link.

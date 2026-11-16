@@ -26,6 +26,7 @@ from corpora_api.corpus_archive_prepare import (
     prepare_corpus_archive,
 )
 from corpora_api.corpus_save_claim import ClaimedCorpusSave
+from corpora_api.corpus_stage_observation import StageObservationTarget
 
 _HUB = "https://huggingface.co"
 _MAX_REDIRECTS = 4
@@ -55,6 +56,17 @@ class StagedCorpusArchive:
     stage_path: str
 
 
+@dataclass(frozen=True)
+class ObservedUnreceiptedStage:
+    """Point-in-time observation only; not a receipt or worker authorization."""
+
+    target: StageObservationTarget
+    stage_ref: str
+    stage_sha: str
+    stage_path: str
+    archive_size: int
+
+
 def _safe_url(value: str) -> tuple[str, bool]:
     parsed = urlsplit(value)
     host = (parsed.hostname or "").lower()
@@ -75,6 +87,71 @@ class CorpusHubStager:
 
     def __init__(self, api: HfApi, client: httpx.Client, token: str) -> None:
         self.api, self.client, self._token = api, client, token
+
+    def observe_unreceipted(
+        self, target: StageObservationTarget, validator: CorpusValidator
+    ) -> ObservedUnreceiptedStage:
+        """Read an unresolved stage without adopting it or restarting a worker."""
+        try:
+            if (
+                not isinstance(target, StageObservationTarget)
+                or not isinstance(self._token, str)
+                or not self._token
+                or self.api.endpoint != _HUB
+                or not all(
+                    isinstance(v, UUID)
+                    for v in (target.corpus_id, target.operation_id, target.claim_id)
+                )
+                or not os.getenv("HF_CORPUS_ORGANIZATION", "")
+                or target.repo_id
+                != f"{os.getenv('HF_CORPUS_ORGANIZATION', '')}/corpus-{target.corpus_id}"
+                or target.repo_type not in ("dataset", "model")
+                or target.input_format not in ("zip", "corpus")
+                or target.observed_state not in ("executing", "uncertain")
+                or not isinstance(target.input_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", target.input_sha256)
+                or not isinstance(target.requested_base_sha, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", target.requested_base_sha)
+            ):
+                raise ValueError("Invalid observation target")
+            validate_repo_id(target.repo_id)
+            ref = "corpora-stage-" + str(target.operation_id)
+            path = f".corpora-staging/{target.operation_id}/{target.claim_id}.{target.input_format}"
+            info = self.api.repo_info(
+                target.repo_id, repo_type=target.repo_type, revision=ref, token=self._token
+            )
+            sha = info.sha
+            if (
+                info.id != target.repo_id
+                or info.private is not True
+                or not isinstance(sha, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", sha)
+                or sha == target.requested_base_sha
+            ):
+                raise ValueError("Staging reference is unresolved")
+            pinned = self.api.repo_info(
+                target.repo_id, repo_type=target.repo_type, revision=sha, token=self._token
+            )
+            if pinned.id != target.repo_id or pinned.private is not True or pinned.sha != sha:
+                raise ValueError("Staging commit is unresolved")
+            archive = self._read_verified_bytes(
+                target.repo_id, target.repo_type, sha, path, None, target.input_sha256
+            )
+            info = self.api.repo_info(
+                target.repo_id, repo_type=target.repo_type, revision=ref, token=self._token
+            )
+            if info.id != target.repo_id or info.private is not True or info.sha != sha:
+                raise ValueError("Staging reference changed")
+            prepare_corpus_archive(
+                "staged." + target.input_format,
+                archive,
+                target.input_sha256,
+                validator,
+                expected_format=target.input_format,
+            )
+            return ObservedUnreceiptedStage(target, ref, sha, path, len(archive))
+        except Exception:
+            raise CorpusStageUncertain("Corpus staging observation remains unresolved") from None
 
     def stage(
         self, claim: ClaimedCorpusSave, filename: str, archive: bytes, validator: CorpusValidator
@@ -247,7 +324,13 @@ class CorpusHubStager:
         )
 
     def _read_verified_bytes(
-        self, repo_id: str, repo_type: str, sha: str, path: str, size: int, expected_sha256: str
+        self,
+        repo_id: str,
+        repo_type: str,
+        sha: str,
+        path: str,
+        size: int | None,
+        expected_sha256: str,
     ) -> bytes:
         org, repo = repo_id.split("/", 1)
         prefix = "/datasets" if repo_type == "dataset" else ""
@@ -280,17 +363,27 @@ class CorpusHubStager:
                 ):
                     raise ValueError("Staging read failed")
                 length = response.headers.get("content-length")
-                if length is not None and (not length.isdecimal() or int(length) != size):
+                limit = size if size is not None else 3_000_000
+                if length is not None and (
+                    not length.isdecimal()
+                    or int(length) > limit
+                    or (size is not None and int(length) != size)
+                ):
                     raise ValueError("Staging read size mismatch")
                 digest, count = hashlib.sha256(), 0
                 chunks = bytearray()
                 for chunk in response.iter_raw(chunk_size=65536):
                     count += len(chunk)
-                    if count > size:
+                    if count > limit:
                         raise ValueError("Staging read is too large")
                     digest.update(chunk)
                     chunks.extend(chunk)
-                if count != size or digest.hexdigest() != expected_sha256:
+                if (
+                    not count
+                    or (size is not None and count != size)
+                    or (length is not None and count != int(length))
+                    or digest.hexdigest() != expected_sha256
+                ):
                     raise ValueError("Staging read digest mismatch")
                 return bytes(chunks)
         raise ValueError("Staging redirect limit exceeded")
