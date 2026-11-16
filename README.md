@@ -105,8 +105,11 @@ finalizer checks the exact claim ID and operation state, but a database claim
 cannot cancel or fence a remote Hub request that is already running.
 An unwired archive inventory hashes every regular entry in the original ZIP,
 including metadata and caches, with bounded full-stream decompression. It is
-not corpus validation or durable staging; callers must validate the same input
-and require a successful real-loader report before publication. The inventory
+not corpus validation or durable staging. An unwired preparation adapter binds
+the same immutable bytes to the claimed digest, inventory and real-loader
+report; it requires the Text-Fabric and Context-Fabric checks to pass. It accepts
+`.corpus` and `.zip` inputs; profile-only `.ctei` and `.cusx` checks are not
+treated as Text-Fabric loading. Neither adapter publishes a version. The inventory
 currently accepts stored and DEFLATE ZIP entries and rejects ZIP64 entry sizes
 and other compression methods; expanding that support remains required before
 wiring it for archives using those methods.
