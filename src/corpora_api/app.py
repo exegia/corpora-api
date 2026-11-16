@@ -21,9 +21,11 @@ from fastmcp import FastMCP
 from starlette.background import BackgroundTask
 
 from corpora_api.auth import (
+    SessionCheckUnavailable,
     UserAuthError,
     current_user_id,
     current_user_token,
+    ingest_session_active,
     require_user,
     verify_user_token,
 )
@@ -210,6 +212,14 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
         claims = await run_in_threadpool(verify_user_token, credential)
     except UserAuthError:
         return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
+
+    if request.url.path == "/v1/ingest" or request.url.path.startswith("/v1/ingest/"):
+        try:
+            active = await run_in_threadpool(ingest_session_active, credential)
+        except SessionCheckUnavailable:
+            return JSONResponse(status_code=503, content={"detail": "Session check unavailable"})
+        if not active:
+            return JSONResponse(status_code=401, content={"detail": "Session is no longer active"})
 
     request.state.user_id = claims["sub"]
     request.state.user_claims = claims

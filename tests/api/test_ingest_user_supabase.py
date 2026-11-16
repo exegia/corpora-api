@@ -94,6 +94,7 @@ def test_user_isolation_and_retry(monkeypatch):
         db.execute(Path(os.environ["CORPORA_TEST_JOBS_SCHEMA"]).read_text())
         db.execute(next(migrations.glob("*ingest_request_reservations.sql")).read_text())
         db.execute(next(migrations.glob("*ingest_user_access.sql")).read_text())
+        db.execute(next(migrations.glob("*ingest_require_active_session.sql")).read_text())
         db.execute(
             "grant select, insert on public.conversion_jobs, public.corpora_ingest_requests to anon"
         )
@@ -334,3 +335,25 @@ def test_user_isolation_and_retry(monkeypatch):
                 assert len(transport.lost) == 3
         finally:
             current_user_token.reset(token_context)
+
+        logged_out = client.post(f"{url}/auth/v1/logout?scope=local", headers=headers)
+        assert logged_out.status_code == 204
+        session_result = client.post(
+            f"{url}/rest/v1/rpc/corpora_ingest_session_active", headers=headers, json={}
+        )
+        assert session_result.status_code == 200 and session_result.json() is False
+        denied_rpc = client.post(
+            f"{url}/rest/v1/rpc/corpora_ingest_session_active", headers=anonymous, json={}
+        )
+        assert denied_rpc.status_code in (401, 403, 404)
+        assert (
+            api.get(f"/v1/ingest/{job}", headers={"Authorization": f"Bearer {token}"}).status_code
+            == 401
+        )
+        assert client.get(object_url, headers=headers).status_code in (400, 403, 404)
+        stale_rows = client.get(
+            f"{url}/rest/v1/conversion_jobs", headers=headers, params={"id": f"eq.{job}"}
+        )
+        assert stale_rows.status_code == 200 and stale_rows.json() == []
+        assert client.post(forged_path, headers=headers, content=b"{}").status_code in (400, 403)
+        assert client.get(other_url, headers=headers).status_code == 200

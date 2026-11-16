@@ -102,6 +102,7 @@ def store(
         raise UserAuthError("Invalid user token")
 
     monkeypatch.setattr(app_module, "verify_user_token", verify)
+    monkeypatch.setattr(app_module, "ingest_session_active", lambda _token: True)
     yield artifacts, jobs, transport
     current_user_token.reset(context)
 

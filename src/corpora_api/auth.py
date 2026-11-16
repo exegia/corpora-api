@@ -8,6 +8,7 @@ from functools import lru_cache
 from typing import Any
 from urllib.error import URLError
 
+import httpx
 import jwt
 from fastapi import HTTPException, Request
 from jwt import PyJWKClient
@@ -18,6 +19,34 @@ current_user_token: ContextVar[str | None] = ContextVar("current_user_token", de
 
 class UserAuthError(Exception):
     """A bearer token did not establish a verified Supabase user."""
+
+
+class SessionCheckUnavailable(Exception):
+    """The active-session check could not be completed."""
+
+
+def ingest_session_active(token: str) -> bool:
+    """Check the verified user's live session without a service credential."""
+    project_ref = os.getenv("PROJECT_REF")
+    url = os.getenv("SUPABASE_URL") or (f"https://{project_ref}.supabase.co" if project_ref else "")
+    key = os.getenv("SUPABASE_INGEST_API_KEY", "")
+    if not url or not key.startswith("sb_publishable_"):
+        raise SessionCheckUnavailable("Ingestion session check is not configured")
+    try:
+        response = httpx.post(
+            f"{url.rstrip('/')}/rest/v1/rpc/corpora_ingest_session_active",
+            headers={"apikey": key, "Authorization": f"Bearer {token}"},
+            json={},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            raise SessionCheckUnavailable("Ingestion session check is unavailable")
+        active = response.json()
+    except (httpx.RequestError, ValueError) as error:
+        raise SessionCheckUnavailable("Ingestion session check is unavailable") from error
+    if not isinstance(active, bool):
+        raise SessionCheckUnavailable("Ingestion session check returned an invalid response")
+    return active
 
 
 @lru_cache(maxsize=8)
