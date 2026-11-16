@@ -75,6 +75,21 @@ def test_content_version_constraints_and_privileges():
                 )
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute("DELETE FROM public.corpora_corpus_write_ops WHERE id=%s", (op1,))
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET state='executing' WHERE id=%s",
+                    (op1,),
+                )
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
+                "WHERE id=%s",
+                (str(uuid4()), op1),
+            )
+            with pytest.raises(psycopg.errors.RaiseException):
+                db.execute(
+                    "UPDATE public.corpora_corpus_write_ops SET worker_claim=%s WHERE id=%s",
+                    (str(uuid4()), op1),
+                )
             db.execute(
                 "UPDATE public.corpora_corpus_write_ops SET state='uncertain' WHERE id=%s", (op1,)
             )
@@ -121,6 +136,11 @@ def test_content_version_constraints_and_privileges():
                     "UPDATE public.corpora_corpus_write_ops SET state='failed' WHERE id=%s", (op1,)
                 )
             operation(op2, corpus, 1, "b" * 40)
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
+                "WHERE id=%s",
+                (str(uuid4()), op2),
+            )
             with pytest.raises(psycopg.IntegrityError):
                 db.execute(
                     "INSERT INTO public.corpora_corpus_versions "

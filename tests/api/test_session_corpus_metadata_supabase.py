@@ -21,6 +21,7 @@ from corpora_api.corpus_metadata import (
     CorpusMetadataNotFound,
     CorpusMetadataStore,
 )
+from corpora_api.corpus_save_claim import CorpusSaveClaimer
 from corpora_api.session_corpus_metadata import (
     SessionBoundCorpusMetadata,
     SessionBoundMetadataTransaction,
@@ -98,6 +99,10 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             db.execute(
                 "GRANT INSERT (id,corpus_id,actor_id,session_id,expected_sequence,"
                 "expected_parent_sha,input_sha256) ON public.corpora_corpus_write_ops "
+                "TO service_role"
+            )
+            db.execute(
+                "GRANT UPDATE (state,worker_claim) ON public.corpora_corpus_write_ops "
                 "TO service_role"
             )
             db.execute(guard)
@@ -404,6 +409,29 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 == 0
             )
 
+            lost_claim_corpus, lost_claim_op = str(uuid4()), str(uuid4())
+            editor.reserve(users[0][0], lost_claim_corpus, "Lost claim", repo_type="dataset")
+            admission.admit(
+                users[0][0],
+                lost_claim_corpus,
+                lost_claim_op,
+                expected_sequence=0,
+                expected_parent_sha=None,
+                input_sha256="a" * 64,
+            )
+            rollback_claim_corpus, rollback_claim_op = str(uuid4()), str(uuid4())
+            editor.reserve(
+                users[0][0], rollback_claim_corpus, "Rollback claim", repo_type="dataset"
+            )
+            admission.admit(
+                users[0][0],
+                rollback_claim_corpus,
+                rollback_claim_op,
+                expected_sequence=0,
+                expected_parent_sha=None,
+                input_sha256="a" * 64,
+            )
+
             race_corpus, race_op = str(uuid4()), str(uuid4())
             editor.reserve(users[1][0], race_corpus, "Race", repo_type="dataset")
             race_entered, race_release, race_logout_done = (
@@ -574,6 +602,82 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             assert db.execute(
                 "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s", (operation_id,)
             ).fetchone() == ("admitted",)
+            claimer = CorpusSaveClaimer(
+                lambda: psycopg.connect(dsn, autocommit=True), assume_service_role=True
+            )
+            claim_barrier = threading.Barrier(2)
+
+            def compete_for_claim(_):
+                claim_barrier.wait(timeout=10)
+                return claimer.claim(operation_id)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                claims = list(pool.map(compete_for_claim, range(2)))
+            winners = [item for item in claims if item is not None]
+            assert len(winners) == 1 and sum(item is None for item in claims) == 1
+            assert str(winners[0].operation_id) == operation_id
+            assert winners[0].input_sha256 == "a" * 64
+            assert claimer.claim(operation_id) is None
+            assert db.execute(
+                "SELECT state,worker_claim FROM public.corpora_corpus_write_ops WHERE id=%s",
+                (operation_id,),
+            ).fetchone() == ("executing", winners[0].claim_id)
+            with pytest.raises(CorpusMetadataConflict):
+                admission.admit(
+                    users[2][0],
+                    identifier,
+                    str(uuid4()),
+                    expected_sequence=0,
+                    expected_parent_sha=None,
+                    input_sha256="a" * 64,
+                )
+
+            class LostClaimResponse:
+                def __enter__(self):
+                    self.db = psycopg.connect(dsn, autocommit=True)
+                    return self.db
+
+                def __exit__(self, exc_type, exc, traceback):
+                    self.db.close()
+                    if exc_type is None:
+                        raise OSError("simulated lost commit acknowledgement")
+                    return False
+
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusSaveClaimer(LostClaimResponse, assume_service_role=True).claim(lost_claim_op)
+            assert db.execute(
+                "SELECT state FROM public.corpora_corpus_write_ops WHERE id=%s", (lost_claim_op,)
+            ).fetchone() == ("executing",)
+            assert claimer.claim(lost_claim_op) is None
+
+            class TerminateClaimConnection:
+                def __enter__(self):
+                    self.db = psycopg.connect(dsn, autocommit=True)
+                    return self
+
+                def __exit__(self, exc_type, exc, traceback):
+                    self.db.close()
+                    return False
+
+                def transaction(self):
+                    return self.db.transaction()
+
+                def execute(self, query, params=None):
+                    cursor = self.db.execute(query, params)
+                    if query.startswith("UPDATE public.corpora_corpus_write_ops"):
+                        pid = self.db.execute("SELECT pg_backend_pid()").fetchone()[0]
+                        assert db.execute("SELECT pg_terminate_backend(%s)", (pid,)).fetchone()[0]
+                    return cursor
+
+            with pytest.raises(CorpusMetadataError, match="reconcile"):
+                CorpusSaveClaimer(TerminateClaimConnection, assume_service_role=True).claim(
+                    rollback_claim_op
+                )
+            assert db.execute(
+                "SELECT state,worker_claim FROM public.corpora_corpus_write_ops WHERE id=%s",
+                (rollback_claim_op,),
+            ).fetchone() == ("admitted", None)
+            assert claimer.claim(rollback_claim_op) is not None
             assert metadata.get(users[2][0]["sub"], identifier).title == "Committed"
         finally:
             for table in (

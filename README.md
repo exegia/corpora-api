@@ -72,15 +72,16 @@ No finalization, restore, reconciliation, readiness transition or route is
 implemented. Recorded commits must remain reachable through their retained Hub
 references; the schema does not itself verify remote bytes. Before enabling a
 writer, implement atomic finalization of the operation, version and head, and
-enforce the intended ready-state/head relationship. Repeated requests can return
-the same admitted operation; a future dispatcher needs a durable exclusive
-execution claim and reconciliation, and must not launch work merely because an
-admission receipt exists. A lost database commit response can leave an admitted
-operation that requires lookup; it must not trigger Hub work from the failed
-response. A newly authenticated session for the same actor can reattach to an
-identical operation; the originally admitted session remains recorded. Receipt
-state is a snapshot and must not substitute for a locked or compare-and-swap
-worker claim.
+enforce the intended ready-state/head relationship. An unwired one-shot claim
+adapter lets one trusted dispatcher claim an admitted operation; it does not
+run a worker or automatically reclaim an uncertain or stalled operation.
+Admission receipts do not themselves authorize dispatch. A lost admission or
+claim commit response must not trigger Hub work from the failed response; the
+durable state needs reconciliation. A newly authenticated session for the same
+actor can reattach to an identical operation; the originally admitted session
+remains recorded. Receipt state is a snapshot, not an execution claim. A future
+finalizer must check the exact claim ID and operation state; a database claim
+cannot cancel or fence a remote Hub request that is already running.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted

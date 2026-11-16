@@ -9,17 +9,21 @@ CREATE TABLE public.corpora_corpus_write_ops (
     expected_sequence bigint NOT NULL CHECK (expected_sequence >= 0),
     expected_parent_sha text CHECK (expected_parent_sha IS NULL OR expected_parent_sha ~ '^[0-9a-f]{40}$'),
     input_sha256 text NOT NULL CHECK (input_sha256 ~ '^[0-9a-f]{64}$'),
-    state text NOT NULL DEFAULT 'admitted' CHECK (state IN ('admitted', 'uncertain', 'completed', 'failed')),
+    state text NOT NULL DEFAULT 'admitted' CHECK (state IN ('admitted', 'executing', 'uncertain', 'completed', 'failed')),
+    worker_claim uuid UNIQUE,
+    claimed_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     UNIQUE (id, corpus_id),
-    CHECK ((expected_sequence = 0) = (expected_parent_sha IS NULL))
+    CHECK ((expected_sequence = 0) = (expected_parent_sha IS NULL)),
+    CHECK ((state = 'admitted' AND worker_claim IS NULL AND claimed_at IS NULL)
+        OR (state <> 'admitted' AND worker_claim IS NOT NULL AND claimed_at IS NOT NULL))
 );
 
 -- Until reconciliation confirms the prior outcome, prevent a new save from
 -- racing an external write whose result was lost.
 CREATE UNIQUE INDEX corpora_corpus_write_ops_one_active
-    ON public.corpora_corpus_write_ops (corpus_id) WHERE state IN ('admitted', 'uncertain');
+    ON public.corpora_corpus_write_ops (corpus_id) WHERE state IN ('admitted', 'executing', 'uncertain');
 
 CREATE TABLE public.corpora_corpus_versions (
     corpus_id uuid NOT NULL REFERENCES public.corpora_corpus_metadata(id) ON DELETE RESTRICT,
@@ -56,7 +60,7 @@ DECLARE
 BEGIN
     SELECT * INTO request_row FROM public.corpora_corpus_write_ops
         WHERE id = NEW.operation_id AND corpus_id = NEW.corpus_id;
-    IF NOT FOUND OR request_row.state NOT IN ('admitted', 'uncertain')
+    IF NOT FOUND OR request_row.state NOT IN ('executing', 'uncertain')
        OR NEW.sequence <> request_row.expected_sequence + 1
        OR NEW.parent_sha IS DISTINCT FROM request_row.expected_parent_sha THEN
         RAISE EXCEPTION 'CORPUS_VERSION_OPERATION_INVALID';
@@ -110,7 +114,7 @@ CREATE FUNCTION public.corpora_corpus_validate_operation()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        IF NEW.state <> 'admitted' THEN
+        IF NEW.state <> 'admitted' OR NEW.worker_claim IS NOT NULL OR NEW.claimed_at IS NOT NULL THEN
             RAISE EXCEPTION 'CORPUS_OPERATION_STATE_INVALID';
         END IF;
         RETURN NEW;
@@ -123,9 +127,22 @@ BEGIN
        OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'CORPUS_OPERATION_IDENTITY_IMMUTABLE';
     END IF;
-    IF (OLD.state IN ('completed', 'failed') AND NEW.state <> OLD.state)
-       OR (OLD.state = 'uncertain' AND NEW.state = 'admitted') THEN
+    IF NOT (
+        (OLD.state = 'admitted' AND NEW.state IN ('admitted', 'executing'))
+        OR (OLD.state = 'executing' AND NEW.state IN ('executing', 'uncertain', 'completed', 'failed'))
+        OR (OLD.state = 'uncertain' AND NEW.state IN ('uncertain', 'completed', 'failed'))
+        OR (OLD.state IN ('completed', 'failed') AND NEW.state = OLD.state)
+    ) THEN
         RAISE EXCEPTION 'CORPUS_OPERATION_STATE_INVALID';
+    END IF;
+    IF OLD.state = 'admitted' AND NEW.state = 'executing' THEN
+        IF NEW.worker_claim IS NULL OR NEW.claimed_at IS NOT NULL THEN
+            RAISE EXCEPTION 'CORPUS_WORKER_CLAIM_INVALID';
+        END IF;
+        NEW.claimed_at := clock_timestamp();
+    ELSIF NEW.worker_claim IS DISTINCT FROM OLD.worker_claim
+          OR NEW.claimed_at IS DISTINCT FROM OLD.claimed_at THEN
+        RAISE EXCEPTION 'CORPUS_WORKER_CLAIM_IMMUTABLE';
     END IF;
     IF NEW.state = 'completed' AND OLD.state <> 'completed' AND NOT EXISTS (
         SELECT 1 FROM public.corpora_corpus_versions v

@@ -203,7 +203,7 @@ def _receipt(
             or row["expected_sequence"] != sequence
             or row["expected_parent_sha"] != parent
             or row["input_sha256"] != input_hash
-            or row["state"] not in {"admitted", "uncertain", "completed", "failed"}
+            or row["state"] not in {"admitted", "executing", "uncertain", "completed", "failed"}
         ):
             return b'{"status":"conflict"}'
         UUID(row["session_id"])
