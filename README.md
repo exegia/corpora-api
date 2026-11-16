@@ -62,6 +62,15 @@ session lock and metadata reservation, updates, or reads. It requires signature-
 reviewed session lease and the proposed database privileges; it does not apply
 those privileges or expose a route. A lost commit response can leave the caller
 uncertain whether an update committed, so callers must reload before retrying.
+A separate draft schema records content write operations, immutable-commit
+versions and a current head, distinct from the metadata revision counter. It
+grants the service role read access only; no admission, verified Hub write,
+finalization, restore, reconciliation, readiness transition or route is
+implemented. A recorded commit must remain reachable through its retained Hub
+reference, and these constraints do not themselves verify remote bytes.
+Before enabling a writer, enforce immutable operation identity and valid state
+transitions, bind admission to the owner and live session, and atomically
+finalize the operation, version and head. Readiness does not yet require a head.
 The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
