@@ -74,6 +74,7 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
     data = archive.getvalue()
     service_headers = {"apikey": service, "Authorization": "Bearer " + service}
     users, bucket_created, object_key, grant_applied = [], False, None, False
+    credentials = []
     jobs_bucket_created, job_key, created_key = False, None, None
     race_job_key, race_created_key = None, None
     migration = (
@@ -183,13 +184,15 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
             )
             db.execute("NOTIFY pgrst, 'reload schema'")
             for _ in range(2):
+                email, password = f"{uuid4()}@example.org", str(uuid4())
                 response = client.post(
                     url + "/auth/v1/signup",
                     headers={"apikey": anon},
-                    json={"email": f"{uuid4()}@example.org", "password": str(uuid4())},
+                    json={"email": email, "password": password},
                 )
                 response.raise_for_status()
                 users.append((response.json()["user"]["id"], response.json()["access_token"]))
+                credentials.append((email, password))
             response = client.post(
                 url + "/storage/v1/bucket",
                 headers=service_headers,
@@ -353,6 +356,30 @@ def test_views_use_real_supabase_session_and_private_storage(tmp_path, monkeypat
                         api.get(f"/v1/ai/drafts/{document}/{view}", headers=headers).status_code
                         == 401
                     )
+                monkeypatch.setattr(session_drafts, "read_draft_timed", real_worker)
+                email, password = credentials[0]
+                signed_in = client.post(
+                    url + "/auth/v1/token?grant_type=password",
+                    headers={"apikey": anon},
+                    json={"email": email, "password": password},
+                )
+                signed_in.raise_for_status()
+                fresh_headers = {"Authorization": "Bearer " + signed_in.json()["access_token"]}
+                retried = api.post(
+                    "/v1/ai/drafts", headers=fresh_headers, json={"job_id": race_job}
+                )
+                assert retried.status_code == 200
+                assert (retried.json()["id"], retried.json()["revision"]) == (
+                    race_id,
+                    race_revision,
+                )
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM public.corpora_test_draft_heads WHERE document_id=%s",
+                        (race_id,),
+                    ).fetchone()[0]
+                    == 1
+                )
         finally:
             if object_key or created_key or race_created_key:
                 client.request(

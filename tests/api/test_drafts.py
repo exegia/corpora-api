@@ -101,7 +101,8 @@ def test_draft_preparation_stages_without_publishing(monkeypatch):
     assert staged["provision"]["corpus"] == "draft:" + staged["provision"]["document_id"]
 
 
-def test_failed_validation_never_stages_a_draft(monkeypatch):
+@pytest.mark.parametrize("verdict", [{"valid": False}, {"valid": "true"}, {"valid": 1}, {}])
+def test_failed_validation_never_stages_a_draft(monkeypatch, verdict):
     owner, job = str(uuid4()), str(uuid4())
     uploaded = []
     client = httpx.Client(transport=httpx.MockTransport(lambda request: uploaded.append(request)))
@@ -110,7 +111,7 @@ def test_failed_validation_never_stages_a_draft(monkeypatch):
     monkeypatch.setattr(store, "resolve", lambda *_: (_ for _ in ()).throw(HTTPException(404)))
     monkeypatch.setattr(drafts_module, "read_archive", lambda *_: {"version": "1.0"})
     jobs = type("Jobs", (), {"fetch": lambda _self, *_: ("mini.corpus", b"invalid")})()
-    validator = type("Validator", (), {"validate": lambda _self, *_: {"valid": False}})()
+    validator = type("Validator", (), {"validate": lambda _self, *_: verdict})()
     with pytest.raises(HTTPException) as denied:
         store.prepare_create(owner, job, jobs, validator)
     assert denied.value.status_code == 422 and not uploaded

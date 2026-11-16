@@ -204,7 +204,7 @@ class DraftStore:
             raise HTTPException(
                 status_code=422, detail="Conversion archive is unreadable"
             ) from error
-        if not verdict.get("valid"):
+        if not isinstance(verdict, dict) or verdict.get("valid") is not True:
             raise HTTPException(status_code=422, detail="Conversion archive is invalid")
         version = str(manifest.get("version") or "")
         if not re.fullmatch(r"v?[0-9]+\.[0-9]+", version):
