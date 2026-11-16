@@ -335,3 +335,43 @@ def test_thread_ownership_idempotency_and_stale_scope(setup_threads, monkeypatch
         assert len(rows) == 2
         allowed.remove(ALICE)
         assert client.get(f"/v1/ai/threads/{thread_id}", headers=alice).status_code == 404
+
+
+def test_thread_job_paths_validate_exact_downloaded_archive(monkeypatch):
+    from corpora_api import ai_validation
+    from corpora_api.models import AINodeScope
+    from corpora_api.threads import ThreadService
+
+    data = b"downloaded conversion bytes"
+    seen = []
+    jobs = SimpleNamespace(fetch=lambda owner, job: ("source.zip", data))
+    validator = SimpleNamespace(
+        validate=lambda name, content: seen.append((name, content)) or {"valid": False}
+    )
+    service = ThreadService(None, None, jobs, None, validator)
+    scope = AINodeScope(
+        corpus="job:b85f991a-8aaf-4f48-b26e-a9ef63e6a7f4",
+        level="word",
+        node_id=1,
+        node_type="word",
+        label="",
+        version="1",
+    )
+    monkeypatch.setattr(
+        ai_validation, "run_corpus", lambda *args, **kwargs: pytest.fail("invalid data used")
+    )
+    for operation in (
+        lambda: service._access(ALICE, scope.corpus),
+        lambda: service._validate(ALICE, scope),
+    ):
+        with pytest.raises(HTTPException) as error:
+            operation()
+        assert error.value.status_code == 422
+    assert seen == [("source.zip", data), ("source.zip", data)]
+    validator.validate = lambda name, content: seen.append((name, content)) or {"valid": True}
+    monkeypatch.setattr(
+        ai_validation, "run_corpus", lambda content, *_args, **_kwargs: {"ok": content is data}
+    )
+    service._access(ALICE, scope.corpus)
+    service._validate(ALICE, scope)
+    assert seen[-2:] == [("source.zip", data), ("source.zip", data)]

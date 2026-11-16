@@ -48,14 +48,22 @@ def _operation_id(namespace: str, key: str | None) -> str:
 
 
 class ThreadService:
-    def __init__(self, store: ThreadStore, storage: Any, jobs: Any, drafts: Any) -> None:
-        self.store, self.storage, self.jobs, self.drafts = store, storage, jobs, drafts
+    def __init__(
+        self, store: ThreadStore, storage: Any, jobs: Any, drafts: Any, validator: Any
+    ) -> None:
+        self.store, self.storage, self.jobs, self.drafts, self.validator = (
+            store,
+            storage,
+            jobs,
+            drafts,
+            validator,
+        )
 
     def _access(self, owner: str, corpus: str) -> None:
-        owned_archive(self.storage, self.jobs, self.drafts, owner, corpus)
+        owned_archive(self.storage, self.jobs, self.drafts, owner, corpus, self.validator)
 
     def _validate(self, owner: str, scope: AINodeScope) -> None:
-        result = validate_scope(self.storage, self.jobs, owner, scope, self.drafts)
+        result = validate_scope(self.storage, self.jobs, owner, scope, self.validator, self.drafts)
         if isinstance(result, JSONResponse):
             raise ScopeConflict(result)
 

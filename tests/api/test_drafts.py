@@ -5,6 +5,7 @@ import json
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -394,3 +395,39 @@ def test_change_history_respects_byte_limit_without_skipping(monkeypatch):
     with pytest.raises(HTTPException) as oversized:
         store.history(owner, corpus, None, 3, 0)
     assert oversized.value.status_code == 413
+
+
+@pytest.mark.parametrize("verdict", [None, {}, {"valid": False}, {"valid": "true"}, {"valid": 1}])
+def test_draft_creation_rejects_nonliteral_validation(monkeypatch, verdict):
+    owner, job = str(uuid4()), str(uuid4())
+    store = DraftStore()
+    monkeypatch.setattr(store, "_require_capability", lambda *_: None)
+
+    monkeypatch.setattr(store, "resolve", lambda *_args: pytest.fail("invalid draft was resolved"))
+    monkeypatch.setattr(store, "_rpc", lambda *_args: pytest.fail("invalid draft was published"))
+    monkeypatch.setattr(
+        drafts_module, "read_archive", lambda *_args: pytest.fail("invalid archive was parsed")
+    )
+    jobs = SimpleNamespace(fetch=lambda *_args: ("source.corpus", b"archive"))
+    validator = SimpleNamespace(validate=lambda *_args: verdict)
+    with pytest.raises(HTTPException) as caught:
+        store.create(owner, job, jobs, validator)
+    assert caught.value.status_code == 422
+
+
+def test_existing_draft_retry_revalidates_downloaded_conversion(monkeypatch):
+    owner, job = str(uuid4()), str(uuid4())
+    store = DraftStore()
+    monkeypatch.setattr(store, "_require_capability", lambda *_: None)
+    resolved = []
+    monkeypatch.setattr(store, "resolve", lambda *_: resolved.append(True) or object())
+    monkeypatch.setattr(store, "_info", lambda _: {"id": "existing"})
+    data = [b"valid"]
+    jobs = SimpleNamespace(fetch=lambda *_args: ("source.corpus", data[0]))
+    validator = SimpleNamespace(validate=lambda _name, content: {"valid": content == b"valid"})
+    assert store.create(owner, job, jobs, validator) == {"id": "existing"}
+    data[0] = b"tampered"
+    with pytest.raises(HTTPException) as caught:
+        store.create(owner, job, jobs, validator)
+    assert caught.value.status_code == 422
+    assert resolved == [True]

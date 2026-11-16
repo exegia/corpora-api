@@ -936,6 +936,7 @@ async def ai_validate(
         conversion_artifact_store,
         user_id,
         request.scope,
+        validator,
         draft_store,
     )
 
@@ -948,7 +949,9 @@ def _thread_owner(user_id: Annotated[str, Depends(require_user)]) -> str:
 
 
 def _thread_service() -> ThreadService:
-    return ThreadService(thread_store, corpus_storage, conversion_artifact_store, draft_store)
+    return ThreadService(
+        thread_store, corpus_storage, conversion_artifact_store, draft_store, validator
+    )
 
 
 async def _thread_call(function: Any, *args: Any) -> Any:

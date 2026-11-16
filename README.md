@@ -87,6 +87,8 @@ corpus access, use owner-filtered reads and compare-and-swap updates, and accept
 UUID `Idempotency-Key` headers for thread, section, and message creation.
 `POST /v1/ai/chat` documents its streaming contract but returns 501 until chat
 is implemented; it does not store provider keys.
+For conversion jobs, the API validates the downloaded archive again before
+using it; a saved result from an earlier validation is not sufficient.
 Corpus detail, reference, and scope reads run the native loader in a separate
 short-lived process per request so its state cannot cross server worker threads.
 Results exceeding the worker's 3.9 MB encoded JSON limit return 413 rather than

@@ -82,8 +82,9 @@ def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.mark.parametrize("committed", [True, False])
-def test_ambiguous_job_response_preserves_graph(store, committed):
+@pytest.mark.parametrize("outcome", ["committed", "missing", "mismatch", "foreign", "read_failed"])
+@pytest.mark.parametrize("failure", ["gateway", "timeout"])
+def test_ambiguous_job_response_preserves_graph(store, outcome, failure):
     artifacts, jobs, _transport = store
     job = str(uuid.uuid4())
     graph = json.dumps(build_plain_graph("source.txt", b"durable text").to_wire()).encode()
@@ -104,24 +105,59 @@ def test_ambiguous_job_response_preserves_graph(store, committed):
         if request.url.path == "/rest/v1/conversion_jobs":
             if request.method == "POST":
                 row = json.loads(request.content)
-                if committed:
+                if outcome in ("committed", "mismatch", "foreign"):
                     jobs[row["id"]] = row
+                if outcome == "mismatch":
+                    jobs[row["id"]]["name"] = "different.txt"
+                if outcome == "foreign":
+                    jobs[row["id"]]["owner"] = BOB
                 # A gateway error does not prove whether the row committed.
+                if failure == "timeout":
+                    raise httpx.ReadTimeout("lost response", request=request)
                 return httpx.Response(503)
             if request.method == "GET":
-                return httpx.Response(200, json=[jobs[job]])
+                if outcome == "read_failed":
+                    return httpx.Response(503)
+                return httpx.Response(200, json=[jobs[job]] if job in jobs else [])
         raise AssertionError("Unexpected request")
 
     adapter = IngestStore(httpx.Client(transport=httpx.MockTransport(respond)))
-    with pytest.raises(IngestStoreError):
+    if outcome == "committed":
         adapter.save(ALICE, job, "source.txt", "Source", graph)
+    else:
+        with pytest.raises(IngestStoreError):
+            adapter.save(ALICE, job, "source.txt", "Source", graph)
     assert artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job}.graph.json"] == graph
-    if committed:
+    if outcome == "committed":
         assert adapter.status(ALICE, job)["download_ready"] is True
         downloaded, _filename = adapter.download(ALICE, job)
         assert downloaded == graph
-    else:
+    elif outcome in ("missing", "read_failed"):
         assert job not in jobs
+
+
+def test_ingest_returns_job_when_insert_response_is_lost(monkeypatch, store):
+    artifacts, jobs, transport = store
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        response = transport.handle_request(request)
+        if request.url.path == "/rest/v1/conversion_jobs" and request.method == "POST":
+            raise httpx.ReadTimeout("lost response", request=request)
+        return response
+
+    adapter = IngestStore(httpx.Client(transport=httpx.MockTransport(respond)))
+    monkeypatch.setattr(app_module, "ingest_store", adapter)
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/ingest",
+            files={"file": ("source.txt", b"durable text")},
+            headers=headers("alice-token"),
+        )
+        assert result.status_code == 202, result.text
+        job = result.json()["job_id"]
+        assert jobs[job]["owner"] == ALICE
+        assert artifacts[f"/storage/v1/object/jobs/conversion-jobs/{job}.graph.json"]
+        assert client.get(f"/v1/ingest/{job}", headers=headers("alice-token")).status_code == 200
 
 
 def test_upload_poll_download_survives_store_recreation_and_isolates_owner(

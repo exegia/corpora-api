@@ -24,7 +24,14 @@ _ARCHIVE_ID = re.compile(r"^[\w][\w .-]*$", re.UNICODE)
 
 
 def owned_archive(
-    storage: Any, jobs: Any, drafts: Any, owner: str, corpus: str, *, scope_validation: bool = False
+    storage: Any,
+    jobs: Any,
+    drafts: Any,
+    owner: str,
+    corpus: str,
+    validator: Any,
+    *,
+    scope_validation: bool = False,
 ) -> bytes:
     if corpus.startswith("job:"):
         if scope_validation:
@@ -32,7 +39,11 @@ def owned_archive(
                 UUID(corpus[4:])
             except ValueError as error:
                 raise HTTPException(422, "Expected job:<UUID>") from error
-        return jobs.fetch(owner, corpus[4:])[1]
+        name, data = jobs.fetch(owner, corpus[4:])
+        verdict = validator.validate(name, data)
+        if not isinstance(verdict, dict) or verdict.get("valid") is not True:
+            raise HTTPException(422, "Conversion archive is invalid")
+        return data
     if corpus.startswith("draft:"):
         if drafts is None:
             raise HTTPException(status_code=503, detail="Working draft storage is unavailable")
@@ -51,10 +62,12 @@ def owned_archive(
 
 
 def validate_scope(
-    storage: Any, jobs: Any, owner: str, request: AINodeScope, drafts: Any = None
+    storage: Any, jobs: Any, owner: str, request: AINodeScope, validator: Any, drafts: Any = None
 ) -> dict[str, Any] | JSONResponse:
     try:
-        data = owned_archive(storage, jobs, drafts, owner, request.corpus, scope_validation=True)
+        data = owned_archive(
+            storage, jobs, drafts, owner, request.corpus, validator, scope_validation=True
+        )
     except (ConversionArtifactNotFound, StoredCorpusNotFound) as error:
         raise HTTPException(404, "Corpus not found") from error
     try:
