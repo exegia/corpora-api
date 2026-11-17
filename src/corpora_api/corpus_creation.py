@@ -86,8 +86,16 @@ def _info(value: Any, corpus_id: str) -> CorpusCreationInfo:
 class CreationRPC:
     """No automatic retries: a lost admission response must not dispatch work."""
 
-    def __init__(self, transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None):
+    def __init__(
+        self,
+        transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
+        *,
+        max_response_bytes: int = 65536,
+    ):
+        if type(max_response_bytes) is not int or not 1 <= max_response_bytes <= 524288:
+            raise ValueError("Invalid RPC response bound")
         self.transport_factory = transport_factory
+        self.max_response_bytes = max_response_bytes
 
     def call(self, name: str, params: dict[str, Any]) -> Any:
         return asyncio.run(self._call(name, params))
@@ -113,7 +121,7 @@ class CreationRPC:
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body.extend(chunk)
-                    if len(body) > 65536:
+                    if len(body) > self.max_response_bytes:
                         raise ValueError("Response exceeds limit")
                 value = json.loads(body)
                 if response.status_code != 200:
