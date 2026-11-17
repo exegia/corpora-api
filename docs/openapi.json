@@ -937,6 +937,37 @@
         "title": "CorpusCreationInfo",
         "type": "object"
       },
+      "CorpusDeletion": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "executing",
+              "uncertain",
+              "completed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "operation_id",
+          "state"
+        ],
+        "title": "CorpusDeletion",
+        "type": "object"
+      },
       "CorpusImportInfo": {
         "additionalProperties": false,
         "properties": {
@@ -1518,6 +1549,58 @@
           "updated_at"
         ],
         "title": "CorpusSummary",
+        "type": "object"
+      },
+      "CorpusVisibility": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "visibility": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "revision",
+          "visibility"
+        ],
+        "title": "CorpusVisibility",
+        "type": "object"
+      },
+      "DeletionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "exclusiveMinimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_revision"
+        ],
+        "title": "DeletionRequest",
         "type": "object"
       },
       "Diagnostic": {
@@ -2892,6 +2975,31 @@
           "checks"
         ],
         "title": "ValidationResponse",
+        "type": "object"
+      },
+      "VisibilityPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "exclusiveMinimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "visibility": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "visibility"
+        ],
+        "title": "VisibilityPatch",
         "type": "object"
       }
     },
@@ -4490,6 +4598,66 @@
       }
     },
     "/v1/corpora/{corpus_id}": {
+      "delete": {
+        "description": "Hide the corpus and delete its private repository once; retain the audit receipt.",
+        "operationId": "remove_corpus_v1_corpora__corpus_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusDeletion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Remove Corpus",
+        "tags": [
+          "Corpora"
+        ]
+      },
       "get": {
         "description": "Read the durable creation result as its owner or a server-authorized superadmin. Requires a live session. A needs_reconciliation result must not be retried with a new ID to recover the same creation. An in-progress result may need operator investigation after a stopped worker; it is never automatically redispatched.",
         "operationId": "get_corpus_v1_corpora__corpus_id__get",
@@ -4556,6 +4724,68 @@
           }
         ],
         "summary": "Get corpus creation status",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/deletions/{operation_id}": {
+      "get": {
+        "description": "Inspect a deletion after normal corpus reads disappear, without retrying it.",
+        "operationId": "deletion_status_v1_corpora__corpus_id__deletions__operation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusDeletion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Deletion Status",
         "tags": [
           "Corpora"
         ]
@@ -4687,7 +4917,7 @@
     },
     "/v1/corpora/{corpus_id}/metadata": {
       "get": {
-        "description": "Read corpus metadata as its owner or server-configured superadmin.",
+        "description": "Read owned metadata or a public ready corpus; supplied tokens must remain valid.",
         "operationId": "corpus_metadata_v1_corpora__corpus_id__metadata_get",
         "parameters": [
           {
@@ -4792,6 +5022,118 @@
           }
         ],
         "summary": "Patch Corpus Metadata",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/visibility": {
+      "get": {
+        "description": "Read visibility as an owner, superadmin, or reader of a public ready corpus.",
+        "operationId": "get_visibility_v1_corpora__corpus_id__visibility_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusVisibility"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Get Visibility",
+        "tags": [
+          "Corpora"
+        ]
+      },
+      "patch": {
+        "description": "Change API access at an expected revision; the backing repository remains private.",
+        "operationId": "patch_visibility_v1_corpora__corpus_id__visibility_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VisibilityPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusVisibility"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Patch Visibility",
         "tags": [
           "Corpora"
         ]

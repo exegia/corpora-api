@@ -46,6 +46,7 @@ from corpora_api.conversions import (
     ConversionUnavailable,
 )
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreRejected, CoreUnavailable
+from corpora_api.corpus_access_api import router as corpus_access_router
 from corpora_api.corpus_creation import (
     CorpusCreateRequest,
     CorpusCreationInfo,
@@ -190,6 +191,7 @@ app = FastAPI(
 )
 app.include_router(corpus_metadata_router)
 app.include_router(corpus_import_router)
+app.include_router(corpus_access_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
@@ -214,6 +216,17 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
         return await call_next(request)
 
     authorization = request.headers.get("Authorization", "")
+    # Only these read routes admit an absent token. The database still decides
+    # visibility; a supplied malformed/revoked token never becomes anonymous.
+    parts = request.url.path.split("/")
+    if (
+        request.method == "GET"
+        and len(parts) == 5
+        and parts[1:3] == ["v1", "corpora"]
+        and parts[4] in {"metadata", "visibility"}
+        and "authorization" not in request.headers
+    ):
+        return await call_next(request)
     scheme, _, credential = authorization.partition(" ")
     has_bearer = scheme.lower() == "bearer" and bool(credential)
     if not user_auth_path(request.url.path):

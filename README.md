@@ -151,8 +151,39 @@ acknowledgements, capacity exhaustion, and uncertain worker outcomes return 503;
 check the operation status using the same UUID. Git branch creation and commit
 publication are not automatically redispatched. The SDK may retry content-addressed
 LFS transfers. An uncertain operation blocks a new import and needs reconciliation;
-there is no automatic recovery or replacement import. Editing existing content,
-restoring versions, public reads, and corpus deletion are separate work.
+there is no automatic recovery or replacement import. Editing existing content
+and restoring versions are separate work.
+
+After applying `corpus_access_lifecycle`, `PATCH /v1/corpora/{id}/visibility`
+accepts `expected_revision` and `visibility` (`private` or `public`) from an owner
+or configured superadmin. Publishing requires ready content and a verified private
+Hub commit. It changes API access only: the backing Hugging Face repository stays
+private. A real change advances the metadata revision; a stale revision returns
+409. `GET /v1/corpora/{id}/metadata` and `/visibility` permit anonymous reads of a
+public ready corpus. Private, missing and deleted corpora return 404 to anonymous
+or foreign readers. A supplied invalid or revoked token returns 401 even for a
+public corpus. Owner listing, writes and operation receipts still require a live
+session. These responses use `Cache-Control: no-store`; making a corpus private
+again takes effect on subsequent reads. A read already admitted may finish.
+
+`DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
+and `expected_revision`. Admission rejects active or uncertain provisioning/import
+operations with 409. It atomically hides the corpus before sending one bounded
+deletion request to its verified private Hub repository. A successful Hub deletion
+response followed by an authenticated 404 completes the receipt and returns 200.
+Version and operation history is retained, and the corpus UUID/repository identity
+cannot be reused. This removes the stored repository; it does not erase audit history.
+The owner or superadmin may inspect `GET /v1/corpora/{id}/deletions/{operation_id}`
+after normal reads return 404. An exact retry returns the receipt (200 completed,
+202 executing/uncertain) without another Hub DELETE. Lost acknowledgements return
+503; inspect the same receipt. An inaccessible repository before deletion is not
+treated as proof of deletion. Unconfirmed outcomes stay hidden and require
+reconciliation. Already-admitted deletion may finish after logout; new requests
+from that revoked session are denied. Each Hub lifecycle operation has a 20-second
+deadline and a 64 KiB per-response bound.
+
+The five corpus-detail views through the new corpus identity remain a separate
+integration step; existing `/v1/storage/...` reads use their existing backing store.
 
 The content schema records content write operations, immutable-commit
 versions and a current head, distinct from the metadata revision counter. An

@@ -97,6 +97,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 "corpus_creation_rpc",
                 "corpus_metadata_api",
                 "corpus_initial_import",
+                "corpus_access_lifecycle",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -388,11 +389,16 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     == "repository_created"
                 )
                 assert len(calls) == 2
+                _exercise_access_lifecycle(
+                    api, corpus, after_logout, owner, foreign, admin, db, monkeypatch
+                )
         finally:
             release.set()
             # Empty local registry was asserted above; remove only its fixture schema.
             db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
+                "deletions",
+                "access",
                 "imports",
                 "heads",
                 "versions",
@@ -508,3 +514,165 @@ def _exercise_import_rpc(session, foreign, db):
                 ("public.corpora_corpus_" + table, privilege),
             ).fetchone()[0]
     return operation
+
+
+def _exercise_access_lifecycle(api, corpus, empty_corpus, owner, foreign, admin, db, monkeypatch):
+    from corpora_api import corpus_access_api as access
+
+    path = "/v1/corpora/" + corpus
+
+    def header(user):
+        return {"Authorization": "Bearer " + user[1]}
+
+    hub_deleted, hub_calls = False, []
+
+    def hub(request):
+        nonlocal hub_deleted
+        hub_calls.append(request.method)
+        assert request.headers["authorization"] == "Bearer test-placeholder"
+        if request.method == "DELETE":
+            assert json.loads(request.content) == {
+                "name": "corpus-" + corpus,
+                "organization": "fixture",
+                "type": "dataset",
+            }
+            assert db.execute(
+                "SELECT deleted_at IS NOT NULL FROM public.corpora_corpus_access "
+                "WHERE corpus_id=%s",
+                (corpus,),
+            ).fetchone()[0]
+            hub_deleted = True
+            return httpx.Response(200, stream=httpx.ByteStream(b"{}"))
+        return httpx.Response(
+            404 if hub_deleted else 200,
+            stream=httpx.ByteStream(
+                json.dumps(
+                    {"id": "fixture/corpus-" + corpus, "private": True, "sha": "c" * 40}
+                ).encode()
+            ),
+        )
+
+    lifecycle = access.PrivateHubLifecycle
+    monkeypatch.setattr(
+        access, "PrivateHubLifecycle", lambda: lifecycle(lambda: httpx.MockTransport(hub))
+    )
+    assert api.get(path + "/metadata").status_code == 404
+    assert api.get(path + "/visibility").status_code == 404
+    assert api.get(path + "/metadata", headers=header(foreign)).status_code == 404
+    patch = {"expected_revision": 6, "visibility": "public"}
+    assert api.patch(path + "/visibility", headers=header(foreign), json=patch).status_code == 404
+    published = api.patch(path + "/visibility", headers=header(admin), json=patch)
+    assert published.status_code == 200 and published.json()["revision"] == 7
+    assert api.get(path + "/metadata").status_code == 200
+    assert api.get(path + "/metadata", headers=header(foreign)).status_code == 200
+    assert (
+        api.get(path + "/metadata", headers=header(owner)).status_code == 401
+    )  # revoked is not anonymous
+    assert api.get(path + "/metadata", headers={"Authorization": ""}).status_code == 401
+    assert api.get(path + "/visibility").json() == published.json()
+    assert api.patch(path + "/visibility", headers=header(admin), json=patch).status_code == 409
+    private = api.patch(
+        path + "/visibility",
+        headers=header(admin),
+        json={"expected_revision": 7, "visibility": "private"},
+    )
+    assert private.status_code == 200 and private.json()["revision"] == 8
+    assert api.get(path + "/metadata").status_code == 404
+    assert api.get(path + "/metadata", headers=header(admin)).status_code == 200
+    published = api.patch(
+        path + "/visibility",
+        headers=header(admin),
+        json={"expected_revision": 8, "visibility": "public"},
+    )
+    assert published.status_code == 200 and published.json()["revision"] == 9
+    operation = str(uuid4())
+    deletion = {"operation_id": operation, "expected_revision": 9}
+    assert api.request("DELETE", path, headers=header(foreign), json=deletion).status_code == 404
+    deleted = api.request("DELETE", path, headers=header(admin), json=deletion)
+    assert deleted.status_code == 200 and deleted.json()["state"] == "completed"
+    assert hub_deleted and hub_calls.count("DELETE") == 1
+    assert (
+        api.request("DELETE", path, headers=header(admin), json=deletion).json() == deleted.json()
+    )
+    assert hub_calls.count("DELETE") == 1
+    assert api.get(path + "/deletions/" + operation, headers=header(admin)).json() == deleted.json()
+    assert api.get(path + "/deletions/" + operation, headers=header(foreign)).status_code == 404
+    assert api.get(path).status_code == 401
+    for user_headers in ({}, header(admin), header(foreign)):
+        assert api.get(path + "/metadata", headers=user_headers).status_code == 404
+        assert api.get(path + "/visibility", headers=user_headers).status_code == 404
+    assert api.get(path, headers=header(admin)).status_code == 404
+    assert (
+        api.patch(
+            path + "/metadata",
+            headers=header(admin),
+            json={"expected_revision": 10, "title": "Revived"},
+        ).status_code
+        == 404
+    )
+    listed = api.get(
+        "/v1/corpora", headers=header(admin), params={"owner_id": owner[0]["sub"]}
+    ).json()
+    assert corpus not in [x["id"] for x in listed["items"]]
+    with pytest.raises(Exception, match="CORPUS_ACCESS_IMMUTABLE"):
+        with db.transaction():
+            db.execute(
+                "UPDATE public.corpora_corpus_access SET deleted_at=NULL WHERE corpus_id=%s",
+                (corpus,),
+            )
+    with pytest.raises(Exception, match="CORPUS_DELETED"):
+        with db.transaction():
+            db.execute(
+                "UPDATE public.corpora_corpus_metadata SET title=title WHERE id=%s", (corpus,)
+            )
+    assert (
+        db.execute(
+            "SELECT count(*) FROM public.corpora_corpus_versions WHERE corpus_id=%s", (corpus,)
+        ).fetchone()[0]
+        == 1
+    )
+
+    # Metadata is the common lock: deletion and an initial import cannot both win.
+    params = {
+        **creation._session(admin[0]),
+        "p_corpus": empty_corpus,
+        "p_operation": str(uuid4()),
+        "p_revision": 1,
+    }
+    barrier = threading.Barrier(2)
+
+    def compete(kind):
+        barrier.wait(timeout=5)
+        if kind == "import":
+            return creation.CreationRPC().call(
+                "corpora_begin_import", {**params, "p_digest": "d" * 64, "p_size": 123}
+            )
+        return creation.CreationRPC().call("corpora_begin_corpus_deletion", params)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(compete, ("import", "delete")))
+    assert sum(r["status"] == "claimed" for r in results) == 1
+    tombstoned = db.execute(
+        "SELECT deleted_at IS NOT NULL FROM public.corpora_corpus_access WHERE corpus_id=%s",
+        (empty_corpus,),
+    ).fetchone()[0]
+    writes = db.execute(
+        "SELECT count(*) FROM public.corpora_corpus_write_ops WHERE corpus_id=%s", (empty_corpus,)
+    ).fetchone()[0]
+    assert (tombstoned, writes) in ((True, 0), (False, 1))
+    for table in ("access", "deletions"):
+        for role in ("anon", "authenticated", "service_role"):
+            for privilege in ("INSERT", "UPDATE", "DELETE"):
+                assert not db.execute(
+                    "SELECT has_table_privilege(%s,%s,%s)",
+                    (role, "public.corpora_corpus_" + table, privilege),
+                ).fetchone()[0]
+    for (signature,) in db.execute(
+        "SELECT oid::regprocedure::text FROM pg_proc WHERE pronamespace='public'::regnamespace "
+        "AND proname IN ('corpora_read_corpus_access','corpora_set_corpus_visibility',"
+        "'corpora_get_corpus_deletion','corpora_begin_corpus_deletion','corpora_finish_corpus_deletion')"
+    ).fetchall():
+        for role in ("anon", "authenticated", "service_role"):
+            assert db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')", (role, signature)
+            ).fetchone()[0] == (role == "service_role")
