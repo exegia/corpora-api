@@ -42,18 +42,18 @@ Reservations are retained indefinitely for this release so an old retry cannot s
 
 Storage uses `STORAGE_BACKEND=huggingface` by default, matching the current legacy `/storage` deployment. Set `HF_STORAGE_REPO`, `HF_STORAGE_REPO_TYPE` (`bucket`, `model`, `dataset`, or `space`), and `HF_TOKEN` for private reads. Hub publishing and deletion require a separate, write-scoped `HF_STORAGE_WRITE_TOKEN`; the read token is never used for writes. Publishing uses a conditional Hub commit to prevent concurrent overwrites. Hub buckets remain readable but do not support publishing because their upload API has no equivalent conditional commit. `STORAGE_BACKEND=supabase` uses the existing private `SUPABASE_STORAGE_BUCKET` with `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` or `PROJECT_REF`. A verified Supabase user JWT is required on every storage route. Publishing accepts only a completed `/convert` `job_id` owned by the caller; the API fetches and revalidates its private stored archive. It never accepts a server path. Hub archives are shared, while Supabase objects are addressed only at `{verified-user-id}/{filename}`. A delete is audit-logged with the verified user ID. List and inspect return the legacy `filename`, `size_bytes`, `repo_id`, and `url` fields, and download streams bytes without staging on the API server. Manifest, index, section, content, node, and version-history reads fetch only the verified owner's archive, read it with the packaged Context-Fabric cache, and keep no cross-request cache. Missing configuration returns 503, a missing archive or reference returns 404, corrupt archives return 422, and an upstream storage failure returns 502.
 
-The draft `corpora_corpus_metadata` migration and Python registry prepare the
+The `corpora_corpus_metadata` migration and Python registry implement the
 chosen per-corpus model: Supabase stores metadata, ownership, a unique Hub
 repository identifier and revision; the configured Hub organization owns the
 actual corpus files. The server generates a stable repository identifier from a
 caller-stable corpus UUID. Records begin in `provisioning`; this component does
-not create a Hub repository, prove that it is private, or mark it ready. It has
-no HTTP routes and callers must supply a verified live session. Browser roles
+not create a Hub repository, prove that it is private, or mark it ready by itself.
+The creation routes described below require a verified live session. Browser roles
 have no direct table access. `CORPORA_SUPERADMIN_USER_ID` is a server-controlled
 user UUID, never a user-editable profile field. Review the migration, session
 enforcement, Hub provisioning and namespace before enabling this registry; the
 API does not apply its migrations.
-The draft registry can update title, description, language and structured
+The internal registry can update title, description, language and structured
 properties with a revision check; properties are replaced as one object. It
 does not expose these edits through an API or enforce a live session itself.
 Properties are user-editable metadata and must not determine authorization.
@@ -64,7 +64,7 @@ privileges. The API role receives only permission to call the guard, not to
 read or change sessions. It must verify JWT claims before invoking the guard;
 the function cannot authenticate supplied claims. The metadata and provision
 write boundaries still require separate review and grants. These adapters do
-not apply migrations or expose a route. A lost commit response can leave the caller
+not apply migrations. A lost commit response can leave the caller
 uncertain whether an update committed, so callers must reload before retrying.
 Provisioning admission and outcome recording use private fixed-SQL functions:
 the API gets execute permission but no direct provisioning-operation or bootstrap
@@ -73,6 +73,41 @@ identities come from a private database table managed by the database administra
 not user-editable claims. Before enabling it, configure that table consistently
 with `CORPORA_SUPERADMIN_USER_ID`. These functions trust the server's verified
 claims and Hub attestation; they are not accessible to browser roles.
+
+`POST /v1/corpora` accepts `{"id":"<client-generated UUID>","title":"My corpus"}`
+with a Supabase user bearer token. Keep the same UUID and title when retrying.
+The API atomically reserves owner-bound metadata and claims one creation attempt,
+then creates a private dataset at the server-selected organization and verifies
+its identity, privacy and observed commit before recording the bootstrap receipt.
+A confirmed first creation returns 201; a completed retry returns 200; a pending
+attempt returns 202. Reusing the UUID with different input or another owner returns
+409. `GET /v1/corpora/{id}` returns the current state to its owner or configured
+superadmin; other users receive 404. Responses use `Cache-Control: no-store`.
+
+Enable only after applying the metadata, content-version, restricted-session,
+restricted-provisioning and `corpus_creation_rpc` migrations. Set
+`CORPORA_CORPUS_CREATION_ENABLED=1`, `HF_CORPUS_ORGANIZATION`, a dedicated
+server-only `HF_CORPUS_PROVISION_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, and
+`SUPABASE_URL` or `PROJECT_REF`, plus the normal JWT issuer/JWKS configuration.
+The public RPC wrappers are executable only by `service_role`; privileged SQL
+stays in the private session-guard schema. JWT signature verification happens in
+the API before any claims reach these functions.
+
+New requests after logout are rejected. A creation admitted before logout may
+finish after it. A lost admission response never authorizes another Hub call.
+Ambiguous remote results return 503 and remain pending or
+`needs_reconciliation`; check the GET route and investigate the exact operation
+instead of automatically retrying creation or adopting an existing repository.
+There is no background retry or automatic reconciliation. `repository_created`
+means the private repository and bootstrap receipt exist; it does not mean that
+corpus content has been uploaded or validated, or that the corpus is public.
+The database metadata remains `provisioning` until a separate content lifecycle
+implements readiness. Later sensitive operations must recheck Hub privacy.
+
+The opt-in `tests/api/test_corpus_creation_supabase.py` test runs against an empty
+disposable local Supabase stack (`CORPORA_TEST_LOCAL_SUPABASE=1` with `API_URL`,
+`DB_URL`, `ANON_KEY` and `SERVICE_ROLE_KEY`). It uses real Auth, PostgREST and SQL
+permissions with simulated Hub calls, and removes its fixture schema and users.
 A separate draft schema records content write operations, immutable-commit
 versions and a current head, distinct from the metadata revision counter. An
 unwired adapter admits an owner or superadmin save inside a live-session
@@ -177,13 +212,13 @@ The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
 multi-namespace transition; this component does not perform either operation.
-The draft Hub provisioning adapter uses the server-only
+The Hub provisioning adapter uses the server-only
 `HF_CORPUS_PROVISION_TOKEN`, verifies the configured namespace is an actual Hub
 organization, requests a private repository, and checks its returned identity
 and privacy. The receipt includes the observed Git head, but this observation
 does not establish the initial commit or authorize recording a bootstrap: other
-writers may have changed the repository. Durable one-shot provisioning and
-independent verification are still needed. It does not adopt an existing name
+writers may have changed the repository. The creation route adds durable one-shot
+admission and an independent observation before finalization. It does not adopt an existing name
 or retry an ambiguous write.
 An unwired POSIX worker wrapper applies a request deadline, bounds worker
 output, and accepts a trusted live-session lease. If the request times out,
@@ -192,10 +227,9 @@ connection remains alive; the Hub write may still have been accepted and needs
 reconciliation. If that connection is lost, PostgreSQL releases its lock and
 the worker can still send a Hub write after logout, which is allowed for a request
 already accepted while signed in. Abrupt application-process death and the
-hosted worker environment are unverified, and a remote write may remain in
-flight after local termination. This internal dispatcher is not exposed by an
-API or background job: a restricted privilege boundary, outcome resolution,
-upload and readiness transitions are still required. Privacy must also be checked at later sensitive operations; one successful observation does not keep
+hosted worker environment need deployment-specific verification, and a remote write may remain in
+flight after local termination. The creation API uses the one-shot dispatcher;
+content upload and readiness transitions remain separate work. Privacy must also be checked at later sensitive operations; one successful observation does not keep
 a repository private.
 
 An unwired corpus-file reader checks owner-bound metadata, a ready state, a
