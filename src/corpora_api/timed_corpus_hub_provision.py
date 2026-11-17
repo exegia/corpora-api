@@ -3,7 +3,8 @@
 Killing the worker cannot retract an HTTP write already accepted by the Hub.
 Timeouts and invalid worker output therefore require reconciliation. A lost
 database connection can release a session lock while the worker is still
-running; this draft does not fence that case and must not be exposed to users.
+running. An already accepted creation may continue after sign-out, but this
+adapter alone does not provide durable admission or reconciliation.
 """
 
 from __future__ import annotations
@@ -291,6 +292,12 @@ def _provision_with_deadline(
     except (OSError, ValueError, TimeoutError, subprocess.TimeoutExpired) as error:
         _stop_and_reap(process)
         raise CorpusHubProvisionUncertain("Repository creation needs reconciliation") from error
+    except BaseException:
+        # Even interrupts must not leave a child running after this process
+        # releases its capacity slot. A request already accepted by the Hub
+        # can still finish, so the durable claim is never reclaimed here.
+        _stop_and_reap(process)
+        raise
     returncode = process.returncode
     try:
         if returncode != 0:
