@@ -133,7 +133,9 @@ class CorpusProvisionFinalizer:
                         ),
                     ).fetchone()
                     if result is None or result[0] is not True:
-                        raise CorpusMetadataConflict("Corpus bootstrap candidate conflicts")
+                        raise CorpusMetadataConflict(
+                            "Corpus bootstrap candidate conflicts or requires reconciliation"
+                        )
             return candidate.commit_sha
         except CorpusMetadataConflict:
             raise
