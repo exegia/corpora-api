@@ -767,6 +767,33 @@
         "title": "Body_create_ingestion_v1_ingest_post",
         "type": "object"
       },
+      "Body_initial_import_v1_corpora__corpus_id__imports_post": {
+        "properties": {
+          "expected_revision": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_revision",
+          "file"
+        ],
+        "title": "Body_initial_import_v1_corpora__corpus_id__imports_post",
+        "type": "object"
+      },
       "Body_validate_corpus_upload_v1_validate_post": {
         "properties": {
           "file": {
@@ -908,6 +935,52 @@
           "state"
         ],
         "title": "CorpusCreationInfo",
+        "type": "object"
+      },
+      "CorpusImportInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "state": {
+            "enum": [
+              "admitted",
+              "executing",
+              "uncertain",
+              "completed",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "operation_id",
+          "state",
+          "sequence"
+        ],
+        "title": "CorpusImportInfo",
         "type": "object"
       },
       "CorpusIndexResponse": {
@@ -4483,6 +4556,130 @@
           }
         ],
         "summary": "Get corpus creation status",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/imports": {
+      "post": {
+        "description": "Store the initial validated .corpus; use one operation UUID for identical retries.",
+        "operationId": "initial_import_v1_corpora__corpus_id__imports_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_initial_import_v1_corpora__corpus_id__imports_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Initial Import",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/imports/{operation_id}": {
+      "get": {
+        "description": "Inspect a retained import operation without redispatching a worker.",
+        "operationId": "get_import_v1_corpora__corpus_id__imports__operation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Get Import",
         "tags": [
           "Corpora"
         ]

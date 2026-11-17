@@ -101,8 +101,8 @@ instead of automatically retrying creation or adopting an existing repository.
 There is no background retry or automatic reconciliation. `repository_created`
 means the private repository and bootstrap receipt exist; it does not mean that
 corpus content has been uploaded or validated, or that the corpus is public.
-The database metadata remains `provisioning` until a separate content lifecycle
-implements readiness. Later sensitive operations must recheck Hub privacy.
+The database metadata remains `provisioning` until a validated initial import
+completes. Later sensitive operations must recheck Hub privacy.
 
 The opt-in `tests/api/test_corpus_creation_supabase.py` test runs against an empty
 disposable local Supabase stack (`CORPORA_TEST_LOCAL_SUPABASE=1` with `API_URL`,
@@ -123,7 +123,38 @@ live session in the database and use `Cache-Control: no-store`.
 The original creation title is retained independently of editable metadata, so
 an identical creation retry still resolves after a title edit. Creation-status
 responses report that original title; the metadata route returns the current one.
-A separate draft schema records content write operations, immutable-commit
+After applying `corpus_initial_import`, an owner or configured superadmin can
+upload initial content with `POST /v1/corpora/{id}/imports`. Send multipart fields
+`operation_id` (a new client UUID), `expected_revision` (the current metadata
+revision), and `file` (a `.corpus` archive, at most 3 MB). The archive must pass
+the real core validator and contain one Text-Fabric root with one retained
+Context-Fabric `.cfr` cache. Original files and their bytes are preserved; managed
+storage paths `.corpora`, `.corpora-staging`, and `.gitattributes` are reserved.
+The API checks the live session before validation and again when admitting the
+operation. Only a corpus with completed repository creation and no content head
+can be imported. An operation already admitted before logout may finish.
+
+The import worker stages the archive in the private repository, persists its
+publication claim, uploads content to a retained operation branch, and verifies
+the downloaded Git tree and every file (including LFS payloads). Only then does
+one database transaction record version 1, advance the head, and mark metadata
+`ready`. This does not make the corpus public or expose its Hugging Face repository.
+A confirmed first import returns 201. An identical completed retry returns 200;
+an existing in-flight or uncertain operation returns 202 without dispatching
+another worker. Changed input or revision for the same UUID returns 409.
+`GET /v1/corpora/{id}/imports/{operation_id}` reads the durable status for the
+owner or superadmin; foreign or missing operations return 404. Responses are
+`Cache-Control: no-store` and never contain storage credentials or repository IDs.
+
+There are two local worker slots and a 120-second worker deadline. Lost admission
+acknowledgements, capacity exhaustion, and uncertain worker outcomes return 503;
+check the operation status using the same UUID. Git branch creation and commit
+publication are not automatically redispatched. The SDK may retry content-addressed
+LFS transfers. An uncertain operation blocks a new import and needs reconciliation;
+there is no automatic recovery or replacement import. Editing existing content,
+restoring versions, public reads, and corpus deletion are separate work.
+
+The content schema records content write operations, immutable-commit
 versions and a current head, distinct from the metadata revision counter. An
 unwired adapter admits an owner or superadmin save inside a live-session
 transaction, before any Hub work. It expects a trusted hash of validated input;
@@ -132,9 +163,9 @@ role read access only, so admission needs a separately reviewed write boundary.
 An unwired database finalizer checks the exact claim and atomically records a
 trusted candidate, advances the head and sets initial readiness. The caller
 must independently verify the Hub commit, parent, input and retained ref;
-constructing an attestation does not verify it. No complete wired published-commit verifier,
-corpus-publication write, restore,
-reconciliation or route is implemented. Recorded commits must remain reachable
+constructing an attestation does not verify it. The initial-import route above
+provides that verification for version 1; the general save, restore and
+reconciliation adapters remain unwired. Recorded commits must remain reachable
 through their retained Hub references; the schema does not verify remote bytes
 or enforce readiness in every possible write path. A first version has no prior
 logical corpus version, but must use a separately recorded, immutable Hub

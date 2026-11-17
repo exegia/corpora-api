@@ -53,6 +53,7 @@ from corpora_api.corpus_creation import (
     get_corpus_creation,
 )
 from corpora_api.corpus_hub_provision import CorpusHubProvisionError
+from corpora_api.corpus_import_api import router as corpus_import_router
 from corpora_api.corpus_metadata import (
     CorpusMetadataConflict,
     CorpusMetadataError,
@@ -188,6 +189,7 @@ app = FastAPI(
     ],
 )
 app.include_router(corpus_metadata_router)
+app.include_router(corpus_import_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
