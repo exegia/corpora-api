@@ -59,6 +59,21 @@ def test_metadata_routes_require_user_authentication():
         assert client.patch(f"/v1/corpora/{uuid4()}/metadata", json={}).status_code == 401
 
 
+def test_metadata_patch_preflight_allows_documented_browser_origin():
+    with TestClient(app_module.app) as client:
+        response = client.options(
+            f"/v1/corpora/{uuid4()}/metadata",
+            headers={
+                "Origin": "https://docs.exegia.co",
+                "Access-Control-Request-Method": "PATCH",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://docs.exegia.co"
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+
+
 @pytest.mark.parametrize("invalid", [{"status": "list", "rows": [{}]}, {}, None])
 def test_invalid_metadata_page_fails_closed(monkeypatch, configured, invalid):
     monkeypatch.setattr(CreationRPC, "call", lambda *_: invalid)
