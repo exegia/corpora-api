@@ -6,6 +6,7 @@ and the transition to ready are deliberately not implemented here.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from typing import Any, Literal
@@ -43,6 +44,94 @@ class CorpusMetadata(BaseModel):
     revision: int = Field(gt=0)
     created_at: datetime
     updated_at: datetime
+
+
+def _same_json(left: Any, right: Any) -> bool:
+    """Compare JSON while keeping booleans distinct from numeric values."""
+    pending = [(left, right)]
+    while pending:
+        a, b = pending.pop()
+        if isinstance(a, bool) or isinstance(b, bool):
+            if type(a) is not type(b) or a != b:
+                return False
+        elif isinstance(a, dict) and isinstance(b, dict):
+            if a.keys() != b.keys():
+                return False
+            pending.extend((a[key], b[key]) for key in a)
+        elif isinstance(a, list) and isinstance(b, list):
+            if len(a) != len(b):
+                return False
+            pending.extend(zip(a, b, strict=True))
+        elif a != b:
+            return False
+    return True
+
+
+def _normalize_reservation(corpus_id: str, title: str, repo_type: str) -> tuple[UUID, str, str]:
+    organization = os.getenv("HF_CORPUS_ORGANIZATION", "")
+    try:
+        identifier = UUID(corpus_id)
+        repo_id = f"{organization}/corpus-{identifier}"
+        if not organization or "/" in organization:
+            raise ValueError("Invalid organization")
+        validate_repo_id(repo_id)
+        if repo_type not in {"dataset", "model"} or not isinstance(title, str):
+            raise ValueError("Invalid metadata")
+        clean_title = title.strip()
+        if not 1 <= len(clean_title) <= 512 or "\x00" in clean_title:
+            raise ValueError("Invalid title")
+        clean_title.encode("utf-8")
+    except (ValueError, TypeError, AttributeError, UnicodeError, HFValidationError) as error:
+        raise CorpusMetadataError("Corpus metadata or organization is invalid") from error
+    return identifier, clean_title, repo_id
+
+
+def _normalize_changes(revision: int, fields: dict[str, Any]) -> dict[str, Any]:
+    if (
+        type(revision) is not int
+        or not 1 <= revision < (1 << 63) - 1
+        or not isinstance(fields, dict)
+        or not fields
+        or not fields.keys() <= {"title", "description", "language", "properties"}
+    ):
+        raise CorpusMetadataError("Invalid corpus metadata update")
+    changes = dict(fields)
+    if "title" in changes:
+        title = changes["title"]
+        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 512:
+            raise CorpusMetadataError("Invalid corpus metadata update")
+        changes["title"] = title.strip()
+    for field, limit in (("description", 10000), ("language", 128)):
+        if field in changes:
+            value = changes[field]
+            if value is not None and (not isinstance(value, str) or len(value) > limit):
+                raise CorpusMetadataError("Invalid corpus metadata update")
+    try:
+        encoded = json.dumps(changes, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        snapshot = json.loads(encoded)
+        if snapshot != changes:
+            raise ValueError("Invalid metadata values")
+        changes = snapshot
+        pending: list[Any] = [changes]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, str) and "\x00" in item:
+                raise ValueError("Invalid metadata text")
+            if isinstance(item, dict):
+                pending.extend(item.keys())
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                pending.extend(item)
+        if "properties" in changes:
+            properties = changes["properties"]
+            if not isinstance(properties, dict):
+                raise ValueError("Invalid metadata properties")
+            raw = json.dumps(properties, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if len(raw) > 16384 or json.loads(raw) != properties:
+                raise ValueError("Invalid metadata properties")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as error:
+        raise CorpusMetadataError("Invalid corpus metadata update") from error
+    return changes
 
 
 class CorpusMetadataStore:
@@ -83,7 +172,10 @@ class CorpusMetadataStore:
 
     @staticmethod
     def _check_link(row: CorpusMetadata) -> None:
-        organization = os.getenv("HF_CORPUS_ORGANIZATION", "")
+        CorpusMetadataStore._check_link_in_org(row, os.getenv("HF_CORPUS_ORGANIZATION", ""))
+
+    @staticmethod
+    def _check_link_in_org(row: CorpusMetadata, organization: str) -> None:
         expected = f"{organization}/corpus-{row.id}"
         if not organization or row.hf_repo_id != expected:
             raise CorpusMetadataError("Corpus metadata has an invalid repository link")
@@ -100,6 +192,13 @@ class CorpusMetadataStore:
             raise CorpusMetadataError("Corpus metadata registry is unavailable") from error
         if response.status_code == 409:
             raise CorpusMetadataConflict("Corpus metadata conflicts with an existing record")
+        if method == "PATCH" and response.status_code in (400, 422):
+            try:
+                problem = response.json()
+            except ValueError:
+                problem = None
+            if isinstance(problem, dict) and problem.get("code") == "23514":
+                raise CorpusMetadataError("Invalid corpus metadata update")
         if response.status_code >= 400:
             raise CorpusMetadataError("Corpus metadata registry is unavailable")
         try:
@@ -120,26 +219,14 @@ class CorpusMetadataStore:
     ) -> CorpusMetadata:
         """Reserve a stable link; this does not create or verify a Hub repository."""
         owner = self._actor(verified_user)
-        organization = os.getenv("HF_CORPUS_ORGANIZATION", "")
-        try:
-            identifier = UUID(corpus_id)
-            repo_id = f"{organization}/corpus-{identifier}"
-            if not organization or "/" in organization:
-                raise ValueError("Invalid organization")
-            validate_repo_id(repo_id)
-            if repo_type not in {"dataset", "model"} or not isinstance(title, str):
-                raise ValueError("Invalid metadata")
-            if not 1 <= len(title.strip()) <= 512:
-                raise ValueError("Invalid title")
-        except (ValueError, TypeError, AttributeError, HFValidationError) as error:
-            raise CorpusMetadataError("Corpus metadata or organization is invalid") from error
+        identifier, title, repo_id = _normalize_reservation(corpus_id, title, repo_type)
         try:
             rows = self._request(
                 "POST",
                 json={
                     "id": str(identifier),
                     "owner_id": owner,
-                    "title": title.strip(),
+                    "title": title,
                     "hf_repo_id": repo_id,
                     "hf_repo_type": repo_type,
                 },
@@ -150,7 +237,7 @@ class CorpusMetadataStore:
             except CorpusMetadataNotFound:
                 raise error from None
             if (
-                existing.title != title.strip()
+                existing.title != title
                 or existing.hf_repo_id != repo_id
                 or existing.hf_repo_type != repo_type
                 or str(existing.owner_id) != owner
@@ -161,11 +248,7 @@ class CorpusMetadataStore:
             raise CorpusMetadataError("Corpus metadata registry returned invalid data")
         if rows[0].hf_repo_id != repo_id or rows[0].hf_repo_type != repo_type:
             raise CorpusMetadataError("Corpus metadata registry returned invalid data")
-        if (
-            rows[0].state != "provisioning"
-            or rows[0].title != title.strip()
-            or rows[0].revision != 1
-        ):
+        if rows[0].state != "provisioning" or rows[0].title != title or rows[0].revision != 1:
             raise CorpusMetadataError("Corpus metadata registry returned invalid data")
         return rows[0]
 
@@ -227,16 +310,19 @@ class CorpusMetadataStore:
         self, verified_user: str, corpus_id: str, revision: int, title: str
     ) -> CorpusMetadata:
         """Update the title only if the actor can edit and the revision is current."""
+        return self.update_metadata(verified_user, corpus_id, revision, {"title": title})
+
+    def update_metadata(
+        self, verified_user: str, corpus_id: str, revision: int, fields: dict[str, Any]
+    ) -> CorpusMetadata:
+        """Replace selected editable metadata; properties are replaced as a whole."""
         actor = self._actor(verified_user)
-        if type(revision) is not int or revision < 1 or not isinstance(title, str):
-            raise CorpusMetadataError("Invalid corpus metadata update")
-        if not 1 <= len(title.strip()) <= 512:
-            raise CorpusMetadataError("Invalid corpus metadata update")
+        changes = _normalize_changes(revision, fields)
         current = self.get(actor, corpus_id)
         params = {"id": "eq." + str(current.id), "revision": "eq." + str(revision)}
         if not self._is_superadmin(actor):
             params["owner_id"] = "eq." + actor
-        rows = self._request("PATCH", params=params, json={"title": title.strip()})
+        rows = self._request("PATCH", params=params, json=changes)
         if not rows:
             # Do not reveal the existence of a record that is no longer accessible.
             self.get(actor, str(current.id))
@@ -249,6 +335,7 @@ class CorpusMetadataStore:
             or row.revision != revision + 1
             or row.hf_repo_id != current.hf_repo_id
             or row.hf_repo_type != current.hf_repo_type
+            or any(not _same_json(getattr(row, key), value) for key, value in changes.items())
         ):
             raise CorpusMetadataError("Corpus metadata registry returned invalid data")
         self._check_link(row)

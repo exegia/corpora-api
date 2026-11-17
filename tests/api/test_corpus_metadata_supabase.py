@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -18,6 +20,7 @@ from corpora_api.corpus_hub_deadline import DeadlineCorpusHubReader
 from corpora_api.corpus_hub_read import CorpusHubReader, CorpusHubReadError
 from corpora_api.corpus_metadata import (
     CorpusMetadataConflict,
+    CorpusMetadataError,
     CorpusMetadataNotFound,
     CorpusMetadataStore,
 )
@@ -78,6 +81,50 @@ def test_owner_superadmin_cas_and_browser_denial(monkeypatch):
             assert updated.revision == 2 and updated.title == "Edited"
             with pytest.raises(CorpusMetadataConflict):
                 store.update_title(users[0][0], identifier, 1, "Stale")
+            enriched = store.update_metadata(
+                users[0][0],
+                identifier,
+                2,
+                {
+                    "description": "Example corpus",
+                    "language": "grc",
+                    "properties": {"source": {"edition": "2026"}},
+                },
+            )
+            assert enriched.revision == 3 and enriched.language == "grc"
+            assert enriched.description == "Example corpus"
+            assert enriched.properties == {"source": {"edition": "2026"}}
+            with pytest.raises(CorpusMetadataNotFound):
+                store.update_metadata(users[1][0], identifier, 3, {"language": "en"})
+            cleared = store.update_metadata(users[2][0], identifier, 3, {"description": None})
+            assert cleared.revision == 4 and cleared.description is None
+            assert CorpusMetadataStore().get(users[0][0], identifier) == cleared
+            # PostgreSQL expands scientific notation in JSONB text, so the
+            # database limit can reject a much smaller request serialization.
+            expanded = {str(index): 1e-300 for index in range(80)}
+            with pytest.raises(CorpusMetadataError, match="Invalid corpus metadata update"):
+                store.update_metadata(users[0][0], identifier, 4, {"properties": expanded})
+            assert store.get(users[0][0], identifier) == cleared
+            barrier = threading.Barrier(2)
+
+            def concurrent_update(language):
+                candidate = CorpusMetadataStore()
+                barrier.wait(timeout=10)
+                try:
+                    return candidate.update_metadata(
+                        users[0][0], identifier, 4, {"language": language}
+                    ).language
+                except CorpusMetadataConflict:
+                    return "conflict"
+                finally:
+                    candidate.client.close()
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(concurrent_update, ("en", "la")))
+            assert results.count("conflict") == 1
+            winner = next(value for value in results if value != "conflict")
+            after_race = store.get(users[0][0], identifier)
+            assert after_race.language == winner and after_race.revision == 5
 
             # Direct seeding is test setup, not an implemented readiness transition.
             db.execute(

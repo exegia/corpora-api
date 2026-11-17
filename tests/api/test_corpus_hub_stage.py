@@ -1,0 +1,366 @@
+"""Unwired staging must never silently retry remote writes."""
+
+import hashlib
+import io
+import zipfile
+from dataclasses import replace
+from types import SimpleNamespace
+from uuid import uuid4
+
+import httpx
+import pytest
+
+from corpora_api.corpus_hub_stage import CorpusHubStager, CorpusStageError, CorpusStageUncertain
+from corpora_api.corpus_save_claim import ClaimedCorpusSave
+from corpora_api.corpus_stage_observation import StageObservationTarget
+
+CHECKS = {
+    key: True
+    for key in (
+        "text_fabric_load",
+        "context_fabric_load",
+        "cfm_mmap_reload",
+        "stats_match",
+        "samples_match",
+    )
+}
+
+
+def archive():
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("tf/otype.tf", b"fake for transport test")
+    return b.getvalue()
+
+
+class Validator:
+    def validate(self, name, data):
+        return {"path": name, "valid": True, "checks": CHECKS}
+
+
+class FakeHub:
+    endpoint = "https://huggingface.co"
+
+    def __init__(self, corpus):
+        self.repo_id = "fixture-org/corpus-" + str(corpus)
+        self.calls = []
+        self.parent = "1" * 40
+        self.commit = "2" * 40
+        self.private = True
+        self.private_after = True
+        self.fail = None
+        self.ref_sha = None
+
+    def repo_info(self, repo_id, **kwargs):
+        self.calls.append(("info", kwargs["revision"]))
+        if self.fail == "info":
+            raise OSError("secret must not surface")
+        return SimpleNamespace(
+            id=self.repo_id,
+            private=(self.private if kwargs["revision"] == self.parent else self.private_after),
+            sha=(self.parent if kwargs["revision"] == self.parent else self.ref_sha or self.commit),
+        )
+
+    def create_branch(self, repo_id, **kwargs):
+        self.calls.append(("branch", kwargs["branch"]))
+        assert kwargs["revision"] == self.parent and kwargs["exist_ok"] is False
+        if self.fail == "branch":
+            raise OSError("secret must not surface")
+
+    def create_commit(self, repo_id, operations, **kwargs):
+        self.calls.append(("commit", kwargs["revision"]))
+        assert kwargs["parent_commit"] == self.parent and len(operations) == 1
+        if self.fail == "commit":
+            raise OSError("secret must not surface")
+        return SimpleNamespace(oid=self.commit)
+
+
+def setup(monkeypatch, responder=None):
+    monkeypatch.setenv("HF_CORPUS_ORGANIZATION", "fixture-org")
+    data = archive()
+    corpus, operation, worker = uuid4(), uuid4(), uuid4()
+    claim = ClaimedCorpusSave(
+        operation,
+        worker,
+        corpus,
+        uuid4(),
+        uuid4(),
+        0,
+        None,
+        "1" * 40,
+        hashlib.sha256(data).hexdigest(),
+        "zip",
+        f"fixture-org/corpus-{corpus}",
+        "dataset",
+        1,
+        "corpora-op-" + str(operation),
+    )
+    hub = FakeHub(corpus)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return (
+            responder(request, data)
+            if responder
+            else httpx.Response(200, stream=httpx.ByteStream(data))
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    return claim, data, hub, client, requests
+
+
+def test_stage_creates_unique_branch_and_verifies_pinned_bytes(monkeypatch):
+    claim, data, hub, client, requests = setup(monkeypatch)
+    result = CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+    assert result.stage_ref == "corpora-stage-" + str(claim.operation_id)
+    assert result.stage_path == f".corpora-staging/{claim.operation_id}/{claim.claim_id}.zip"
+    assert result.archive_sha256 == claim.input_sha256 and result.archive_size == len(data)
+    assert result.stage_sha == "2" * 40 and result.requested_base_sha == "1" * 40
+    assert not hasattr(result, "parent_sha")
+    assert [v[0] for v in hub.calls] == ["info", "branch", "commit", "info"]
+    assert result.stage_sha in str(requests[0].url)
+
+
+@pytest.mark.parametrize(
+    "failure", ["info", "branch", "commit", "private", "public-after", "no-op", "moved", "bad-sha"]
+)
+def test_failure_never_retries_or_returns_a_receipt(monkeypatch, failure):
+    claim, data, hub, client, requests = setup(monkeypatch)
+    if failure == "private":
+        hub.private = False
+    elif failure == "no-op":
+        hub.commit = hub.parent
+    elif failure == "moved":
+        hub.ref_sha = "3" * 40
+    elif failure == "bad-sha":
+        hub.commit = "not-a-sha"
+    elif failure == "public-after":
+        hub.private_after = False
+    else:
+        hub.fail = failure
+    with pytest.raises(CorpusStageUncertain) as error:
+        CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+    assert "secret" not in str(error.value)
+    assert sum(c[0] == "branch" for c in hub.calls) <= 1
+    assert sum(c[0] == "commit" for c in hub.calls) <= 1
+    if failure == "branch":
+        assert not any(c[0] == "commit" for c in hub.calls)
+    assert not requests
+
+
+def test_redirect_to_cdn_strips_token_and_preserves_hash(monkeypatch):
+    def respond(request, data):
+        if request.url.host == "huggingface.co":
+            assert request.headers["authorization"] == "Bearer test-token"
+            return httpx.Response(302, headers={"location": "https://cdn.hf.co/payload"})
+        assert request.url.host == "cdn.hf.co" and "authorization" not in request.headers
+        return httpx.Response(200, stream=httpx.ByteStream(data))
+
+    claim, data, hub, client, requests = setup(monkeypatch, respond)
+    assert CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(302, headers={"location": "https://evil.example/steal"}),
+        httpx.Response(200, content=b"wrong"),
+        httpx.Response(200, content=b"x" * 1000),
+    ],
+)
+def test_bad_redirect_or_readback_needs_reconciliation(monkeypatch, response):
+    claim, data, hub, client, _ = setup(monkeypatch, lambda *_: response)
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+
+
+def test_invalid_claim_or_digest_never_sends_remote_request(monkeypatch):
+    claim, data, hub, client, requests = setup(monkeypatch)
+    with pytest.raises(CorpusStageError):
+        CorpusHubStager(hub, client, "test-token").stage(
+            replace(claim, repo_id="other/bad"), "mini.zip", data, Validator()
+        )
+    with pytest.raises(ValueError):
+        CorpusHubStager(hub, client, "test-token").stage(
+            replace(claim, input_sha256="0" * 64), "mini.zip", data, Validator()
+        )
+    assert not hub.calls and not requests
+
+
+def test_recovery_rechecks_private_ref_and_pinned_bytes_without_remote_writes(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+    hub.calls.clear()
+    recovered = stager.recover_trusted(receipt, Validator())
+    assert recovered.archive == data
+    assert recovered.inventory.archive_sha256 == receipt.archive_sha256
+    assert [call[0] for call in hub.calls] == ["info", "info", "info"]
+
+
+@pytest.mark.parametrize("failure", ["moved", "public", "hash", "size", "path", "format"])
+def test_recovery_rejects_changed_or_invalid_receipts(monkeypatch, failure):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+    hub.calls.clear()
+    if failure == "moved":
+        hub.ref_sha = "3" * 40
+    elif failure == "public":
+        hub.private_after = False
+    elif failure == "hash":
+        receipt = replace(receipt, archive_sha256="f" * 64)
+    elif failure == "size":
+        receipt = replace(receipt, archive_size=receipt.archive_size - 1)
+    elif failure == "path":
+        receipt = replace(receipt, stage_path="other")
+    else:
+        receipt = replace(receipt, input_format="corpus")
+    with pytest.raises(CorpusStageUncertain):
+        stager.recover_trusted(receipt, Validator())
+    assert all(call[0] != "branch" and call[0] != "commit" for call in hub.calls)
+
+
+def test_recovery_rechecks_privacy_after_downloading(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+    original = hub.repo_info
+    calls = []
+
+    def changed(*args, **kwargs):
+        info = original(*args, **kwargs)
+        calls.append(True)
+        if len(calls) == 3:
+            info.private = False
+        return info
+
+    hub.repo_info = changed
+    with pytest.raises(CorpusStageUncertain):
+        stager.recover_trusted(receipt, Validator())
+    assert len(calls) == 3
+
+
+def test_recovery_rejects_ref_move_during_download(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    receipt = CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+
+    def move_ref(_request):
+        hub.ref_sha = "3" * 40
+        return httpx.Response(200, stream=httpx.ByteStream(data))
+
+    moved_client = httpx.Client(transport=httpx.MockTransport(move_ref))
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, moved_client, "test-token").recover_trusted(receipt, Validator())
+
+
+def test_recovery_rejects_invalid_validator_report(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    stager = CorpusHubStager(hub, client, "test-token")
+    receipt = stager.stage(claim, "mini.zip", data, Validator())
+
+    class InvalidValidator:
+        def validate(self, name, raw):
+            return {"path": name, "valid": False, "checks": CHECKS}
+
+    with pytest.raises(CorpusStageUncertain):
+        stager.recover_trusted(receipt, InvalidValidator())
+
+
+def test_recovery_strips_auth_on_cdn_redirect(monkeypatch):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    receipt = CorpusHubStager(hub, client, "test-token").stage(claim, "mini.zip", data, Validator())
+    requests = []
+
+    def redirect(request):
+        requests.append(request)
+        if request.url.host == "huggingface.co":
+            assert request.headers["authorization"] == "Bearer test-token"
+            return httpx.Response(302, headers={"location": "https://cdn.hf.co/payload"})
+        assert request.url.host == "cdn.hf.co" and "authorization" not in request.headers
+        return httpx.Response(200, stream=httpx.ByteStream(data))
+
+    redirected_client = httpx.Client(transport=httpx.MockTransport(redirect))
+    assert (
+        CorpusHubStager(hub, redirected_client, "test-token")
+        .recover_trusted(receipt, Validator())
+        .archive
+        == data
+    )
+    assert len(requests) == 2
+
+
+def observation_target(claim, state="uncertain"):
+    return StageObservationTarget(
+        claim.corpus_id,
+        claim.operation_id,
+        claim.claim_id,
+        claim.repo_id,
+        claim.repo_type,
+        claim.input_format,
+        claim.input_sha256,
+        claim.hub_parent_sha,
+        state,
+    )
+
+
+@pytest.mark.parametrize("state", ["executing", "uncertain"])
+def test_unreceipted_observation_is_read_only(monkeypatch, state):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    observed = CorpusHubStager(hub, client, "test-token").observe_unreceipted(
+        observation_target(claim, state), Validator()
+    )
+    assert observed.archive_size == len(data) and observed.stage_sha == hub.commit
+    assert observed.target.observed_state == state
+    assert [call[0] for call in hub.calls] == ["info", "info", "info"]
+    assert not hasattr(observed, "claim_id")  # Not a stage receipt or execution claim.
+
+
+@pytest.mark.parametrize("failure", ["baseline", "private", "digest", "format", "state"])
+def test_unreceipted_observation_never_retries_or_adopts(monkeypatch, failure):
+    claim, data, hub, client, _ = setup(monkeypatch)
+    target = observation_target(claim)
+    if failure == "baseline":
+        hub.commit = hub.parent
+    elif failure == "private":
+        hub.private_after = False
+    elif failure == "digest":
+        target = replace(target, input_sha256="f" * 64)
+    elif failure == "format":
+        target = replace(target, input_format="corpus")
+    else:
+        target = replace(target, observed_state="completed")
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, client, "test-token").observe_unreceipted(target, Validator())
+    assert not any(call[0] in ("branch", "commit") for call in hub.calls)
+
+
+def test_unreceipted_observation_enforces_maximum_without_length_header(monkeypatch):
+    claim, _, hub, _, _ = setup(monkeypatch)
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(b"x" * 3_000_001))
+        )
+    )
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, client, "test-token").observe_unreceipted(
+            observation_target(claim), Validator()
+        )
+    assert not any(call[0] in ("branch", "commit") for call in hub.calls)
+
+
+def test_unreceipted_observation_rejects_forged_content_length(monkeypatch):
+    claim, data, hub, _, _ = setup(monkeypatch)
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, headers={"Content-Length": str(len(data) + 1)}, stream=httpx.ByteStream(data)
+            )
+        )
+    )
+    with pytest.raises(CorpusStageUncertain):
+        CorpusHubStager(hub, client, "test-token").observe_unreceipted(
+            observation_target(claim), Validator()
+        )

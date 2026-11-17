@@ -58,7 +58,7 @@ def registry(monkeypatch):
         if request.method == "PATCH" and row:
             if request.url.params["revision"] != "eq." + str(row["revision"]):
                 return httpx.Response(200, json=[])
-            row["title"] = json.loads(request.content)["title"]
+            row.update(json.loads(request.content))
             row["revision"] += 1
         return httpx.Response(200, json=[row] if row else [])
 
@@ -176,3 +176,87 @@ def test_links_outside_the_configured_organization_fail_closed(registry):
         store.get(owner, str(row.id))
     with pytest.raises(CorpusMetadataError):
         store.list_owned(owner)
+
+
+def test_owner_and_superadmin_update_multiple_metadata_fields(registry, monkeypatch):
+    store, _, _ = registry
+    owner, admin, foreign, identifier = (str(uuid4()) for _ in range(4))
+    row = store.reserve(owner, identifier, "Original", repo_type="dataset")
+    monkeypatch.setenv("CORPORA_SUPERADMIN_USER_ID", admin)
+    edited = store.update_metadata(
+        owner,
+        identifier,
+        row.revision,
+        {
+            "title": "  Revised  ",
+            "description": "A corpus",
+            "language": "grc",
+            "properties": {"source": {"edition": "2026"}, "tags": ["text", "tf"]},
+        },
+    )
+    assert edited.title == "Revised"
+    assert edited.description == "A corpus" and edited.language == "grc"
+    assert edited.properties == {"source": {"edition": "2026"}, "tags": ["text", "tf"]}
+    assert edited.revision == 2 and edited.hf_repo_id == row.hf_repo_id
+    cleared = store.update_metadata(
+        admin, identifier, edited.revision, {"description": None, "properties": {}}
+    )
+    assert cleared.description is None and cleared.properties == {} and cleared.language == "grc"
+    with pytest.raises(CorpusMetadataConflict):
+        store.update_metadata(owner, identifier, edited.revision, {"language": "en"})
+    with pytest.raises(CorpusMetadataNotFound):
+        store.update_metadata(foreign, identifier, cleared.revision, {"title": "Foreign"})
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"owner_id": str(uuid4())},
+        {"state": "ready"},
+        {"hf_repo_id": "other/repository"},
+        {"title": "   "},
+        {"title": None},
+        {"description": "x" * 10001},
+        {"language": "x" * 129},
+        {"properties": []},
+        {"properties": {"key": "x" * 16384}},
+        {"properties": {"key": float("nan")}},
+        {"properties": {"nested": {"bad": "null\x00byte"}}},
+        {"properties": {1: "non-string key"}},
+        {"description": "\ud800"},
+    ],
+)
+def test_invalid_metadata_updates_fail_before_registry_access(registry, fields):
+    store, _, requests = registry
+    with pytest.raises(CorpusMetadataError):
+        store.update_metadata(str(uuid4()), str(uuid4()), 1, fields)
+    assert requests == []
+
+
+def test_metadata_update_rejects_changed_boolean_in_server_response(registry, monkeypatch):
+    store, _, _ = registry
+    owner, identifier = str(uuid4()), str(uuid4())
+    store.reserve(owner, identifier, "Original", repo_type="dataset")
+    transport = store.client._transport
+    original = transport.handler
+
+    def changed_response(request):
+        response = original(request)
+        if request.method != "PATCH":
+            return response
+        rows = response.json()
+        rows[0]["properties"]["enabled"] = 1
+        return httpx.Response(200, json=rows)
+
+    monkeypatch.setattr(transport, "handler", changed_response)
+    with pytest.raises(CorpusMetadataError, match="invalid data"):
+        store.update_metadata(owner, identifier, 1, {"properties": {"enabled": True}})
+
+
+@pytest.mark.parametrize("revision", [True, 0, -1, (1 << 63) - 1, 1 << 80])
+def test_invalid_revision_fails_before_registry_access(registry, revision):
+    store, _, requests = registry
+    with pytest.raises(CorpusMetadataError):
+        store.update_metadata(str(uuid4()), str(uuid4()), revision, {"title": "New"})
+    assert requests == []
