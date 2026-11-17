@@ -96,6 +96,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 "restricted_provision_outcomes",
                 "corpus_creation_rpc",
                 "corpus_metadata_api",
+                "corpus_initial_import",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -121,7 +122,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 )
                 if (
                     response.status_code == 200
-                    and "/rpc/corpora_patch_metadata" in response.json().get("paths", {})
+                    and "/rpc/corpora_begin_import" in response.json().get("paths", {})
                 ):
                     break
                 assert time.monotonic() < deadline
@@ -271,6 +272,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     "p_token_exp": owner[0]["exp"],
                     "p_corpus": corpus,
                 }
+                import_operation = _exercise_import_rpc(params, foreign, db)
                 for token in (anon, foreign[1], owner[1]):
                     denied = auth.post(
                         url + "/rest/v1/rpc/corpora_get_creation",
@@ -294,7 +296,9 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     "('corpora_begin_creation','corpora_get_creation','corpora_observe_provision',"
                     "'corpora_finalize_creation','corpora_find_creation_result',"
                     "'corpora_mark_creation_uncertain','corpora_get_metadata',"
-                    "'corpora_list_metadata','corpora_patch_metadata')"
+                    "'corpora_list_metadata','corpora_patch_metadata','corpora_get_import',"
+                    "'corpora_begin_import','corpora_stage_import','corpora_complete_import',"
+                    "'corpora_find_import_result','corpora_mark_import_uncertain')"
                 ).fetchall():
                     for role in ("anon", "authenticated", "service_role"):
                         assert db.execute(
@@ -356,6 +360,13 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     assert api.get(path, headers=headers(owner)).status_code == 401
                     assert api.get(metadata_path, headers=headers(owner)).status_code == 401
                     assert api.get("/v1/corpora", headers=headers(owner)).status_code == 401
+                    from fastapi import HTTPException
+
+                    with pytest.raises(HTTPException) as revoked:
+                        creation.CreationRPC().call(
+                            "corpora_get_import", {**params, "p_operation": import_operation}
+                        )
+                    assert revoked.value.status_code == 401
                     assert (
                         api.patch(
                             metadata_path,
@@ -382,6 +393,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
             # Empty local registry was asserted above; remove only its fixture schema.
             db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
+                "imports",
                 "heads",
                 "versions",
                 "publication_claims",
@@ -412,3 +424,87 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     ).fetchone()[0]
                     == 0
                 )
+
+
+def _exercise_import_rpc(session, foreign, db):
+    """Real admission/finalization SQL with synthetic, internal Hub attestations."""
+    rpc = creation.CreationRPC()
+    operation = str(uuid4())
+    params = {
+        **session,
+        "p_operation": operation,
+        "p_revision": 5,
+        "p_digest": "d" * 64,
+        "p_size": 123,
+    }
+    denied = {**params, **creation._session(foreign[0])}
+    assert rpc.call("corpora_begin_import", denied) == {"status": "not_found"}
+    barrier = threading.Barrier(2)
+
+    def begin(_):
+        barrier.wait(timeout=5)
+        return creation.CreationRPC().call("corpora_begin_import", params)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(begin, range(2)))
+    assert sorted(r["status"] for r in results) == ["claimed", "existing"]
+    claim = next(r["claim_id"] for r in results if r["status"] == "claimed")
+    assert rpc.call("corpora_begin_import", {**params, "p_digest": "e" * 64}) == {
+        "status": "conflict"
+    }
+    assert rpc.call("corpora_begin_import", {**params, "p_operation": str(uuid4())}) == {
+        "status": "conflict"
+    }
+    publication = str(uuid4())
+    complete = {
+        "p_operation": operation,
+        "p_claim": claim,
+        "p_publication": publication,
+        "p_sha": "c" * 40,
+    }
+    assert rpc.call("corpora_complete_import", complete) is False
+    stage = {
+        "p_operation": operation,
+        "p_claim": claim,
+        "p_stage_sha": "b" * 40,
+        "p_publication": publication,
+    }
+    assert rpc.call("corpora_stage_import", {**stage, "p_claim": str(uuid4())}) is False
+    assert rpc.call("corpora_stage_import", stage) is True
+    assert rpc.call("corpora_stage_import", stage) is False  # one publication dispatch
+    assert rpc.call("corpora_complete_import", {**complete, "p_publication": str(uuid4())}) is False
+    assert rpc.call("corpora_complete_import", complete) is True
+    assert rpc.call("corpora_complete_import", complete) is True
+    assert rpc.call("corpora_find_import_result", complete) is True
+    assert rpc.call("corpora_find_import_result", {**complete, "p_sha": "f" * 40}) is False
+    assert (
+        rpc.call("corpora_mark_import_uncertain", {"p_operation": operation, "p_claim": claim})
+        is False
+    )
+    result = rpc.call("corpora_get_import", {**session, "p_operation": operation})
+    assert result["state"] == "completed" and result["sequence"] == 1
+    assert rpc.call("corpora_begin_import", params) == result
+    assert rpc.call("corpora_begin_import", {**params, "p_operation": str(uuid4())}) == {
+        "status": "conflict"
+    }
+    assert db.execute(
+        "SELECT m.state,m.revision,h.sequence,o.state FROM public.corpora_corpus_metadata m "
+        "JOIN public.corpora_corpus_heads h ON h.corpus_id=m.id "
+        "JOIN public.corpora_corpus_write_ops o ON o.corpus_id=m.id "
+        "WHERE m.id=%s",
+        (session["p_corpus"],),
+    ).fetchone() == ("ready", 6, 1, "completed")
+    for table in (
+        "imports",
+        "write_ops",
+        "staged_inputs",
+        "publication_claims",
+        "versions",
+        "heads",
+    ):
+        for privilege in ("INSERT", "UPDATE", "DELETE"):
+            assert not db.execute(
+                "SELECT has_table_privilege('service_role',%s,%s)",
+                ("public.corpora_corpus_" + table, privilege),
+            ).fetchone()[0]
+    return operation

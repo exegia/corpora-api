@@ -131,7 +131,7 @@ def verify_corpus_git_structure(
         or not isinstance(trees, Mapping)
         or len(trees) > _MAX_TREE_OBJECTS
         or not isinstance(expected_paths, frozenset)
-        or len(expected_paths) > MAX_FILES + 1
+        or len(expected_paths) > MAX_FILES + 2
     ):
         raise CorpusGitTreeError("Invalid Git verification input")
     if _object_id(b"commit", commit_payload) != candidate_sha:
@@ -228,7 +228,7 @@ def verify_corpus_git_structure(
                 directories.add(path)
                 pending.append((child, path + "/", ancestors | {oid}))
             elif mode in (b"100644", b"100755"):
-                if path in files or len(files) >= MAX_FILES + 1:
+                if path in files or len(files) >= MAX_FILES + 2:
                     raise CorpusGitTreeError("Git tree contains too many files")
                 files[path] = CorpusGitFile(path, mode.decode("ascii"), child)
             else:
