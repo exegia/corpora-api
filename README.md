@@ -42,18 +42,18 @@ Reservations are retained indefinitely for this release so an old retry cannot s
 
 Storage uses `STORAGE_BACKEND=huggingface` by default, matching the current legacy `/storage` deployment. Set `HF_STORAGE_REPO`, `HF_STORAGE_REPO_TYPE` (`bucket`, `model`, `dataset`, or `space`), and `HF_TOKEN` for private reads. Hub publishing and deletion require a separate, write-scoped `HF_STORAGE_WRITE_TOKEN`; the read token is never used for writes. Publishing uses a conditional Hub commit to prevent concurrent overwrites. Hub buckets remain readable but do not support publishing because their upload API has no equivalent conditional commit. `STORAGE_BACKEND=supabase` uses the existing private `SUPABASE_STORAGE_BUCKET` with `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_URL` or `PROJECT_REF`. A verified Supabase user JWT is required on every storage route. Publishing accepts only a completed `/convert` `job_id` owned by the caller; the API fetches and revalidates its private stored archive. It never accepts a server path. Hub archives are shared, while Supabase objects are addressed only at `{verified-user-id}/{filename}`. A delete is audit-logged with the verified user ID. List and inspect return the legacy `filename`, `size_bytes`, `repo_id`, and `url` fields, and download streams bytes without staging on the API server. Manifest, index, section, content, node, and version-history reads fetch only the verified owner's archive, read it with the packaged Context-Fabric cache, and keep no cross-request cache. Missing configuration returns 503, a missing archive or reference returns 404, corrupt archives return 422, and an upstream storage failure returns 502.
 
-The draft `corpora_corpus_metadata` migration and Python registry prepare the
+The `corpora_corpus_metadata` migration and Python registry implement the
 chosen per-corpus model: Supabase stores metadata, ownership, a unique Hub
 repository identifier and revision; the configured Hub organization owns the
 actual corpus files. The server generates a stable repository identifier from a
 caller-stable corpus UUID. Records begin in `provisioning`; this component does
-not create a Hub repository, prove that it is private, or mark it ready. It has
-no HTTP routes and callers must supply a verified live session. Browser roles
+not create a Hub repository, prove that it is private, or mark it ready by itself.
+The creation routes described below require a verified live session. Browser roles
 have no direct table access. `CORPORA_SUPERADMIN_USER_ID` is a server-controlled
 user UUID, never a user-editable profile field. Review the migration, session
 enforcement, Hub provisioning and namespace before enabling this registry; the
 API does not apply its migrations.
-The draft registry can update title, description, language and structured
+The internal registry can update title, description, language and structured
 properties with a revision check; properties are replaced as one object. It
 does not expose these edits through an API or enforce a live session itself.
 Properties are user-editable metadata and must not determine authorization.
@@ -64,7 +64,7 @@ privileges. The API role receives only permission to call the guard, not to
 read or change sessions. It must verify JWT claims before invoking the guard;
 the function cannot authenticate supplied claims. The metadata and provision
 write boundaries still require separate review and grants. These adapters do
-not apply migrations or expose a route. A lost commit response can leave the caller
+not apply migrations. A lost commit response can leave the caller
 uncertain whether an update committed, so callers must reload before retrying.
 Provisioning admission and outcome recording use private fixed-SQL functions:
 the API gets execute permission but no direct provisioning-operation or bootstrap
@@ -73,7 +73,140 @@ identities come from a private database table managed by the database administra
 not user-editable claims. Before enabling it, configure that table consistently
 with `CORPORA_SUPERADMIN_USER_ID`. These functions trust the server's verified
 claims and Hub attestation; they are not accessible to browser roles.
-A separate draft schema records content write operations, immutable-commit
+
+`POST /v1/corpora` accepts `{"id":"<client-generated UUID>","title":"My corpus"}`
+with a Supabase user bearer token. Keep the same UUID and title when retrying.
+The API atomically reserves owner-bound metadata and claims one creation attempt,
+then creates a private dataset at the server-selected organization and verifies
+its identity, privacy and observed commit before recording the bootstrap receipt.
+A confirmed first creation returns 201; a completed retry returns 200; a pending
+attempt returns 202. Reusing the UUID with different input or another owner returns
+409. `GET /v1/corpora/{id}` returns the current state to its owner or configured
+superadmin; other users receive 404. Responses use `Cache-Control: no-store`.
+
+Enable only after applying the metadata, content-version, restricted-session,
+restricted-provisioning and `corpus_creation_rpc` migrations. Set
+`CORPORA_CORPUS_CREATION_ENABLED=1`, `HF_CORPUS_ORGANIZATION`, a dedicated
+server-only `HF_CORPUS_PROVISION_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, and
+`SUPABASE_URL` or `PROJECT_REF`, plus the normal JWT issuer/JWKS configuration.
+The public RPC wrappers are executable only by `service_role`; privileged SQL
+stays in the private session-guard schema. JWT signature verification happens in
+the API before any claims reach these functions.
+
+New requests after logout are rejected. A creation admitted before logout may
+finish after it. A lost admission response never authorizes another Hub call.
+Ambiguous remote results return 503 and remain pending or
+`needs_reconciliation`; check the GET route and investigate the exact operation
+instead of automatically retrying creation or adopting an existing repository.
+There is no background retry or automatic reconciliation. `repository_created`
+means the private repository and bootstrap receipt exist; it does not mean that
+corpus content has been uploaded or validated, or that the corpus is public.
+The database metadata remains `provisioning` until a validated initial import
+completes. Later sensitive operations must recheck Hub privacy.
+
+The opt-in `tests/api/test_corpus_creation_supabase.py` test runs against an empty
+disposable local Supabase stack (`CORPORA_TEST_LOCAL_SUPABASE=1` with `API_URL`,
+`DB_URL`, `ANON_KEY` and `SERVICE_ROLE_KEY`). It uses real Auth, PostgREST and SQL
+permissions with simulated Hub calls, and removes its fixture schema and users.
+
+After applying `corpus_metadata_api`, `GET /v1/corpora` lists the signed-in
+owner's summaries in corpus-UUID order. Use `limit` (1–100) and the returned
+`next_cursor` as `after` for pagination. A server-configured superadmin may
+select another `owner_id`; other users cannot enumerate that owner's records.
+`GET /v1/corpora/{id}/metadata` returns the title, description, language,
+properties, revision and timestamps without exposing the backing repository.
+`PATCH /v1/corpora/{id}/metadata` accepts `expected_revision` and the fields to
+change. A stale revision returns 409, a foreign/missing corpus returns 404,
+and an invalid edit returns 422. Properties replace the complete JSON object;
+description and language may be cleared with null. All three routes verify the
+live session in the database and use `Cache-Control: no-store`.
+The original creation title is retained independently of editable metadata, so
+an identical creation retry still resolves after a title edit. Creation-status
+responses report that original title; the metadata route returns the current one.
+After applying `corpus_initial_import`, an owner or configured superadmin can
+upload initial content with `POST /v1/corpora/{id}/imports`. Send multipart fields
+`operation_id` (a new client UUID), `expected_revision` (the current metadata
+revision), and `file` (a `.corpus` archive, at most 3 MB). The archive must pass
+the real core validator and contain one Text-Fabric root with one retained
+Context-Fabric `.cfr` cache. Original files and their bytes are preserved; managed
+storage paths `.corpora`, `.corpora-staging`, and `.gitattributes` are reserved.
+The API checks the live session before validation and again when admitting the
+operation. Only a corpus with completed repository creation and no content head
+can be imported. An operation already admitted before logout may finish.
+
+The import worker stages the archive in the private repository, persists its
+publication claim, uploads content to a retained operation branch, and verifies
+the downloaded Git tree and every file (including LFS payloads). Only then does
+one database transaction record version 1, advance the head, and mark metadata
+`ready`. This does not make the corpus public or expose its Hugging Face repository.
+A confirmed first import returns 201. An identical completed retry returns 200;
+an existing in-flight or uncertain operation returns 202 without dispatching
+another worker. Changed input or revision for the same UUID returns 409.
+`GET /v1/corpora/{id}/imports/{operation_id}` reads the durable status for the
+owner or superadmin; foreign or missing operations return 404. Responses are
+`Cache-Control: no-store` and never contain storage credentials or repository IDs.
+
+There are two local worker slots and a 120-second worker deadline. Lost admission
+acknowledgements, capacity exhaustion, and uncertain worker outcomes return 503;
+check the operation status using the same UUID. Git branch creation and commit
+publication are not automatically redispatched. The SDK may retry content-addressed
+LFS transfers. An uncertain operation blocks a new import and needs reconciliation;
+there is no automatic recovery or replacement import. Editing existing content
+and restoring versions are separate work.
+
+After applying `corpus_access_lifecycle`, `PATCH /v1/corpora/{id}/visibility`
+accepts `expected_revision` and `visibility` (`private` or `public`) from an owner
+or configured superadmin. Publishing requires ready content and a verified private
+Hub commit. It changes API access only: the backing Hugging Face repository stays
+private. A real change advances the metadata revision; a stale revision returns
+409. `GET /v1/corpora/{id}/metadata` and `/visibility` permit anonymous reads of a
+public ready corpus. Private, missing and deleted corpora return 404 to anonymous
+or foreign readers. A supplied invalid or revoked token returns 401 even for a
+public corpus. Owner listing, writes and operation receipts still require a live
+session. These responses use `Cache-Control: no-store`; making a corpus private
+again takes effect on subsequent reads. A read already admitted may finish.
+
+`DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
+and `expected_revision`. Admission rejects active or uncertain provisioning/import
+operations with 409. It atomically hides the corpus before sending one bounded
+deletion request to its verified private Hub repository. A successful Hub deletion
+response followed by an authenticated 404 completes the receipt and returns 200.
+Version and operation history is retained, and the corpus UUID/repository identity
+cannot be reused. This removes the stored repository; it does not erase audit history.
+The owner or superadmin may inspect `GET /v1/corpora/{id}/deletions/{operation_id}`
+after normal reads return 404. An exact retry returns the receipt (200 completed,
+202 executing/uncertain) without another Hub DELETE. Lost acknowledgements return
+503; inspect the same receipt. An inaccessible repository before deletion is not
+treated as proof of deletion. Unconfirmed outcomes stay hidden and require
+reconciliation. Already-admitted deletion may finish after logout; new requests
+from that revoked session are denied. Each Hub lifecycle operation has a 20-second
+deadline and a 64 KiB per-response bound.
+
+Read ready corpus content with `GET /v1/corpora/{id}/manifest`, `/index`,
+`/sections`, `/content`, and `/nodes/{node}`. These five views use the same public
+or owner/superadmin admission policy, including live-session checks for supplied
+tokens. The server downloads `.corpora/source.corpus` only at the database's
+current immutable commit, rechecks that the repository is private, and verifies
+the recorded archive size and SHA-256 before opening it in the isolated reader.
+Configure server-only `HF_CORPUS_READ_TOKEN` with access to the private corpus
+repositories; it is never sent to API clients or forwarded to Hub CDN redirects.
+The Hub transfer has a 20-second deadline; the reader has a separate 60-second
+process limit. Responses use `Cache-Control: no-store`.
+
+Sections accept `parent`, `offset` and `limit`; content accepts `ref`, `fmt`,
+`offset` and `limit`. Offsets start at zero; limits range from 1 to 200, defaulting
+to 50. Use section references returned by the index or section views. For example,
+`GET /v1/corpora/{id}/content?offset=0&limit=20` reads the first page. Finer passages
+are used only when they cover all selected source slots once and in order;
+otherwise the core reader returns complete coarser sections or original slot nodes.
+Node IDs and annotations are preserved. Private, missing, deleted or not-yet-ready
+corpora return 404; missing nodes and sections also return 404. Unreadable archives
+return 422, oversized view results return 413, and storage/integrity/worker failures
+return 503. Errors do not expose the backing repository. Existing `/v1/storage/...`
+reads use their existing backing store. Editing and restoring versions remain
+separate work.
+
+The content schema records content write operations, immutable-commit
 versions and a current head, distinct from the metadata revision counter. An
 unwired adapter admits an owner or superadmin save inside a live-session
 transaction, before any Hub work. It expects a trusted hash of validated input;
@@ -82,9 +215,9 @@ role read access only, so admission needs a separately reviewed write boundary.
 An unwired database finalizer checks the exact claim and atomically records a
 trusted candidate, advances the head and sets initial readiness. The caller
 must independently verify the Hub commit, parent, input and retained ref;
-constructing an attestation does not verify it. No complete wired published-commit verifier,
-corpus-publication write, restore,
-reconciliation or route is implemented. Recorded commits must remain reachable
+constructing an attestation does not verify it. The initial-import route above
+provides that verification for version 1; the general save, restore and
+reconciliation adapters remain unwired. Recorded commits must remain reachable
 through their retained Hub references; the schema does not verify remote bytes
 or enforce readiness in every possible write path. A first version has no prior
 logical corpus version, but must use a separately recorded, immutable Hub
@@ -106,6 +239,12 @@ An internal read-only reconciliation inspector can report whether the expected
 private Hub repository is currently visible, mismatched or inconclusive. Its
 observation neither proves creation provenance nor establishes worker termination;
 it never adopts, retries or finalizes the operation.
+The Hub observation uses a 15-second overall HTTP deadline, including response
+headers and a body limited to 64 KiB. Timeout or cleanup failure is inconclusive;
+the dispatcher retains the claim for reconciliation. Each observation owns its
+async HTTP client and allows up to 0.1 seconds each for response and client cleanup.
+This assumes nonblocking client construction and cooperative HTTPX cancellation;
+it does not bound the surrounding database calls or the entire dispatcher.
 An unwired finalizer can record a bootstrap from a trusted assertion, but no
 component verifies that assertion; save claims fail closed when it is missing.
 Before recording a new content version, a future worker must replace and verify the complete
@@ -171,13 +310,13 @@ The configured Hub organization is part of each immutable repository link.
 Changing it will make existing records fail closed. A namespace transfer needs
 a separately reviewed Hub transfer and metadata migration or a trusted
 multi-namespace transition; this component does not perform either operation.
-The draft Hub provisioning adapter uses the server-only
+The Hub provisioning adapter uses the server-only
 `HF_CORPUS_PROVISION_TOKEN`, verifies the configured namespace is an actual Hub
 organization, requests a private repository, and checks its returned identity
 and privacy. The receipt includes the observed Git head, but this observation
 does not establish the initial commit or authorize recording a bootstrap: other
-writers may have changed the repository. Durable one-shot provisioning and
-independent verification are still needed. It does not adopt an existing name
+writers may have changed the repository. The creation route adds durable one-shot
+admission and an independent observation before finalization. It does not adopt an existing name
 or retry an ambiguous write.
 An unwired POSIX worker wrapper applies a request deadline, bounds worker
 output, and accepts a trusted live-session lease. If the request times out,
@@ -186,10 +325,9 @@ connection remains alive; the Hub write may still have been accepted and needs
 reconciliation. If that connection is lost, PostgreSQL releases its lock and
 the worker can still send a Hub write after logout, which is allowed for a request
 already accepted while signed in. Abrupt application-process death and the
-hosted worker environment are unverified, and a remote write may remain in
-flight after local termination. This internal dispatcher is not exposed by an
-API or background job: a restricted privilege boundary, outcome resolution,
-upload and readiness transitions are still required. Privacy must also be checked at later sensitive operations; one successful observation does not keep
+hosted worker environment need deployment-specific verification, and a remote write may remain in
+flight after local termination. The creation API uses the one-shot dispatcher;
+content upload and readiness transitions remain separate work. Privacy must also be checked at later sensitive operations; one successful observation does not keep
 a repository private.
 
 An unwired corpus-file reader checks owner-bound metadata, a ready state, a

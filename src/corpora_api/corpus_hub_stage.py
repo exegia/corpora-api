@@ -379,7 +379,7 @@ class CorpusHubStager:
                     digest.update(chunk)
                     chunks.extend(chunk)
                 if (
-                    not count
+                    (not count and size != 0)
                     or (size is not None and count != size)
                     or (length is not None and count != int(length))
                     or digest.hexdigest() != expected_sha256
