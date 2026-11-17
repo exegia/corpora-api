@@ -295,14 +295,14 @@ def test_session_lock_without_api_session_write_privilege(monkeypatch):
                         dispatched_corpus, 1, repo, "dataset", "c" * 40
                     )
 
-                client = httpx.Client(
-                    transport=httpx.MockTransport(
+                observer = CorpusProvisionHubObserver(
+                    "test-token-placeholder",
+                    transport_factory=lambda: httpx.MockTransport(
                         lambda _: httpx.Response(
                             200, json={"id": repo, "private": True, "sha": "c" * 40}
                         )
-                    )
+                    ),
                 )
-                observer = CorpusProvisionHubObserver(client, "test-token-placeholder")
                 lookup = CorpusProvisionObservationLookup(
                     lambda: psycopg.connect(dsn), assume_service_role=True
                 )

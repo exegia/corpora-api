@@ -4,9 +4,10 @@ An observation cannot prove who created the repository or that a worker has
 stopped. In particular, an inaccessible repository is not proof of absence.
 """
 
+import asyncio
 import json
+import math
 import re
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -96,11 +97,32 @@ class CorpusProvisionObservationLookup:
 
 
 class CorpusProvisionHubObserver:
-    """Read current private-repository details with no mutation or retry."""
+    """Read private-repository details with no mutation or retry.
 
-    def __init__(self, client: httpx.Client, token: str) -> None:
-        self.client = client
+    Call the synchronous entry point from the dispatcher's worker thread. Each
+    observation owns its async client, so cancellation closes the response and
+    connection before returning. Cooperative HTTPX transports get an additional
+    0.1 seconds each for response and client cleanup. Client/transport construction
+    must not block; this is not a process-level deadline.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        *,
+        timeout: float = 15,
+        transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
+    ) -> None:
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= 15
+        ):
+            raise ValueError("Invalid provisioning observation timeout")
         self._token = token
+        self._timeout = timeout
+        self._transport_factory = transport_factory
 
     def observe_trusted(self, target: ProvisionObservationTarget) -> ProvisionObservation:
         if not isinstance(target, ProvisionObservationTarget) or not self._token:
@@ -116,22 +138,11 @@ class CorpusProvisionHubObserver:
             ):
                 raise ValueError("Invalid target")
             kind = "datasets" if target.repo_type == "dataset" else "models"
-            deadline = time.monotonic() + 15
-            with self.client.stream(
-                "GET",
+            url = (
                 f"https://huggingface.co/api/{kind}/"
-                f"{quote(organization, safe='')}/{quote(name, safe='')}",
-                headers={"Authorization": "Bearer " + self._token},
-                timeout=15,
-                follow_redirects=False,
-            ) as response:
-                if response.status_code != 200:
-                    return ProvisionObservation(target, "inconclusive")
-                body = bytearray()
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    body.extend(chunk)
-                    if len(body) > 65536 or time.monotonic() >= deadline:
-                        return ProvisionObservation(target, "inconclusive")
+                f"{quote(organization, safe='')}/{quote(name, safe='')}"
+            )
+            body = asyncio.run(self._read(url))
             info = json.loads(body)
             if not isinstance(info, dict):
                 return ProvisionObservation(target, "inconclusive")
@@ -141,8 +152,66 @@ class CorpusProvisionHubObserver:
             if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
                 return ProvisionObservation(target, "inconclusive")
             return ProvisionObservation(target, "private_repository_observed", sha)
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        except (
+            httpx.HTTPError,
+            TimeoutError,
+            ValueError,
+            TypeError,
+            AttributeError,
+            RecursionError,
+        ):
             return ProvisionObservation(target, "inconclusive")
+
+    async def _read(self, url: str) -> bytes:
+        ends_at = asyncio.get_running_loop().time() + self._timeout
+        transport = self._transport_factory() if self._transport_factory else None
+        client = httpx.AsyncClient(transport=transport)
+        response = None
+        try:
+            if asyncio.get_running_loop().time() >= ends_at:
+                raise TimeoutError("Repository observation deadline expired")
+            async with asyncio.timeout_at(ends_at):
+                request = httpx.Request(
+                    "GET",
+                    url,
+                    headers={
+                        "Authorization": "Bearer " + self._token,
+                        "Accept-Encoding": "identity",
+                    },
+                )
+                response = await client.send(
+                    request, stream=True, auth=None, follow_redirects=False
+                )
+                if (
+                    response.status_code != 200
+                    or response.headers.get("content-encoding", "identity") != "identity"
+                ):
+                    raise ValueError("Repository observation is unavailable")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > 65536:
+                        raise ValueError("Repository observation exceeds size limit")
+                return bytes(body)
+        except Exception:
+            # HTTPX may close the stream itself at EOF; failures from that
+            # implicit cleanup are inconclusive too. Preserve cancellation.
+            raise ValueError("Repository observation failed") from None
+        finally:
+            # Cleanup also runs on cancellation. A cleanup failure makes the
+            # observation inconclusive, even if a valid body was received.
+            try:
+                if response is not None:
+                    await self._close(response)
+            finally:
+                await self._close(client)
+
+    @staticmethod
+    async def _close(resource: httpx.Response | httpx.AsyncClient) -> None:
+        try:
+            await asyncio.wait_for(resource.aclose(), timeout=0.1)
+        except Exception:
+            raise ValueError("Repository observation cleanup failed") from None
 
 
 class CorpusProvisionReconciler:
