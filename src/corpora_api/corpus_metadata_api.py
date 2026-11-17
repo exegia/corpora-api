@@ -163,11 +163,14 @@ async def corpus_metadata(
     corpus_id: UUID,
     request: Request,
     response: Response,
-    _user: str = Depends(require_user),
 ) -> CorpusMetadataInfo:
-    """Read corpus metadata as its owner or server-configured superadmin."""
+    """Read owned metadata or a public ready corpus; supplied tokens must remain valid."""
+    from corpora_api.corpus_access_api import read_visible_metadata
+
     response.headers["Cache-Control"] = "no-store"
-    return await run_in_threadpool(read_metadata, request.state.user_claims, corpus_id)
+    return await run_in_threadpool(
+        read_visible_metadata, getattr(request.state, "user_claims", None), corpus_id
+    )
 
 
 @router.patch("/v1/corpora/{corpus_id}/metadata", response_model=CorpusMetadataInfo)

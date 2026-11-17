@@ -52,10 +52,11 @@ def test_invalid_metadata_edit_never_reaches_database(monkeypatch, configured, f
     assert response.status_code == 422
 
 
-def test_metadata_routes_require_user_authentication():
+def test_metadata_writes_and_listing_require_user_authentication(monkeypatch, configured):
+    monkeypatch.setattr(CreationRPC, "call", lambda *_: {"status": "not_found"})
     with TestClient(app_module.app) as client:
         assert client.get("/v1/corpora").status_code == 401
-        assert client.get(f"/v1/corpora/{uuid4()}/metadata").status_code == 401
+        assert client.get(f"/v1/corpora/{uuid4()}/metadata").status_code == 404
         assert client.patch(f"/v1/corpora/{uuid4()}/metadata", json={}).status_code == 401
 
 
