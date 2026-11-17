@@ -1,4 +1,4 @@
-"""Unwired, deadline-bound transfer from an owner-authorized private Hub repo.
+"""Deadline-bound transfer from an authorized private Hub repository.
 
 The caller must verify the session and authorize admission before this operation;
 this adapter does not perform that check. The sink must be trusted, nonblocking,
@@ -119,6 +119,49 @@ class DeadlineCorpusHubReader:
         timeout: float,
         sink: Callable[[bytes], Awaitable[None]],
     ) -> None:
+        async def record_loader(client: httpx.AsyncClient) -> CorpusMetadata:
+            return await _get_metadata(client, verified_user, corpus_id)
+
+        await self._run_transfer(
+            record_loader, revision, path, max_bytes=max_bytes, timeout=timeout, sink=sink
+        )
+
+    async def transfer_authorized(
+        self,
+        record: CorpusMetadata,
+        revision: str,
+        path: str,
+        *,
+        max_bytes: int,
+        timeout: float,
+        sink: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        """Use a server-side record already admitted by the live access RPC.
+
+        This is an internal transfer boundary, not an authorization operation.
+        Callers must supply the RPC's record and immutable head, never client
+        metadata, paths or revisions. Public API access still uses private Hub
+        credentials and requires the repository to remain private.
+        """
+
+        async def record_loader(_client: httpx.AsyncClient) -> CorpusMetadata:
+            CorpusMetadataStore._check_link(record)
+            return record
+
+        await self._run_transfer(
+            record_loader, revision, path, max_bytes=max_bytes, timeout=timeout, sink=sink
+        )
+
+    async def _run_transfer(
+        self,
+        record_loader: Callable[[httpx.AsyncClient], Awaitable[CorpusMetadata]],
+        revision: str,
+        path: str,
+        *,
+        max_bytes: int,
+        timeout: float,
+        sink: Callable[[bytes], Awaitable[None]],
+    ) -> None:
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
@@ -128,7 +171,7 @@ class DeadlineCorpusHubReader:
             raise CorpusHubReadError("Invalid corpus transfer deadline")
         ends_at = asyncio.get_running_loop().time() + timeout
         transport = self._transport_factory() if self._transport_factory else None
-        client = httpx.AsyncClient(transport=transport)
+        client = httpx.AsyncClient(transport=transport, trust_env=False)
         failed = False
         try:
             remaining = ends_at - asyncio.get_running_loop().time()
@@ -136,8 +179,7 @@ class DeadlineCorpusHubReader:
                 raise CorpusHubReadError("Corpus transfer timed out")
             await self._transfer(
                 client,
-                verified_user,
-                corpus_id,
+                record_loader,
                 revision,
                 path,
                 max_bytes=max_bytes,
@@ -153,8 +195,7 @@ class DeadlineCorpusHubReader:
     async def _transfer(
         self,
         client: httpx.AsyncClient,
-        verified_user: str,
-        corpus_id: str,
+        record_loader: Callable[[httpx.AsyncClient], Awaitable[CorpusMetadata]],
         revision: str,
         path: str,
         *,
@@ -170,7 +211,7 @@ class DeadlineCorpusHubReader:
         deadline = asyncio.timeout(timeout)
         try:
             async with deadline:
-                record = await _get_metadata(client, verified_user, corpus_id)
+                record = await record_loader(client)
                 if record.state != "ready":
                     raise CorpusHubReadError("Corpus repository is not ready")
                 token = os.getenv("HF_CORPUS_READ_TOKEN", "")
