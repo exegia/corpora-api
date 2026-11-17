@@ -108,6 +108,21 @@ The opt-in `tests/api/test_corpus_creation_supabase.py` test runs against an emp
 disposable local Supabase stack (`CORPORA_TEST_LOCAL_SUPABASE=1` with `API_URL`,
 `DB_URL`, `ANON_KEY` and `SERVICE_ROLE_KEY`). It uses real Auth, PostgREST and SQL
 permissions with simulated Hub calls, and removes its fixture schema and users.
+
+After applying `corpus_metadata_api`, `GET /v1/corpora` lists the signed-in
+owner's summaries in corpus-UUID order. Use `limit` (1–100) and the returned
+`next_cursor` as `after` for pagination. A server-configured superadmin may
+select another `owner_id`; other users cannot enumerate that owner's records.
+`GET /v1/corpora/{id}/metadata` returns the title, description, language,
+properties, revision and timestamps without exposing the backing repository.
+`PATCH /v1/corpora/{id}/metadata` accepts `expected_revision` and the fields to
+change. A stale revision returns 409, a foreign/missing corpus returns 404,
+and an invalid edit returns 422. Properties replace the complete JSON object;
+description and language may be cleared with null. All three routes verify the
+live session in the database and use `Cache-Control: no-store`.
+The original creation title is retained independently of editable metadata, so
+an identical creation retry still resolves after a title edit. Creation-status
+responses report that original title; the metadata route returns the current one.
 A separate draft schema records content write operations, immutable-commit
 versions and a current head, distinct from the metadata revision counter. An
 unwired adapter admits an owner or superadmin save inside a live-session

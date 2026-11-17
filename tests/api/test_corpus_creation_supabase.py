@@ -95,6 +95,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 "restricted_provision_admission",
                 "restricted_provision_outcomes",
                 "corpus_creation_rpc",
+                "corpus_metadata_api",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -120,7 +121,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 )
                 if (
                     response.status_code == 200
-                    and "/rpc/corpora_begin_creation" in response.json().get("paths", {})
+                    and "/rpc/corpora_patch_metadata" in response.json().get("paths", {})
                 ):
                     break
                 assert time.monotonic() < deadline
@@ -163,6 +164,106 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 assert api.get(path, headers=headers(admin)).json() == created.json()
                 assert calls == [corpus]
 
+                metadata_path = path + "/metadata"
+                assert not db.execute(
+                    "SELECT has_column_privilege('service_role',"
+                    "'public.corpora_corpus_metadata','title','UPDATE')"
+                ).fetchone()[0]
+                assert not db.execute(
+                    "SELECT has_column_privilege('service_role',"
+                    "'public.corpora_corpus_metadata','id','INSERT')"
+                ).fetchone()[0]
+                metadata = api.get(metadata_path, headers=headers(owner))
+                assert metadata.status_code == 200
+                assert metadata.json()["revision"] == 1
+                assert "hf_repo_id" not in metadata.json()
+                assert api.get(metadata_path, headers=headers(foreign)).status_code == 404
+                assert api.get("/v1/corpora", headers=headers(foreign)).json()["items"] == []
+                assert (
+                    api.get(
+                        "/v1/corpora",
+                        headers=headers(foreign),
+                        params={"owner_id": owner[0]["sub"]},
+                    ).status_code
+                    == 404
+                )
+                assert (
+                    api.get(
+                        "/v1/corpora", headers=headers(admin), params={"owner_id": owner[0]["sub"]}
+                    ).json()["items"][0]["id"]
+                    == corpus
+                )
+                renamed = api.patch(
+                    metadata_path,
+                    headers=headers(admin),
+                    json={"expected_revision": 1, "title": "Renamed corpus"},
+                )
+                assert renamed.status_code == 200 and renamed.json()["revision"] == 2
+                # Editing the title cannot alter creation-request idempotency.
+                assert (
+                    api.post("/v1/corpora", headers=headers(owner), json=body).json()
+                    == created.json()
+                )
+                assert (
+                    api.post(
+                        "/v1/corpora",
+                        headers=headers(owner),
+                        json={**body, "title": "Renamed corpus"},
+                    ).status_code
+                    == 409
+                )
+                assert (
+                    api.patch(
+                        metadata_path,
+                        headers=headers(foreign),
+                        json={"expected_revision": 2, "title": "Foreign"},
+                    ).status_code
+                    == 404
+                )
+                barrier = threading.Barrier(2)
+
+                def concurrent_edit(language):
+                    barrier.wait(timeout=5)
+                    return api.patch(
+                        metadata_path,
+                        headers=headers(owner),
+                        json={"expected_revision": 2, "language": language},
+                    )
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    edits = list(pool.map(concurrent_edit, ("en", "fr")))
+                assert sorted(x.status_code for x in edits) == [200, 409]
+                props = {"source": {"edition": "2026", "complete": True}, "tags": ["test"]}
+                saved = api.patch(
+                    metadata_path,
+                    headers=headers(owner),
+                    json={"expected_revision": 3, "properties": props, "description": "Example"},
+                )
+                assert saved.status_code == 200 and saved.json()["revision"] == 4
+                assert api.get(metadata_path, headers=headers(owner)).json()["properties"] == props
+                # Valid escaped text can exceed the default 64 KiB RPC bound.
+                large_fields = {
+                    "description": "\u0001" * 10000,
+                    "properties": {"text": "x" * 16000},
+                }
+                large = api.patch(
+                    metadata_path,
+                    headers=headers(owner),
+                    json={"expected_revision": 4, **large_fields},
+                )
+                assert large.status_code == 200 and large.json()["revision"] == 5
+                large_read = api.get(metadata_path, headers=headers(owner))
+                assert large_read.status_code == 200
+                assert large_read.json()["description"] == large_fields["description"]
+                assert (
+                    api.patch(
+                        metadata_path,
+                        headers=headers(owner),
+                        json={"expected_revision": 4, "owner_id": foreign[0]["sub"]},
+                    ).status_code
+                    == 422
+                )
+
                 # Browser JWTs cannot use service RPCs, including forged actor claims.
                 params = {
                     "p_actor": owner[0]["sub"],
@@ -192,7 +293,8 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     "WHERE pronamespace='public'::regnamespace AND proname IN "
                     "('corpora_begin_creation','corpora_get_creation','corpora_observe_provision',"
                     "'corpora_finalize_creation','corpora_find_creation_result',"
-                    "'corpora_mark_creation_uncertain')"
+                    "'corpora_mark_creation_uncertain','corpora_get_metadata',"
+                    "'corpora_list_metadata','corpora_patch_metadata')"
                 ).fetchall():
                     for role in ("anon", "authenticated", "service_role"):
                         assert db.execute(
@@ -222,6 +324,18 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 )
                 assert retry.status_code == 202 and retry.json()["state"] == "provisioning"
                 assert calls == [corpus]
+                first_page = api.get(
+                    "/v1/corpora", headers=headers(owner), params={"limit": 1}
+                ).json()
+                second_page = api.get(
+                    "/v1/corpora",
+                    headers=headers(owner),
+                    params={"limit": 1, "after": first_page["next_cursor"]},
+                ).json()
+                assert [first_page["items"][0]["id"], second_page["items"][0]["id"]] == sorted(
+                    [corpus, lost_id]
+                )
+                assert second_page["next_cursor"] is None
 
                 # Accepted work may start/finish after logout; new attempts may not.
                 entered.clear()
@@ -240,6 +354,16 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     )
                     assert logout.status_code == 204
                     assert api.get(path, headers=headers(owner)).status_code == 401
+                    assert api.get(metadata_path, headers=headers(owner)).status_code == 401
+                    assert api.get("/v1/corpora", headers=headers(owner)).status_code == 401
+                    assert (
+                        api.patch(
+                            metadata_path,
+                            headers=headers(owner),
+                            json={"expected_revision": 4, "description": None},
+                        ).status_code
+                        == 401
+                    )
                     assert (
                         api.post(
                             "/v1/corpora", headers=headers(owner), json={**body, "id": str(uuid4())}

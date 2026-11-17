@@ -58,6 +58,7 @@ from corpora_api.corpus_metadata import (
     CorpusMetadataError,
     CorpusMetadataNotFound,
 )
+from corpora_api.corpus_metadata_api import router as corpus_metadata_router
 from corpora_api.drafts import DraftStore
 from corpora_api.ingest import (
     MAX_GRAPH_BYTES,
@@ -186,10 +187,11 @@ app = FastAPI(
         {"url": "http://localhost:8000", "description": "Local API"},
     ],
 )
+app.include_router(corpus_metadata_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=[
         "Authorization",
         "Content-Type",
