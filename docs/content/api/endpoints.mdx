@@ -1,0 +1,107 @@
+---
+title: Endpoint directory
+description: Find every operation and its complete request and response schemas
+---
+
+All paths below start with `https://api.exegia.co`. Click an operation to see its exact fields, response schemas, errors, and request playground.
+
+## Availability
+
+The `/corpora` lifecycle and detail views are the current released corpus workflow. `/storage` is the older archive adapter. References and AI routes are additional surfaces with separate configuration and unfinished migration work; do not treat their appearance here as a completed feature milestone. Content editing and restore for `/corpora` are not yet exposed.
+
+The capability flags are limited: `hub_writable` refers to legacy storage, not the newer corpus lifecycle. For a protected action, check its documented requirements and actual response.
+
+## Authentication key
+
+**Public:** no token. **User:** Supabase user access token. **Service:** Corpora service token. **Public or user:** public ready corpora allow omitted credentials; private access requires an authorized user.
+
+## Operations
+
+### Service and identity
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [GET Verified user identity](/api/user_identity_v1_auth_me_get) | `/v1/auth/me` | User |
+| [GET Deployment capabilities](/api/capabilities_v1_capabilities_get) | `/v1/capabilities` | Public |
+| [GET Service health](/api/health_v1_health_get) | `/v1/health` | Public |
+
+### Corpus lifecycle and reads
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [GET List Corpora](/api/list_corpora_v1_corpora_get) | `/v1/corpora` | User |
+| [POST Create a private corpus repository](/api/post_corpus_v1_corpora_post) | `/v1/corpora` | User |
+| [DELETE Remove Corpus](/api/remove_corpus_v1_corpora__corpus_id__delete) | `/v1/corpora/{corpus_id}` | User |
+| [GET Get corpus creation status](/api/get_corpus_v1_corpora__corpus_id__get) | `/v1/corpora/{corpus_id}` | User |
+| [GET Get Content](/api/get_content_v1_corpora__corpus_id__content_get) | `/v1/corpora/{corpus_id}/content` | Public or user |
+| [GET Deletion Status](/api/deletion_status_v1_corpora__corpus_id__deletions__operation_id__get) | `/v1/corpora/{corpus_id}/deletions/{operation_id}` | User |
+| [POST Initial Import](/api/initial_import_v1_corpora__corpus_id__imports_post) | `/v1/corpora/{corpus_id}/imports` | User |
+| [GET Get Import](/api/get_import_v1_corpora__corpus_id__imports__operation_id__get) | `/v1/corpora/{corpus_id}/imports/{operation_id}` | User |
+| [GET Get Index](/api/get_index_v1_corpora__corpus_id__index_get) | `/v1/corpora/{corpus_id}/index` | Public or user |
+| [GET Get Manifest](/api/get_manifest_v1_corpora__corpus_id__manifest_get) | `/v1/corpora/{corpus_id}/manifest` | Public or user |
+| [GET Corpus Metadata](/api/corpus_metadata_v1_corpora__corpus_id__metadata_get) | `/v1/corpora/{corpus_id}/metadata` | Public or user |
+| [PATCH Patch Corpus Metadata](/api/patch_corpus_metadata_v1_corpora__corpus_id__metadata_patch) | `/v1/corpora/{corpus_id}/metadata` | User |
+| [GET Get Node](/api/get_node_v1_corpora__corpus_id__nodes__node__get) | `/v1/corpora/{corpus_id}/nodes/{node}` | Public or user |
+| [GET Get Sections](/api/get_sections_v1_corpora__corpus_id__sections_get) | `/v1/corpora/{corpus_id}/sections` | Public or user |
+| [GET Get Visibility](/api/get_visibility_v1_corpora__corpus_id__visibility_get) | `/v1/corpora/{corpus_id}/visibility` | Public or user |
+| [PATCH Patch Visibility](/api/patch_visibility_v1_corpora__corpus_id__visibility_patch) | `/v1/corpora/{corpus_id}/visibility` | User |
+
+### Validation and ingestion
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [POST Ingest a document into a canonical graph](/api/create_ingestion_v1_ingest_post) | `/v1/ingest` | User |
+| [GET Poll an owned ingestion job](/api/get_ingestion_v1_ingest__job_id__get) | `/v1/ingest/{job_id}` | User |
+| [GET Download an owned schema-validated graph](/api/download_ingestion_v1_ingest__job_id__download_get) | `/v1/ingest/{job_id}/download` | User |
+| [POST Validate an uploaded corpus archive](/api/validate_corpus_upload_v1_validate_post) | `/v1/validate` | User |
+
+### Checks and conversion
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [POST Check spelling](/api/check_spelling_v1_checks_spelling_post) | `/v1/checks/spelling` | Service |
+| [POST Check XML structure](/api/check_structure_v1_checks_structure_post) | `/v1/checks/structure` | Service |
+| [POST Check TEI metadata](/api/check_tei_metadata_v1_checks_tei_metadata_post) | `/v1/checks/tei-metadata` | Service |
+| [POST Check a Text-Fabric ZIP bundle](/api/check_text_fabric_v1_checks_text_fabric_post) | `/v1/checks/text-fabric` | Service |
+| [POST Convert EPUB to Text-Fabric](/api/convert_epub_v1_conversions_epub_to_tf_post) | `/v1/conversions/epub-to-tf` | Service |
+| [POST Convert PDF to TEI and Text-Fabric](/api/convert_pdf_v1_conversions_pdf_to_tf_post) | `/v1/conversions/pdf-to-tf` | Service |
+| [POST Convert TEI to Text-Fabric](/api/convert_tei_v1_conversions_tei_to_tf_post) | `/v1/conversions/tei-to-tf` | Service |
+| [POST Detect or select language](/api/detect_language_v1_language_detect_post) | `/v1/language/detect` | Service |
+
+### Older storage adapter
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [GET List owned corpus archives](/api/list_stored_corpora_v1_storage_get) | `/v1/storage` | User |
+| [POST Publish a completed conversion archive](/api/publish_stored_corpus_v1_storage_post) | `/v1/storage` | User |
+| [DELETE Delete a stored corpus archive](/api/delete_stored_corpus_v1_storage__filename__delete) | `/v1/storage/{filename}` | User |
+| [GET Inspect an owned corpus archive](/api/get_stored_corpus_v1_storage__filename__get) | `/v1/storage/{filename}` | User |
+| [GET Read paginated corpus content](/api/get_stored_corpus_content_v1_storage__filename__content_get) | `/v1/storage/{filename}/content` | User |
+| [GET Download an owned corpus archive](/api/download_stored_corpus_v1_storage__filename__download_get) | `/v1/storage/{filename}/download` | User |
+| [GET Read a corpus section index](/api/get_stored_corpus_index_v1_storage__filename__index_get) | `/v1/storage/{filename}/index` | User |
+| [GET Read an owned corpus manifest](/api/get_stored_corpus_manifest_v1_storage__filename__manifest_get) | `/v1/storage/{filename}/manifest` | User |
+| [GET Read one corpus graph node](/api/get_stored_corpus_node_v1_storage__filename__nodes__node__get) | `/v1/storage/{filename}/nodes/{node}` | User |
+| [GET Read a page of corpus sections](/api/get_stored_corpus_sections_v1_storage__filename__sections_get) | `/v1/storage/{filename}/sections` | User |
+| [GET Read a corpus version history](/api/get_stored_corpus_versions_v1_storage__filename__versions_get) | `/v1/storage/{filename}/versions` | User |
+
+### References and AI
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [POST Ai Chat](/api/ai_chat_v1_ai_chat_post) | `/v1/ai/chat` | User |
+| [GET List Working Drafts](/api/list_working_drafts_v1_ai_drafts_get) | `/v1/ai/drafts` | User |
+| [POST Create Working Draft](/api/create_working_draft_v1_ai_drafts_post) | `/v1/ai/drafts` | User |
+| [GET Get Working Draft](/api/get_working_draft_v1_ai_drafts__draft_id__get) | `/v1/ai/drafts/{draft_id}` | User |
+| [GET Download Working Draft](/api/download_working_draft_v1_ai_drafts__draft_id__archive_get) | `/v1/ai/drafts/{draft_id}/archive` | User |
+| [GET Ai Providers](/api/ai_providers_v1_ai_providers_get) | `/v1/ai/providers` | User |
+| [POST Ai Validate](/api/ai_validate_v1_ai_validate_post) | `/v1/ai/validate` | User |
+| [POST Create Reference](/api/create_reference_v1_refs_post) | `/v1/refs` | User |
+| [GET Resolve Reference](/api/resolve_reference_v1_refs_resolve_get) | `/v1/refs/resolve` | User |
+| [GET Get Reference Shortcode](/api/get_reference_shortcode_v1_refs_shortcode_get) | `/v1/refs/shortcode` | User |
+| [POST Create Reference Shortcode](/api/create_reference_shortcode_v1_refs_shortcode_post) | `/v1/refs/shortcode` | User |
+
+## Limits and response formats
+
+Conversion uploads are limited to 3 MB and return ZIP files; a score-gated PDF result can contain a review report without Text-Fabric output. Initial corpus import accepts a `.corpus` file with shipped cache, up to 3,000,000 bytes. Detail pagination accepts `limit` 1–200. Other operations have their own documented limits.
+
+Most routes return JSON. Downloads can return binary artifacts. Always check the HTTP status and Content-Type before parsing a response. See [testing and errors](/api/testing).

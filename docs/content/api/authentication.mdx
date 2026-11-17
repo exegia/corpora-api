@@ -1,0 +1,72 @@
+---
+title: Authentication and test tokens
+description: Know when no token, a user token, or a service token is needed
+---
+
+A **token** is a temporary credential sent with a request. Treat it like a password. A corpus ID tells the API which corpus you mean; it is not a credential.
+
+## Choose the right credential
+
+| Credential | Use it for | Who receives it? |
+| --- | --- | --- |
+| No token | Health, capabilities, OpenAPI, and public ready corpus reads | Anyone |
+| Supabase user access token | Your corpus lifecycle, validation, ingestion, and other user-owned routes | The signed-in user |
+| Corpora service token | Text checks, conversions, language detection, and API MCP | Trusted service clients |
+| Supabase service-role or Hugging Face token | Server administration and backing storage | Server only; never a desktop or web client |
+
+A Supabase publishable key identifies the authentication project. It is **not** a user access token. A service token cannot impersonate a corpus owner.
+
+## User access token
+
+Sign in through the Supabase project configured for your API environment. Your application receives a session containing an `access_token`. Send that access token to Corpora:
+
+```bash
+# Read the token without writing it into terminal history.
+read -r -s USER_TOKEN
+export USER_TOKEN
+curl --fail-with-body --silent --show-error \
+  https://api.exegia.co/v1/auth/me \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+For a dedicated test account with password sign-in enabled, this Python example obtains a session. Ask the environment administrator for the **project URL and publishable key**; do not use an admin key.
+
+```python
+import getpass
+import os
+import requests
+
+project = os.environ["SUPABASE_URL"].rstrip("/")
+key = os.environ["SUPABASE_PUBLISHABLE_KEY"]
+sign_in = requests.post(
+    f"{project}/auth/v1/token?grant_type=password",
+    headers={"apikey": key},
+    json={"email": input("Test email: "), "password": getpass.getpass()},
+    timeout=30,
+)
+sign_in.raise_for_status()
+token = sign_in.json()["access_token"]
+identity = requests.get(
+    "https://api.exegia.co/v1/auth/me",
+    headers={"Authorization": f"Bearer {token}"},
+    timeout=30,
+)
+print("Identity request:", identity.status_code)
+# Keep token in memory. Do not print the session response or save it in source.
+```
+
+This assumes the test account already exists and the project permits password sign-in. It does not create an account or bypass email confirmation. Install `requests` in your own virtual environment if needed.
+
+Corpus routes check the live session as well as the signed token. Signing out blocks new corpus requests from that session. A creation already accepted while signed in may finish after sign-out. `/auth/me` verifies identity; use an actual corpus request to test live-session revocation.
+
+For an anonymous public read, **omit the Authorization header entirely**. An invalid, expired, or revoked token is rejected rather than treated as anonymous.
+
+## Service token
+
+A server operator configures `CORPORA_API_TOKEN`. Trusted service clients send the matching value as `Authorization: Bearer …`. Do not ship a production service token inside a public desktop or browser app.
+
+For local experiments, [configure a local dummy token](/api/testing#local-test-token). It only works against that local service and does not authorize user-owned corpus routes.
+
+## Playground and cleanup
+
+Enter only the credential required by the operation in its authorization control. Clear it after testing on a shared machine. Never paste tokens into tickets, screenshots, saved QA receipts, or Git. [QA testing](/core/qa-testing) explains how to retire temporary accounts and files.

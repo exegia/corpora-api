@@ -185,7 +185,21 @@ def _import_corpus(
     ), 201
 
 
-@router.post("/v1/corpora/{corpus_id}/imports", response_model=CorpusImportInfo)
+@router.post(
+    "/v1/corpora/{corpus_id}/imports",
+    response_model=CorpusImportInfo,
+    responses={
+        200: {"model": CorpusImportInfo, "description": "Existing completed import"},
+        201: {"model": CorpusImportInfo, "description": "Initial import completed"},
+        202: {"model": CorpusImportInfo, "description": "Existing import is not yet completed"},
+        401: {"description": "Missing, invalid, or inactive user session"},
+        404: {"description": "Corpus is missing or not accessible"},
+        409: {"description": "Revision, operation identity, or input conflicts"},
+        413: {"description": "Archive exceeds 3000000 bytes"},
+        415: {"description": "Expected a .corpus archive with shipped cache"},
+        503: {"description": "Unavailable or uncertain; inspect import status"},
+    },
+)
 async def initial_import(
     corpus_id: UUID,
     request: Request,

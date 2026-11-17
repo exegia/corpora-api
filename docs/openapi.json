@@ -6679,10 +6679,42 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Existing completed import"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Initial import completed"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Existing import is not yet completed"
           },
           "401": {
             "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Corpus is missing or not accessible"
+          },
+          "409": {
+            "description": "Revision, operation identity, or input conflicts"
+          },
+          "413": {
+            "description": "Archive exceeds 3000000 bytes"
+          },
+          "415": {
+            "description": "Expected a .corpus archive with shipped cache"
           },
           "422": {
             "content": {
@@ -6693,6 +6725,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable or uncertain; inspect import status"
           }
         },
         "security": [
