@@ -106,6 +106,12 @@ An internal read-only reconciliation inspector can report whether the expected
 private Hub repository is currently visible, mismatched or inconclusive. Its
 observation neither proves creation provenance nor establishes worker termination;
 it never adopts, retries or finalizes the operation.
+The Hub observation uses a 15-second overall HTTP deadline, including response
+headers and a body limited to 64 KiB. Timeout or cleanup failure is inconclusive;
+the dispatcher retains the claim for reconciliation. Each observation owns its
+async HTTP client and allows up to 0.1 seconds each for response and client cleanup.
+This assumes nonblocking client construction and cooperative HTTPX cancellation;
+it does not bound the surrounding database calls or the entire dispatcher.
 An unwired finalizer can record a bootstrap from a trusted assertion, but no
 component verifies that assertion; save claims fail closed when it is missing.
 Before recording a new content version, a future worker must replace and verify the complete
