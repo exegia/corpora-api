@@ -56,14 +56,22 @@ class SessionBoundMetadataTransaction:
                     if self.assume_service_role:
                         db.execute("SET LOCAL ROLE service_role")
                     db.execute("SELECT pg_catalog.set_config('statement_timeout','5000',true)")
+                    db.execute(
+                        "SELECT pg_catalog.set_config('idle_in_transaction_session_timeout',"
+                        "'10000',true)"
+                    )
                     params = (str(owner), str(session), expiry)
-                    db.execute("SELECT public.corpora_stored_lock_session(%s,%s,%s)", params)
+                    db.execute(
+                        "SELECT corpora_session_guard.lock_verified_session(%s,%s,%s)", params
+                    )
                     result = operation(str(owner), db)
                     if not isinstance(result, bytes):
                         raise HTTPException(503, "Corpus metadata operation returned invalid data")
                     if len(result) > 3_900_000:
                         raise HTTPException(413, "Corpus metadata response is too large")
-                    db.execute("SELECT public.corpora_stored_lock_session(%s,%s,%s)", params)
+                    db.execute(
+                        "SELECT corpora_session_guard.lock_verified_session(%s,%s,%s)", params
+                    )
             return result
         except HTTPException:
             raise

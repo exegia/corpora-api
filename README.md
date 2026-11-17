@@ -58,10 +58,21 @@ properties with a revision check; properties are replaced as one object. It
 does not expose these edits through an API or enforce a live session itself.
 Properties are user-editable metadata and must not determine authorization.
 An unwired session-bound registry uses the same database transaction for the
-session lock and metadata reservation, updates, or reads. It requires signature-verified claims, a
-reviewed session lease and the proposed database privileges; it does not apply
-those privileges or expose a route. A lost commit response can leave the caller
+session lock and metadata reservation, updates, or reads. A private, fixed-SQL
+session guard runs with the Supabase `postgres` role's existing session-table
+privileges. The API role receives only permission to call the guard, not to
+read or change sessions. It must verify JWT claims before invoking the guard;
+the function cannot authenticate supplied claims. The metadata and provision
+write boundaries still require separate review and grants. These adapters do
+not apply migrations or expose a route. A lost commit response can leave the caller
 uncertain whether an update committed, so callers must reload before retrying.
+Provisioning admission and outcome recording use private fixed-SQL functions:
+the API gets execute permission but no direct provisioning-operation or bootstrap
+write grant. Owner access is checked against the metadata, while superadmin
+identities come from a private database table managed by the database administrator,
+not user-editable claims. Before enabling it, configure that table consistently
+with `CORPORA_SUPERADMIN_USER_ID`. These functions trust the server's verified
+claims and Hub attestation; they are not accessible to browser roles.
 A separate draft schema records content write operations, immutable-commit
 versions and a current head, distinct from the metadata revision counter. An
 unwired adapter admits an owner or superadmin save inside a live-session

@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
-from corpora_api.corpus_metadata import CorpusMetadataConflict, CorpusMetadataError
+from corpora_api.corpus_metadata import CorpusMetadataConflict
 from corpora_api.corpus_provision_uncertainty import CorpusProvisionUncertaintyRecorder
 
 pytestmark = pytest.mark.skipif(
@@ -39,9 +39,14 @@ def test_content_version_constraints_and_privileges():
             "corpora_corpus_heads",
         ):
             assert db.execute("SELECT to_regclass(%s) IS NULL", ("public." + table,)).fetchone()[0]
+        assert db.execute(
+            "SELECT pg_catalog.to_regnamespace('corpora_session_guard') IS NULL"
+        ).fetchone()[0]
         try:
             db.execute(metadata.read_text())
             db.execute(versions.read_text())
+            db.execute(next(migrations.glob("*_restricted_session_guard.sql")).read_text())
+            db.execute(next(migrations.glob("*_restricted_provision_outcomes.sql")).read_text())
             signup = client.post(
                 url + "/auth/v1/signup",
                 headers={"apikey": anon},
@@ -129,7 +134,9 @@ def test_content_version_constraints_and_privileges():
                 "worker_claim=%s WHERE id=%s",
                 (uncertain_claim, uncertain),
             )
-            recorder = CorpusProvisionUncertaintyRecorder(lambda: psycopg.connect(dsn))
+            recorder = CorpusProvisionUncertaintyRecorder(
+                lambda: psycopg.connect(dsn), assume_service_role=True
+            )
             with pytest.raises(CorpusMetadataConflict):
                 recorder.record_trusted(UUID(uncertain), uuid4())
             assert (
@@ -143,10 +150,6 @@ def test_content_version_constraints_and_privileges():
             recorder.record_trusted(UUID(uncertain), UUID(uncertain_claim))
             with pytest.raises(CorpusMetadataConflict):
                 recorder.record_trusted(UUID(provision), UUID(claim))
-            with pytest.raises(CorpusMetadataError):
-                CorpusProvisionUncertaintyRecorder(
-                    lambda: psycopg.connect(dsn), assume_service_role=True
-                ).record_trusted(UUID(uncertain), UUID(uncertain_claim))
             with pytest.raises(psycopg.errors.RaiseException):
                 db.execute(
                     "UPDATE public.corpora_corpus_provision_ops SET state='executing' WHERE id=%s",
@@ -478,6 +481,7 @@ def test_content_version_constraints_and_privileges():
                         ("public." + table, privilege),
                     ).fetchone()[0]
         finally:
+            db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
                 "corpora_corpus_heads",
                 "corpora_corpus_versions",

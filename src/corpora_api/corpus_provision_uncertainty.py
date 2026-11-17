@@ -28,12 +28,10 @@ class CorpusProvisionUncertaintyRecorder:
                         db.execute("SET LOCAL ROLE service_role")
                     db.execute("SELECT pg_catalog.set_config('statement_timeout','5000',true)")
                     result = db.execute(
-                        "UPDATE public.corpora_corpus_provision_ops SET state='uncertain' "
-                        "WHERE id=%s::uuid AND worker_claim=%s::uuid "
-                        "AND state IN ('executing','uncertain') RETURNING id",
+                        "SELECT corpora_session_guard.mark_provision_uncertain(%s::uuid,%s::uuid)",
                         (str(operation_id), str(claim_id)),
                     ).fetchone()
-                    if result is None:
+                    if result is None or result[0] is not True:
                         raise CorpusMetadataConflict("Provisioning claim is unavailable")
         except CorpusMetadataConflict:
             raise

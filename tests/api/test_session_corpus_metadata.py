@@ -144,7 +144,7 @@ def test_transaction_never_returns_result_when_session_guard_fails(failure_on):
             self.committed = True
 
         def execute(self, query, _params=None):
-            if "corpora_stored_lock_session" in query:
+            if "lock_verified_session" in query:
                 self.checks += 1
                 if self.checks == failure_on:
                     raise GuardError()

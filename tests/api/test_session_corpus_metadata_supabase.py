@@ -40,14 +40,12 @@ from corpora_api.session_corpus_provision import SessionBoundCorpusProvisionAdmi
 from corpora_api.session_corpus_versions import SessionBoundCorpusSaveAdmission
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("CORPORA_TEST_LOCAL_SUPABASE") or not os.getenv("CORPORA_SESSION_GUARD_ROOT"),
-    reason="requires disposable local Supabase and the session-guard draft",
+    not os.getenv("CORPORA_TEST_LOCAL_SUPABASE"), reason="requires disposable local Supabase"
 )
 
 
 def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
     psycopg = pytest.importorskip("psycopg")
-    root = Path(os.environ["CORPORA_SESSION_GUARD_ROOT"])
     url, dsn = os.environ["API_URL"].rstrip("/"), os.environ["DB_URL"]
     assert urlparse(url).hostname in {"localhost", "127.0.0.1", "::1"}
     assert urlparse(dsn).hostname in {"localhost", "127.0.0.1", "::1"}
@@ -64,20 +62,18 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
         Path(__file__).resolve().parents[2]
         / "supabase/migrations/20261116043420_corpus_metadata_registry.sql"
     ).read_text()
-    guard = (root / "supabase/migrations/20261115165514_stored_session_reads.sql").read_text()
-    guard = guard.split("CREATE FUNCTION public.corpora_stored_session_get", 1)[0]
-    auth_dsn = psycopg.conninfo.make_conninfo(dsn, user="supabase_auth_admin")
-    users, credentials, granted = [], [], False
+    migrations = Path(__file__).resolve().parents[2] / "supabase/migrations"
+    guard = next(migrations.glob("*_restricted_session_guard.sql")).read_text()
+    users, credentials = [], []
     with (
         psycopg.connect(dsn, autocommit=True) as db,
-        psycopg.connect(auth_dsn, autocommit=True) as auth_db,
         httpx.Client(timeout=15) as api,
     ):
         assert db.execute(
             "SELECT to_regclass('public.corpora_corpus_metadata') IS NULL"
         ).fetchone()[0]
         assert db.execute(
-            "SELECT to_regprocedure('public.corpora_stored_lock_session(uuid,uuid,bigint)') IS NULL"
+            "SELECT pg_catalog.to_regnamespace('corpora_session_guard') IS NULL"
         ).fetchone()[0]
         try:
             for column, privilege in (
@@ -86,15 +82,10 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 ("not_after", "SELECT"),
                 ("not_after", "UPDATE"),
             ):
-                assert not auth_db.execute(
+                assert not db.execute(
                     "SELECT has_column_privilege('service_role','auth.sessions',%s,%s)",
                     (column, privilege),
                 ).fetchone()[0]
-            auth_db.execute(
-                "GRANT SELECT(id,user_id,not_after), UPDATE(not_after) "
-                "ON auth.sessions TO service_role"
-            )
-            granted = True
             db.execute(migration)
             version_migration = next(
                 (Path(__file__).resolve().parents[2] / "supabase/migrations").glob(
@@ -102,15 +93,15 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 )
             )
             db.execute(version_migration.read_text())
-            # Test-only privilege: production requires a restricted write boundary.
-            db.execute(
-                "GRANT INSERT (id,corpus_id,actor_id,session_id,repo_id,repo_type), "
-                "UPDATE (state,worker_claim) ON public.corpora_corpus_provision_ops TO service_role"
-            )
-            db.execute(
-                "GRANT INSERT (corpus_id,operation_id,worker_claim,commit_sha) "
-                "ON public.corpora_corpus_bootstrap TO service_role"
-            )
+            for table, column, privilege in (
+                ("corpora_corpus_provision_ops", "id", "INSERT"),
+                ("corpora_corpus_provision_ops", "state", "UPDATE"),
+                ("corpora_corpus_bootstrap", "corpus_id", "INSERT"),
+            ):
+                assert not db.execute(
+                    "SELECT has_column_privilege('service_role',%s,%s,%s)",
+                    ("public." + table, column, privilege),
+                ).fetchone()[0]
             db.execute("GRANT INSERT ON public.corpora_corpus_staged_inputs TO service_role")
             db.execute("GRANT INSERT ON public.corpora_corpus_publication_claims TO service_role")
             assert not db.execute(
@@ -138,14 +129,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
             )
             db.execute("GRANT UPDATE (state) ON public.corpora_corpus_metadata TO service_role")
             db.execute(guard)
-            db.execute(
-                "REVOKE ALL ON FUNCTION public.corpora_stored_lock_session(uuid,uuid,bigint) "
-                "FROM PUBLIC, anon, authenticated"
-            )
-            db.execute(
-                "GRANT EXECUTE ON FUNCTION public.corpora_stored_lock_session(uuid,uuid,bigint) "
-                "TO service_role"
-            )
+            db.execute(next(migrations.glob("*_restricted_provision_admission.sql")).read_text())
+            db.execute(next(migrations.glob("*_restricted_provision_outcomes.sql")).read_text())
             db.execute("NOTIFY pgrst, 'reload schema'")
             for _ in range(3):
                 email, password = f"{uuid4()}@example.org", str(uuid4())
@@ -159,6 +144,10 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 users.append((verify_user_token(token), token))
                 credentials.append((email, password))
             monkeypatch.setenv("CORPORA_SUPERADMIN_USER_ID", users[2][0]["sub"])
+            db.execute(
+                "INSERT INTO corpora_session_guard.superadmins VALUES (%s)",
+                (users[2][0]["sub"],),
+            )
             time.sleep(1)
             metadata = CorpusMetadataStore()
             identifier = str(uuid4())
@@ -400,7 +389,7 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                     return self.db.transaction()
 
                 def execute(self, query, *args):
-                    if query.startswith("UPDATE public.corpora_corpus_provision_ops"):
+                    if query.startswith("SELECT corpora_session_guard.finalize_provision"):
                         raise OSError("simulated completion failure")
                     return self.db.execute(query, *args)
 
@@ -1669,25 +1658,8 @@ def test_metadata_update_is_bound_to_real_session_and_transaction(monkeypatch):
                 db.execute("DROP FUNCTION IF EXISTS public." + fn + "()")
             db.execute("DROP TABLE IF EXISTS public.corpora_corpus_metadata")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_corpus_metadata_stamp()")
-            db.execute(
-                "DROP FUNCTION IF EXISTS public.corpora_stored_lock_session(uuid,uuid,bigint)"
-            )
+            db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             db.execute("NOTIFY pgrst, 'reload schema'")
-            if granted:
-                auth_db.execute(
-                    "REVOKE SELECT(id,user_id,not_after), UPDATE(not_after) "
-                    "ON auth.sessions FROM service_role"
-                )
-                for column, privilege in (
-                    ("id", "SELECT"),
-                    ("user_id", "SELECT"),
-                    ("not_after", "SELECT"),
-                    ("not_after", "UPDATE"),
-                ):
-                    assert not auth_db.execute(
-                        "SELECT has_column_privilege('service_role','auth.sessions',%s,%s)",
-                        (column, privilege),
-                    ).fetchone()[0]
             for claims, _token in users:
                 api.delete(
                     url + "/auth/v1/admin/users/" + claims["sub"],
