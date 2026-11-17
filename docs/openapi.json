@@ -4729,6 +4729,146 @@
         ]
       }
     },
+    "/v1/corpora/{corpus_id}/content": {
+      "get": {
+        "description": "Read the corpus's current immutable version. Public corpora allow anonymous reads; private corpora require owner or superadmin access. A supplied token must have a live session. Backing Hugging Face storage remains private. Reads admitted before an access change may finish; responses are not cacheable.",
+        "operationId": "get_content_v1_corpora__corpus_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ref"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fmt",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fmt"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusContentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus, section or node is unavailable to this reader"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus view exceeds the response size limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or unreadable archive"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storage, integrity verification or reader unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          },
+          {}
+        ],
+        "summary": "Get Content",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}/deletions/{operation_id}": {
       "get": {
         "description": "Inspect a deletion after normal corpus reads disappear, without retrying it.",
@@ -4915,6 +5055,174 @@
         ]
       }
     },
+    "/v1/corpora/{corpus_id}/index": {
+      "get": {
+        "description": "Read the corpus's current immutable version. Public corpora allow anonymous reads; private corpora require owner or superadmin access. A supplied token must have a live session. Backing Hugging Face storage remains private. Reads admitted before an access change may finish; responses are not cacheable.",
+        "operationId": "get_index_v1_corpora__corpus_id__index_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusIndexResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus, section or node is unavailable to this reader"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus view exceeds the response size limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or unreadable archive"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storage, integrity verification or reader unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          },
+          {}
+        ],
+        "summary": "Get Index",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/manifest": {
+      "get": {
+        "description": "Read the corpus's current immutable version. Public corpora allow anonymous reads; private corpora require owner or superadmin access. A supplied token must have a live session. Backing Hugging Face storage remains private. Reads admitted before an access change may finish; responses are not cacheable.",
+        "operationId": "get_manifest_v1_corpora__corpus_id__manifest_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Manifest V1 Corpora  Corpus Id  Manifest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus, section or node is unavailable to this reader"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus view exceeds the response size limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or unreadable archive"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storage, integrity verification or reader unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          },
+          {}
+        ],
+        "summary": "Get Manifest",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}/metadata": {
       "get": {
         "description": "Read owned metadata or a public ready corpus; supplied tokens must remain valid.",
@@ -4959,7 +5267,8 @@
         "security": [
           {
             "SupabaseUserJWT": []
-          }
+          },
+          {}
         ],
         "summary": "Corpus Metadata",
         "tags": [
@@ -5027,6 +5336,221 @@
         ]
       }
     },
+    "/v1/corpora/{corpus_id}/nodes/{node}": {
+      "get": {
+        "description": "Read the corpus's current immutable version. Public corpora allow anonymous reads; private corpora require owner or superadmin access. A supplied token must have a live session. Backing Hugging Face storage remains private. Reads admitted before an access change may finish; responses are not cacheable.",
+        "operationId": "get_node_v1_corpora__corpus_id__nodes__node__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "title": "Node",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusNodeDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus, section or node is unavailable to this reader"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus view exceeds the response size limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or unreadable archive"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storage, integrity verification or reader unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          },
+          {}
+        ],
+        "summary": "Get Node",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/sections": {
+      "get": {
+        "description": "Read the corpus's current immutable version. Public corpora allow anonymous reads; private corpora require owner or superadmin access. A supplied token must have a live session. Backing Hugging Face storage remains private. Reads admitted before an access change may finish; responses are not cacheable.",
+        "operationId": "get_sections_v1_corpora__corpus_id__sections_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "parent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Parent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusSectionPageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus, section or node is unavailable to this reader"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Corpus view exceeds the response size limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or unreadable archive"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Storage, integrity verification or reader unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          },
+          {}
+        ],
+        "summary": "Get Sections",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}/visibility": {
       "get": {
         "description": "Read visibility as an owner, superadmin, or reader of a public ready corpus.",
@@ -5071,7 +5595,8 @@
         "security": [
           {
             "SupabaseUserJWT": []
-          }
+          },
+          {}
         ],
         "summary": "Get Visibility",
         "tags": [
