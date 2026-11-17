@@ -387,7 +387,7 @@ wheels = [
 
 [[package]]
 name = "corpora-api"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "corpora-corpus-validate" },
