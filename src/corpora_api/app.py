@@ -53,6 +53,8 @@ from corpora_api.corpus_creation import (
     create_corpus,
     get_corpus_creation,
 )
+from corpora_api.corpus_detail_api import public_corpus_read_path
+from corpora_api.corpus_detail_api import router as corpus_detail_router
 from corpora_api.corpus_hub_provision import CorpusHubProvisionError
 from corpora_api.corpus_import_api import router as corpus_import_router
 from corpora_api.corpus_metadata import (
@@ -192,6 +194,7 @@ app = FastAPI(
 app.include_router(corpus_metadata_router)
 app.include_router(corpus_import_router)
 app.include_router(corpus_access_router)
+app.include_router(corpus_detail_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
@@ -218,12 +221,9 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     authorization = request.headers.get("Authorization", "")
     # Only these read routes admit an absent token. The database still decides
     # visibility; a supplied malformed/revoked token never becomes anonymous.
-    parts = request.url.path.split("/")
     if (
         request.method == "GET"
-        and len(parts) == 5
-        and parts[1:3] == ["v1", "corpora"]
-        and parts[4] in {"metadata", "visibility"}
+        and public_corpus_read_path(request.url.path)
         and "authorization" not in request.headers
     ):
         return await call_next(request)
@@ -1479,9 +1479,11 @@ def public_openapi() -> dict[str, Any]:
         }
         for path, methods in schema["paths"].items():
             if path.startswith("/v1/") and path not in {"/v1/health", "/v1/capabilities"}:
-                for operation in methods.values():
+                for method, operation in methods.items():
                     scheme = "SupabaseUserJWT" if user_auth_path(path) else "BearerAuth"
                     operation["security"] = [{scheme: []}]
+                    if method == "get" and public_corpus_read_path(path):
+                        operation["security"].append({})
                     operation.setdefault("responses", {})["401"] = {
                         "description": "Missing or invalid bearer token"
                     }

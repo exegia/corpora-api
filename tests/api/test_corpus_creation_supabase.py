@@ -1,5 +1,6 @@
 """Real local Auth/PostgREST creation checks; only the Hub boundary is simulated."""
 
+import hashlib
 import importlib
 import json
 import os
@@ -13,6 +14,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from test_corpus_hub_publish import real_archive
 
 from corpora_api import corpus_creation as creation
 from corpora_api.auth import verify_user_token
@@ -26,7 +28,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_creation_sessions_retries_and_privileges(monkeypatch):
+def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
     psycopg = pytest.importorskip("psycopg")
     url, dsn = os.environ["API_URL"].rstrip("/"), os.environ["DB_URL"]
     assert urlparse(url).hostname in {"localhost", "127.0.0.1", "::1"}
@@ -39,6 +41,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
         "SUPABASE_JWT_ISSUER": url + "/auth/v1",
         "HF_CORPUS_ORGANIZATION": "fixture",
         "HF_CORPUS_PROVISION_TOKEN": "test-placeholder",
+        "HF_CORPUS_READ_TOKEN": "test-placeholder",
         "CORPORA_CORPUS_CREATION_ENABLED": "1",
     }.items():
         monkeypatch.setenv(key, value)
@@ -273,7 +276,8 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                     "p_token_exp": owner[0]["exp"],
                     "p_corpus": corpus,
                 }
-                import_operation = _exercise_import_rpc(params, foreign, db)
+                archive = real_archive(tmp_path)
+                import_operation = _exercise_import_rpc(params, foreign, db, archive)
                 for token in (anon, foreign[1], owner[1]):
                     denied = auth.post(
                         url + "/rest/v1/rpc/corpora_get_creation",
@@ -390,7 +394,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 )
                 assert len(calls) == 2
                 _exercise_access_lifecycle(
-                    api, corpus, after_logout, owner, foreign, admin, db, monkeypatch
+                    api, corpus, after_logout, owner, foreign, admin, db, monkeypatch, archive
                 )
         finally:
             release.set()
@@ -432,7 +436,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch):
                 )
 
 
-def _exercise_import_rpc(session, foreign, db):
+def _exercise_import_rpc(session, foreign, db, archive):
     """Real admission/finalization SQL with synthetic, internal Hub attestations."""
     rpc = creation.CreationRPC()
     operation = str(uuid4())
@@ -440,8 +444,8 @@ def _exercise_import_rpc(session, foreign, db):
         **session,
         "p_operation": operation,
         "p_revision": 5,
-        "p_digest": "d" * 64,
-        "p_size": 123,
+        "p_digest": hashlib.sha256(archive).hexdigest(),
+        "p_size": len(archive),
     }
     denied = {**params, **creation._session(foreign[0])}
     assert rpc.call("corpora_begin_import", denied) == {"status": "not_found"}
@@ -516,8 +520,12 @@ def _exercise_import_rpc(session, foreign, db):
     return operation
 
 
-def _exercise_access_lifecycle(api, corpus, empty_corpus, owner, foreign, admin, db, monkeypatch):
+def _exercise_access_lifecycle(
+    api, corpus, empty_corpus, owner, foreign, admin, db, monkeypatch, archive
+):
     from corpora_api import corpus_access_api as access
+    from corpora_api import corpus_detail_api as detail
+    from corpora_api.corpus_hub_deadline import DeadlineCorpusHubReader
 
     path = "/v1/corpora/" + corpus
 
@@ -530,6 +538,9 @@ def _exercise_access_lifecycle(api, corpus, empty_corpus, owner, foreign, admin,
         nonlocal hub_deleted
         hub_calls.append(request.method)
         assert request.headers["authorization"] == "Bearer test-placeholder"
+        if "/resolve/" in request.url.path:
+            assert request.url.path.endswith("/resolve/" + "c" * 40 + "/.corpora/source.corpus")
+            return httpx.Response(200, stream=httpx.ByteStream(archive))
         if request.method == "DELETE":
             assert json.loads(request.content) == {
                 "name": "corpus-" + corpus,
@@ -556,6 +567,35 @@ def _exercise_access_lifecycle(api, corpus, empty_corpus, owner, foreign, admin,
     monkeypatch.setattr(
         access, "PrivateHubLifecycle", lambda: lifecycle(lambda: httpx.MockTransport(hub))
     )
+    monkeypatch.setattr(
+        detail, "hub_reader", DeadlineCorpusHubReader(lambda: httpx.MockTransport(hub))
+    )
+    views = ("manifest", "index", "sections", "content", "nodes/3")
+
+    def denied_reads(headers, code):
+        before = len(hub_calls)
+        for view in views:
+            assert api.get(path + "/" + view, headers=headers).status_code == code
+        assert len(hub_calls) == before
+
+    def allowed_reads(headers):
+        for view in views:
+            result = api.get(path + "/" + view, headers=headers)
+            assert result.status_code == 200, result.text
+            assert result.headers["cache-control"] == "no-store"
+            if view == "content":
+                assert result.json()["passages"][0]["text"] == "In the gap and out."
+                assert [t["node"] for p in result.json()["passages"] for t in p["tokens"]] == [
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                ]
+
+    denied_reads({}, 404)
+    denied_reads(header(foreign), 404)
+    allowed_reads(header(admin))
     assert api.get(path + "/metadata").status_code == 404
     assert api.get(path + "/visibility").status_code == 404
     assert api.get(path + "/metadata", headers=header(foreign)).status_code == 404
@@ -570,6 +610,9 @@ def _exercise_access_lifecycle(api, corpus, empty_corpus, owner, foreign, admin,
     )  # revoked is not anonymous
     assert api.get(path + "/metadata", headers={"Authorization": ""}).status_code == 401
     assert api.get(path + "/visibility").json() == published.json()
+    allowed_reads({})
+    allowed_reads(header(foreign))
+    denied_reads(header(owner), 401)  # Logged-out tokens are never anonymous.
     assert api.patch(path + "/visibility", headers=header(admin), json=patch).status_code == 409
     private = api.patch(
         path + "/visibility",
@@ -579,6 +622,8 @@ def _exercise_access_lifecycle(api, corpus, empty_corpus, owner, foreign, admin,
     assert private.status_code == 200 and private.json()["revision"] == 8
     assert api.get(path + "/metadata").status_code == 404
     assert api.get(path + "/metadata", headers=header(admin)).status_code == 200
+    denied_reads({}, 404)
+    denied_reads(header(foreign), 404)
     published = api.patch(
         path + "/visibility",
         headers=header(admin),
@@ -601,6 +646,7 @@ def _exercise_access_lifecycle(api, corpus, empty_corpus, owner, foreign, admin,
     for user_headers in ({}, header(admin), header(foreign)):
         assert api.get(path + "/metadata", headers=user_headers).status_code == 404
         assert api.get(path + "/visibility", headers=user_headers).status_code == 404
+        denied_reads(user_headers, 404)
     assert api.get(path, headers=header(admin)).status_code == 404
     assert (
         api.patch(

@@ -182,8 +182,29 @@ reconciliation. Already-admitted deletion may finish after logout; new requests
 from that revoked session are denied. Each Hub lifecycle operation has a 20-second
 deadline and a 64 KiB per-response bound.
 
-The five corpus-detail views through the new corpus identity remain a separate
-integration step; existing `/v1/storage/...` reads use their existing backing store.
+Read ready corpus content with `GET /v1/corpora/{id}/manifest`, `/index`,
+`/sections`, `/content`, and `/nodes/{node}`. These five views use the same public
+or owner/superadmin admission policy, including live-session checks for supplied
+tokens. The server downloads `.corpora/source.corpus` only at the database's
+current immutable commit, rechecks that the repository is private, and verifies
+the recorded archive size and SHA-256 before opening it in the isolated reader.
+Configure server-only `HF_CORPUS_READ_TOKEN` with access to the private corpus
+repositories; it is never sent to API clients or forwarded to Hub CDN redirects.
+The Hub transfer has a 20-second deadline; the reader has a separate 60-second
+process limit. Responses use `Cache-Control: no-store`.
+
+Sections accept `parent`, `offset` and `limit`; content accepts `ref`, `fmt`,
+`offset` and `limit`. Offsets start at zero; limits range from 1 to 200, defaulting
+to 50. Use section references returned by the index or section views. For example,
+`GET /v1/corpora/{id}/content?offset=0&limit=20` reads the first page. Finer passages
+are used only when they cover all selected source slots once and in order;
+otherwise the core reader returns complete coarser sections or original slot nodes.
+Node IDs and annotations are preserved. Private, missing, deleted or not-yet-ready
+corpora return 404; missing nodes and sections also return 404. Unreadable archives
+return 422, oversized view results return 413, and storage/integrity/worker failures
+return 503. Errors do not expose the backing repository. Existing `/v1/storage/...`
+reads use their existing backing store. Editing and restoring versions remain
+separate work.
 
 The content schema records content write operations, immutable-commit
 versions and a current head, distinct from the metadata revision counter. An
