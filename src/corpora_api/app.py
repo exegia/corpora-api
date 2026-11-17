@@ -46,6 +46,18 @@ from corpora_api.conversions import (
     ConversionUnavailable,
 )
 from corpora_api.core import CoreBridge, CoreProtocolError, CoreRejected, CoreUnavailable
+from corpora_api.corpus_creation import (
+    CorpusCreateRequest,
+    CorpusCreationInfo,
+    create_corpus,
+    get_corpus_creation,
+)
+from corpora_api.corpus_hub_provision import CorpusHubProvisionError
+from corpora_api.corpus_metadata import (
+    CorpusMetadataConflict,
+    CorpusMetadataError,
+    CorpusMetadataNotFound,
+)
 from corpora_api.drafts import DraftStore
 from corpora_api.ingest import (
     MAX_GRAPH_BYTES,
@@ -150,6 +162,8 @@ def user_auth_path(path: str) -> bool:
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
         or path.startswith("/v1/ingest/")
+        or path == "/v1/corpora"
+        or path.startswith("/v1/corpora/")
     )
 
 
@@ -235,6 +249,89 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
 @app.exception_handler(CoreUnavailable)
 async def unavailable(_request: Request, error: CoreUnavailable) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
+@app.exception_handler(CorpusMetadataNotFound)
+async def corpus_creation_not_found(
+    _request: Request, _error: CorpusMetadataNotFound
+) -> JSONResponse:
+    return JSONResponse(status_code=404, content={"detail": "Corpus not found"})
+
+
+@app.exception_handler(CorpusMetadataConflict)
+async def corpus_creation_conflict(
+    _request: Request, _error: CorpusMetadataConflict
+) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": "Corpus creation request conflicts"})
+
+
+@app.exception_handler(CorpusMetadataError)
+@app.exception_handler(CorpusHubProvisionError)
+async def corpus_creation_unavailable(_request: Request, _error: Exception) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": "Corpus creation is unavailable"})
+
+
+@app.post(
+    "/v1/corpora",
+    response_model=CorpusCreationInfo,
+    status_code=201,
+    tags=["Corpora"],
+    summary="Create a private corpus repository",
+    description=(
+        "Supply a stable corpus UUID and title. Creation reserves owner-bound metadata and "
+        "provisions one private repository. Repeat the same request to retrieve its durable "
+        "state without another repository creation. Changed input conflicts. An accepted "
+        "creation may finish after logout; new requests require a live session. Repository "
+        "creation does not upload corpus content or make the corpus public. Disabled unless "
+        "the server enables corpus creation."
+    ),
+    responses={
+        200: {"model": CorpusCreationInfo, "description": "Existing creation result"},
+        202: {"model": CorpusCreationInfo, "description": "Existing creation still pending"},
+        401: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse, "description": "Unavailable or uncertain; query status"},
+    },
+)
+async def post_corpus(
+    body: CorpusCreateRequest,
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
+) -> CorpusCreationInfo:
+    info, response.status_code = await run_in_threadpool(
+        create_corpus, request.state.user_claims, body
+    )
+    response.headers["Location"] = f"/v1/corpora/{info.id}"
+    response.headers["Cache-Control"] = "no-store"
+    return info
+
+
+@app.get(
+    "/v1/corpora/{corpus_id}",
+    response_model=CorpusCreationInfo,
+    tags=["Corpora"],
+    summary="Get corpus creation status",
+    description=(
+        "Read the durable creation result as its owner or a server-authorized superadmin. "
+        "Requires a live session. A needs_reconciliation result must not be retried with "
+        "a new ID to recover the same creation. An in-progress result may need operator "
+        "investigation after a stopped worker; it is never automatically redispatched."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def get_corpus(
+    corpus_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
+) -> CorpusCreationInfo:
+    response.headers["Cache-Control"] = "no-store"
+    return await run_in_threadpool(get_corpus_creation, request.state.user_claims, corpus_id)
 
 
 @app.exception_handler(CoreRejected)
