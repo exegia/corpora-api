@@ -7,7 +7,7 @@ All paths below start with `https://api.exegia.co`. Click an operation to see it
 
 ## Availability
 
-The `/corpora` lifecycle and detail views are the current released corpus workflow. `/storage` is the older archive adapter. References and AI routes are additional surfaces with separate configuration and unfinished migration work; do not treat their appearance here as a completed feature milestone. Content editing and restore for `/corpora` are not yet exposed.
+The `/corpora` routes support the corpus lifecycle, node and manifest edits, version restore, and direct read-only sharing. Project linking supports draft references and Text-Fabric verification; PDF and EPUB selections remain unresolved until their verification is implemented. AI routes have separate configuration and ongoing migration work.
 
 The capability flags are limited: `hub_writable` refers to legacy storage, not the newer corpus lifecycle. For a protected action, check its documented requirements and actual response.
 
@@ -46,6 +46,24 @@ The capability flags are limited: `hub_writable` refers to legacy storage, not t
 | [GET Get Visibility](/api/get_visibility_v1_corpora__corpus_id__visibility_get) | `/v1/corpora/{corpus_id}/visibility` | Public or user |
 | [PATCH Patch Visibility](/api/patch_visibility_v1_corpora__corpus_id__visibility_patch) | `/v1/corpora/{corpus_id}/visibility` | User |
 
+### Corpus editing, recovery, and sharing
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [GET Shared Corpora](/api/shared_corpora_v1_corpora_shared_get) | `/v1/corpora/shared` | User |
+| [POST Discard Creation](/api/discard_creation_v1_corpora__corpus_id__discard_uncertain_creation_post) | `/v1/corpora/{corpus_id}/discard-uncertain-creation` | User |
+| [GET Get Edit](/api/get_edit_v1_corpora__corpus_id__edits__operation_id__get) | `/v1/corpora/{corpus_id}/edits/{operation_id}` | User |
+| [POST Reconcile Edit](/api/reconcile_edit_v1_corpora__corpus_id__edits__operation_id__reconcile_post) | `/v1/corpora/{corpus_id}/edits/{operation_id}/reconcile` | User |
+| [POST Reconcile Import](/api/reconcile_import_v1_corpora__corpus_id__imports__operation_id__reconcile_post) | `/v1/corpora/{corpus_id}/imports/{operation_id}/reconcile` | User |
+| [PATCH Edit Manifest](/api/edit_manifest_v1_corpora__corpus_id__manifest_patch) | `/v1/corpora/{corpus_id}/manifest` | User |
+| [PATCH Edit Node](/api/edit_node_v1_corpora__corpus_id__nodes__node__patch) | `/v1/corpora/{corpus_id}/nodes/{node}` | User |
+| [GET List Corpus Readers](/api/list_corpus_readers_v1_corpora__corpus_id__readers_get) | `/v1/corpora/{corpus_id}/readers` | User |
+| [POST Add Corpus Reader By Email](/api/add_corpus_reader_by_email_v1_corpora__corpus_id__readers_post) | `/v1/corpora/{corpus_id}/readers` | User |
+| [DELETE Remove Corpus Reader](/api/remove_corpus_reader_v1_corpora__corpus_id__readers__user_id__delete) | `/v1/corpora/{corpus_id}/readers/{user_id}` | User |
+| [PUT Add Corpus Reader](/api/add_corpus_reader_v1_corpora__corpus_id__readers__user_id__put) | `/v1/corpora/{corpus_id}/readers/{user_id}` | User |
+| [GET Get Corpus Versions](/api/get_corpus_versions_v1_corpora__corpus_id__versions_get) | `/v1/corpora/{corpus_id}/versions` | User |
+| [POST Restore Version](/api/restore_version_v1_corpora__corpus_id__versions__sequence__restore_post) | `/v1/corpora/{corpus_id}/versions/{sequence}/restore` | User |
+
 ### Validation and ingestion
 
 | Operation | Path | Access |
@@ -83,6 +101,18 @@ The capability flags are limited: `hub_writable` refers to legacy storage, not t
 | [GET Read one corpus graph node](/api/get_stored_corpus_node_v1_storage__filename__nodes__node__get) | `/v1/storage/{filename}/nodes/{node}` | User |
 | [GET Read a page of corpus sections](/api/get_stored_corpus_sections_v1_storage__filename__sections_get) | `/v1/storage/{filename}/sections` | User |
 | [GET Read a corpus version history](/api/get_stored_corpus_versions_v1_storage__filename__versions_get) | `/v1/storage/{filename}/versions` | User |
+
+### Project membership and links
+
+| Operation | Path | Access |
+| --- | --- | --- |
+| [GET List Project Members](/api/list_project_members_v1_projects__project_id__members_get) | `/v1/projects/{project_id}/members` | User |
+| [POST Add Project Member By Email](/api/add_project_member_by_email_v1_projects__project_id__members_post) | `/v1/projects/{project_id}/members` | User |
+| [DELETE Remove Project Member](/api/remove_project_member_v1_projects__project_id__members__user_id__delete) | `/v1/projects/{project_id}/members/{user_id}` | User |
+| [PUT Add Project Member](/api/add_project_member_v1_projects__project_id__members__user_id__put) | `/v1/projects/{project_id}/members/{user_id}` | User |
+| [POST Save Reference](/api/save_reference_v1_projects__project_id__references_post) | `/v1/projects/{project_id}/references` | User |
+| [GET Reference History](/api/reference_history_v1_projects__project_id__references__reference_id__history_get) | `/v1/projects/{project_id}/references/{reference_id}/history` | User |
+| [POST Decide Reference](/api/decide_reference_v1_projects__project_id__references__reference_id___action__post) | `/v1/projects/{project_id}/references/{reference_id}/{action}` | User |
 
 ### References and AI
 

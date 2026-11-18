@@ -72,7 +72,7 @@ A new completed import returns **201**:
 }
 ```
 
-These UUIDs illustrate the response; your result contains your IDs. An exact completed retry returns **200**. An existing incomplete operation returns **202**. Inspect it with `GET /corpora/ID/imports/OPERATION_ID`; do not automatically redispatch an uncertain write.
+These UUIDs illustrate the response; your result contains your IDs. An exact completed retry returns **200**. An existing incomplete operation returns **202**. Inspect it with `GET /corpora/ID/imports/OPERATION_ID`; do not automatically redispatch an uncertain write. If its state is uncertain, POST to `/corpora/ID/imports/OPERATION_ID/reconcile` to verify the existing candidate without issuing another write.
 
 After completion, metadata reports `state: "ready"`. Importing advances the metadata revision, so fetch metadata again before the next change.
 
