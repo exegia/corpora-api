@@ -101,6 +101,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_metadata_api",
                 "corpus_initial_import",
                 "corpus_access_lifecycle",
+                "corpus_version_history",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -126,7 +127,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 )
                 if (
                     response.status_code == 200
-                    and "/rpc/corpora_begin_import" in response.json().get("paths", {})
+                    and "/rpc/corpora_list_corpus_versions" in response.json().get("paths", {})
                 ):
                     break
                 assert time.monotonic() < deadline
@@ -278,6 +279,27 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 }
                 archive = real_archive(tmp_path)
                 import_operation = _exercise_import_rpc(params, foreign, db, archive)
+                history_path = path + "/versions"
+                assert api.get(history_path).status_code == 401
+                assert api.get(history_path, headers=headers(foreign)).status_code == 404
+                for editor in (owner, admin):
+                    version_page = api.get(
+                        history_path, headers=headers(editor), params={"limit": 1}
+                    )
+                    assert version_page.status_code == 200, version_page.text
+                    assert version_page.json()["current_sequence"] == 1
+                    assert version_page.json()["versions"][0]["sequence"] == 1
+                    assert version_page.json()["versions"][0]["operation_id"] == import_operation
+                    assert version_page.json()["next_before"] is None
+                    empty_page = api.get(
+                        history_path, headers=headers(editor), params={"before": 1}
+                    )
+                    assert empty_page.status_code == 200 and empty_page.json()["versions"] == []
+                assert (
+                    api.get(history_path, headers=headers(owner), params={"limit": 101}).status_code
+                    == 422
+                )
+                _exercise_history_paging(api, db, owner, foreign, admin)
                 for token in (anon, foreign[1], owner[1]):
                     denied = auth.post(
                         url + "/rest/v1/rpc/corpora_get_creation",
@@ -285,6 +307,12 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                         json=params,
                     )
                     assert denied.status_code in (401, 403, 404)
+                    denied_history = auth.post(
+                        url + "/rest/v1/rpc/corpora_list_corpus_versions",
+                        headers={"apikey": anon, "Authorization": "Bearer " + token},
+                        json={**params, "p_before": None, "p_limit": 10},
+                    )
+                    assert denied_history.status_code in (401, 403, 404)
                 for role in ("anon", "authenticated", "service_role"):
                     for table in (
                         "auth.sessions",
@@ -363,6 +391,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     )
                     assert logout.status_code == 204
                     assert api.get(path, headers=headers(owner)).status_code == 401
+                    assert api.get(history_path, headers=headers(owner)).status_code == 401
                     assert api.get(metadata_path, headers=headers(owner)).status_code == 401
                     assert api.get("/v1/corpora", headers=headers(owner)).status_code == 401
                     from fastapi import HTTPException
@@ -396,6 +425,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 _exercise_access_lifecycle(
                     api, corpus, after_logout, owner, foreign, admin, db, monkeypatch, archive
                 )
+                assert api.get(history_path, headers=headers(admin)).status_code == 404
         finally:
             release.set()
             # Empty local registry was asserted above; remove only its fixture schema.
@@ -434,6 +464,135 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     ).fetchone()[0]
                     == 0
                 )
+
+
+def _exercise_history_paging(api, db, owner, foreign, admin):
+    """Create synthetic, constraint-valid rows to exercise actual SQL paging."""
+    corpus, provision, provision_claim = (str(uuid4()) for _ in range(3))
+    actor, session = owner[0]["sub"], owner[0]["session_id"]
+    repo = "fixture/corpus-" + corpus
+    db.execute(
+        "INSERT INTO public.corpora_corpus_metadata (id,owner_id,title,hf_repo_id,hf_repo_type) "
+        "VALUES (%s,%s,'History fixture',%s,'dataset')",
+        (corpus, actor, repo),
+    )
+    db.execute(
+        "INSERT INTO public.corpora_corpus_provision_ops "
+        "(id,corpus_id,actor_id,session_id,repo_id,repo_type) VALUES (%s,%s,%s,%s,%s,'dataset')",
+        (provision, corpus, actor, session, repo),
+    )
+    db.execute(
+        "UPDATE public.corpora_corpus_provision_ops SET state='executing',worker_claim=%s "
+        "WHERE id=%s",
+        (provision_claim, provision),
+    )
+    with db.transaction():
+        db.execute(
+            "INSERT INTO public.corpora_corpus_bootstrap VALUES (%s,%s,%s,%s,DEFAULT)",
+            (corpus, provision, provision_claim, "d" * 40),
+        )
+        db.execute(
+            "UPDATE public.corpora_corpus_provision_ops SET state='completed' WHERE id=%s",
+            (provision,),
+        )
+    parent = None
+    for sequence in range(1, 4):
+        operation, claim, publication = (str(uuid4()) for _ in range(3))
+        commit, stage = str(sequence) * 40, "abc"[sequence - 1] * 40
+        base = parent or "d" * 40
+        db.execute(
+            "INSERT INTO public.corpora_corpus_write_ops "
+            "(id,corpus_id,actor_id,session_id,expected_sequence,expected_parent_sha,"
+            "input_sha256,input_format) VALUES (%s,%s,%s,%s,%s,%s,%s,'corpus')",
+            (operation, corpus, actor, session, sequence - 1, parent, "e" * 64),
+        )
+        db.execute(
+            "UPDATE public.corpora_corpus_write_ops SET state='executing',worker_claim=%s "
+            "WHERE id=%s",
+            (claim, operation),
+        )
+        db.execute(
+            "INSERT INTO public.corpora_corpus_staged_inputs "
+            "(operation_id,corpus_id,worker_claim,repo_id,repo_type,input_format,input_sha256,"
+            "archive_size,requested_base_sha,stage_sha,stage_ref,stage_path) "
+            "VALUES (%s,%s,%s,%s,'dataset','corpus',%s,100,%s,%s,%s,%s)",
+            (
+                operation,
+                corpus,
+                claim,
+                repo,
+                "e" * 64,
+                base,
+                stage,
+                "corpora-stage-" + operation,
+                ".corpora-staging/" + operation + "/" + claim + ".corpus",
+            ),
+        )
+        db.execute(
+            "INSERT INTO public.corpora_corpus_publication_claims "
+            "(operation_id,corpus_id,stage_claim,publication_claim) VALUES (%s,%s,%s,%s)",
+            (operation, corpus, claim, publication),
+        )
+        with db.transaction():
+            db.execute(
+                "INSERT INTO public.corpora_corpus_versions "
+                "(corpus_id,sequence,commit_sha,parent_sha,operation_id,publication_claim,"
+                "retained_ref) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    corpus,
+                    sequence,
+                    commit,
+                    parent,
+                    operation,
+                    publication,
+                    "corpora-op-" + operation,
+                ),
+            )
+            if sequence == 1:
+                db.execute(
+                    "INSERT INTO public.corpora_corpus_heads VALUES (%s,%s,%s)",
+                    (corpus, sequence, commit),
+                )
+                db.execute(
+                    "UPDATE public.corpora_corpus_metadata SET state='ready' WHERE id=%s", (corpus,)
+                )
+            else:
+                db.execute(
+                    "UPDATE public.corpora_corpus_heads SET sequence=%s,commit_sha=%s "
+                    "WHERE corpus_id=%s",
+                    (sequence, commit, corpus),
+                )
+            db.execute(
+                "UPDATE public.corpora_corpus_write_ops SET state='completed' WHERE id=%s",
+                (operation,),
+            )
+        parent = commit
+    db.execute(
+        "UPDATE public.corpora_corpus_access SET visibility='public' WHERE corpus_id=%s", (corpus,)
+    )
+    path = f"/v1/corpora/{corpus}/versions"
+
+    def headers(user):
+        return {"Authorization": "Bearer " + user[1]}
+
+    assert api.get(path).status_code == 401
+    assert api.get(path, headers=headers(foreign)).status_code == 404
+    first = api.get(path, headers=headers(owner), params={"limit": 2}).json()
+    assert first["current_sequence"] == 3
+    assert [version["sequence"] for version in first["versions"]] == [3, 2]
+    assert first["next_before"] == 2
+    second = api.get(
+        path, headers=headers(admin), params={"limit": 2, "before": first["next_before"]}
+    ).json()
+    assert [version["sequence"] for version in second["versions"]] == [1]
+    assert second["next_before"] is None
+    db.execute(
+        "UPDATE public.corpora_corpus_access SET visibility='private',deleted_at=now() "
+        "WHERE corpus_id=%s",
+        (corpus,),
+    )
+    assert api.get(path, headers=headers(admin)).status_code == 404
 
 
 def _exercise_import_rpc(session, foreign, db, archive):
