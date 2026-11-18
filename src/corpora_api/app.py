@@ -55,6 +55,7 @@ from corpora_api.corpus_creation import (
 )
 from corpora_api.corpus_detail_api import public_corpus_read_path
 from corpora_api.corpus_detail_api import router as corpus_detail_router
+from corpora_api.corpus_edit_api import router as corpus_edit_router
 from corpora_api.corpus_hub_provision import CorpusHubProvisionError
 from corpora_api.corpus_import_api import router as corpus_import_router
 from corpora_api.corpus_metadata import (
@@ -194,6 +195,7 @@ app = FastAPI(
 )
 app.include_router(corpus_metadata_router)
 app.include_router(corpus_import_router)
+app.include_router(corpus_edit_router)
 app.include_router(corpus_access_router)
 app.include_router(corpus_detail_router)
 app.include_router(corpus_version_history_router)

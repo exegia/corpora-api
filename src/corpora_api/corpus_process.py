@@ -12,15 +12,18 @@ from typing import Any
 
 # Leave room under the 4 MB hosted response limit for route-level metadata.
 MAX_CORPUS_WORKER_RESPONSE_BYTES = 3_900_000
+MAX_CORPUS_EDIT_WORKER_RESPONSE_BYTES = 4_100_000
 
 
-def _bounded_response(value: dict[str, Any]) -> str:
+def _bounded_response(value: dict[str, Any], max_bytes: int | None = None) -> str:
     """Encode before writing so oversized output never crosses the worker pipe."""
+    if max_bytes is None:
+        max_bytes = MAX_CORPUS_WORKER_RESPONSE_BYTES
     chunks: list[str] = []
     size = 0
     for chunk in json.JSONEncoder(default=str, ensure_ascii=False).iterencode(value):
         size += len(chunk.encode("utf-8"))
-        if size > MAX_CORPUS_WORKER_RESPONSE_BYTES:
+        if size > max_bytes:
             return json.dumps({"error": "too_large", "message": "Corpus result exceeds limit"})
         chunks.append(chunk)
     return "".join(chunks)
@@ -105,16 +108,27 @@ def run_corpus(data: bytes, operation: str, **kwargs: Any) -> dict[str, Any]:
 
 
 def _main() -> None:
-    from corpus_validate import ArchiveReadNotFound, ArchiveTooLarge, read_archive, tfref
+    from corpus_validate import (
+        ArchiveReadNotFound,
+        ArchiveTooLarge,
+        edit_archive,
+        read_archive,
+        tfref,
+    )
     from corpus_validate.ai_archive import StaleScope, validate_archive_scope
     from corpus_validate.ai_types import NodeScope, ScopeLevel, UnitRange
     from corpus_validate.reference import reference_archive
 
+    max_response = MAX_CORPUS_WORKER_RESPONSE_BYTES
     try:
         request = json.load(sys.stdin)
         data = base64.b64decode(request["data"], validate=True)
         operation, args = request["operation"], request["args"]
-        if operation == "view":
+        if operation == "edit":
+            edited = edit_archive(data, **args)
+            value = {"archive": base64.b64encode(edited).decode("ascii")}
+            max_response = MAX_CORPUS_EDIT_WORKER_RESPONSE_BYTES
+        elif operation == "view":
             value = read_archive(data, **args)
         elif operation == "reference":
             value = reference_archive(data, **args)
@@ -178,7 +192,7 @@ def _main() -> None:
         response = {"error": "too_large", "message": str(error)}
     except Exception:
         response = {"error": "invalid", "message": "Corpus archive or selection is invalid"}
-    print(_bounded_response(response))
+    print(_bounded_response(response, max_response))
 
 
 if __name__ == "__main__":

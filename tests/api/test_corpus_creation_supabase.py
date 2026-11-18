@@ -103,6 +103,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_access_lifecycle",
                 "corpus_version_history",
                 "corpus_version_save",
+                "corpus_edit_intents",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -429,8 +430,21 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     == "repository_created"
                 )
                 assert len(calls) == 2
+                archive = _exercise_real_edit_route(
+                    api, corpus, admin, foreign, monkeypatch, archive, db
+                )
                 _exercise_access_lifecycle(
-                    api, corpus, after_logout, owner, foreign, admin, db, monkeypatch, archive
+                    api,
+                    corpus,
+                    after_logout,
+                    owner,
+                    foreign,
+                    admin,
+                    db,
+                    monkeypatch,
+                    archive,
+                    head_sha="f" * 40,
+                    version_count=3,
                 )
                 assert api.get(history_path, headers=headers(admin)).status_code == 404
         finally:
@@ -438,6 +452,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
             # Empty local registry was asserted above; remove only its fixture schema.
             db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
+                "version_intents",
                 "version_saves",
                 "deletions",
                 "access",
@@ -683,6 +698,73 @@ def _exercise_history_paging(api, db, owner, foreign, admin):
         )
         is None
     )
+    old = rpc.call(
+        "corpora_get_restore_source",
+        {
+            **creation._session(owner[0]),
+            "p_corpus": corpus,
+            "p_sequence": 2,
+        },
+    )
+    assert old["sequence"] == 2 and old["commit_sha"] == "2" * 40
+    assert old["archive_size"] == 100 and old["archive_sha256"] == "e" * 64
+    assert rpc.call(
+        "corpora_get_restore_source",
+        {
+            **creation._session(foreign[0]),
+            "p_corpus": corpus,
+            "p_sequence": 2,
+        },
+    ) == {"status": "not_found"}
+    edit_operation = str(uuid4())
+    intent_params = {
+        **creation._session(owner[0]),
+        "p_corpus": corpus,
+        "p_operation": edit_operation,
+        "p_intent": "a" * 64,
+    }
+    assert rpc.call("corpora_get_edit_intent", intent_params) == {"status": "absent"}
+    edit_params = {
+        **intent_params,
+        "p_sequence": 4,
+        "p_parent": "4" * 40,
+        "p_digest": "b" * 64,
+        "p_size": 200,
+        "p_kind": "restore",
+        "p_restore": 2,
+    }
+    barrier = threading.Barrier(2)
+
+    def begin_edit(index):
+        barrier.wait(timeout=5)
+        # The same edit may compile to different archive bytes on a retry.
+        return creation.CreationRPC().call(
+            "corpora_begin_corpus_edit",
+            {
+                **edit_params,
+                "p_digest": ("b" if index == 0 else "c") * 64,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        edits = list(pool.map(begin_edit, range(2)))
+    assert sorted(edit["status"] for edit in edits) == ["claimed", "existing"]
+    assert db.execute(
+        "SELECT kind,restore_sequence FROM public.corpora_corpus_version_intents "
+        "WHERE operation_id=%s",
+        (edit_operation,),
+    ).fetchone() == ("restore", 2)
+    assert rpc.call("corpora_get_edit_intent", intent_params)["status"] == "existing"
+    assert rpc.call("corpora_get_edit_intent", {**intent_params, "p_intent": "d" * 64}) == {
+        "status": "conflict"
+    }
+    assert rpc.call(
+        "corpora_get_edit_intent",
+        {
+            **intent_params,
+            **creation._session(foreign[0]),
+        },
+    ) == {"status": "not_found"}
     db.execute(
         "UPDATE public.corpora_corpus_access SET visibility='private',deleted_at=now() "
         "WHERE corpus_id=%s",
@@ -775,8 +857,106 @@ def _exercise_import_rpc(session, foreign, db, archive):
     return operation
 
 
+def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive, db):
+    """Actual Auth, SQL and core edit; only remote Hub publication is simulated."""
+    from corpus_validate import read_archive
+
+    from corpora_api import corpus_edit_api as edit_api
+
+    uploads = []
+
+    async def transfer(_row, sha, path, *, max_bytes, timeout, sink):
+        assert sha == "c" * 40 and path == ".corpora/source.corpus"
+        assert max_bytes == len(archive)
+        await sink(archive)
+
+    def publish(claim, _filename, data, *, slot):
+        uploads.append(data)
+        publication = str(uuid4())
+        rpc = creation.CreationRPC()
+        params = {
+            "p_operation": str(claim.operation_id),
+            "p_claim": str(claim.claim_id),
+            "p_publication": publication,
+        }
+        stage_sha, final_sha = ("d" * 40, "e" * 40) if len(uploads) == 1 else ("6" * 40, "f" * 40)
+        assert rpc.call("corpora_stage_version_save", {**params, "p_stage_sha": stage_sha}) is True
+        assert rpc.call("corpora_complete_version_save", {**params, "p_sha": final_sha}) is True
+
+    body = {
+        "operation_id": str(uuid4()),
+        "expected_sequence": 1,
+        "expected_commit": "c" * 40,
+        "changes": {"description": "Edited through the API"},
+    }
+    path = f"/v1/corpora/{corpus}/manifest"
+    with monkeypatch.context() as patch:
+        patch.setattr(edit_api.hub_reader, "transfer_authorized", transfer)
+        patch.setattr(edit_api, "run_import_worker", publish)
+        assert (
+            api.patch(
+                path, headers={"Authorization": "Bearer " + foreign[1]}, json=body
+            ).status_code
+            == 404
+        )
+        saved = api.patch(path, headers={"Authorization": "Bearer " + admin[1]}, json=body)
+        assert saved.status_code == 201, saved.text
+        assert saved.json()["sequence"] == 2
+        retried = api.patch(path, headers={"Authorization": "Bearer " + admin[1]}, json=body)
+        assert retried.status_code == 200 and retried.json() == saved.json()
+        assert (
+            api.patch(
+                path,
+                headers={"Authorization": "Bearer " + admin[1]},
+                json={**body, "changes": {"description": "different"}},
+            ).status_code
+            == 409
+        )
+        restore_id = str(uuid4())
+        restore_body = {
+            "operation_id": restore_id,
+            "expected_sequence": 2,
+            "expected_commit": "e" * 40,
+        }
+        restored = api.post(
+            f"/v1/corpora/{corpus}/versions/1/restore",
+            headers={"Authorization": "Bearer " + admin[1]},
+            json=restore_body,
+        )
+        assert restored.status_code == 201, restored.text
+        assert restored.json()["sequence"] == 3
+        assert (
+            api.post(
+                f"/v1/corpora/{corpus}/versions/1/restore",
+                headers={"Authorization": "Bearer " + admin[1]},
+                json=restore_body,
+            ).status_code
+            == 200
+        )
+        assert db.execute(
+            "SELECT restore_sequence FROM public.corpora_corpus_version_intents "
+            "WHERE operation_id=%s",
+            (restore_id,),
+        ).fetchone() == (1,)
+    assert len(uploads) == 2
+    assert read_archive(uploads[0], "manifest")["description"] == "Edited through the API"
+    assert uploads[1] == archive
+    return uploads[1]
+
+
 def _exercise_access_lifecycle(
-    api, corpus, empty_corpus, owner, foreign, admin, db, monkeypatch, archive
+    api,
+    corpus,
+    empty_corpus,
+    owner,
+    foreign,
+    admin,
+    db,
+    monkeypatch,
+    archive,
+    *,
+    head_sha,
+    version_count,
 ):
     from corpora_api import corpus_access_api as access
     from corpora_api import corpus_detail_api as detail
@@ -794,7 +974,7 @@ def _exercise_access_lifecycle(
         hub_calls.append(request.method)
         assert request.headers["authorization"] == "Bearer test-placeholder"
         if "/resolve/" in request.url.path:
-            assert request.url.path.endswith("/resolve/" + "c" * 40 + "/.corpora/source.corpus")
+            assert request.url.path.endswith("/resolve/" + head_sha + "/.corpora/source.corpus")
             return httpx.Response(200, stream=httpx.ByteStream(archive))
         if request.method == "DELETE":
             assert json.loads(request.content) == {
@@ -813,7 +993,7 @@ def _exercise_access_lifecycle(
             404 if hub_deleted else 200,
             stream=httpx.ByteStream(
                 json.dumps(
-                    {"id": "fixture/corpus-" + corpus, "private": True, "sha": "c" * 40}
+                    {"id": "fixture/corpus-" + corpus, "private": True, "sha": head_sha}
                 ).encode()
             ),
         )
@@ -930,7 +1110,7 @@ def _exercise_access_lifecycle(
         db.execute(
             "SELECT count(*) FROM public.corpora_corpus_versions WHERE corpus_id=%s", (corpus,)
         ).fetchone()[0]
-        == 1
+        == version_count
     )
 
     # Metadata is the common lock: deletion and an initial import cannot both win.
