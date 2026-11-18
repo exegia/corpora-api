@@ -61,7 +61,7 @@ def _check_epub(data: bytes) -> None:
                 raise ValueError("EPUB expands beyond the limit")
 
 
-def verify_epub_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
+def retrieve_epub_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
     endpoint = LinkEndpoint.model_validate(raw_endpoint)
     if not endpoint.document_id or not endpoint.document_id.lower().endswith(".epub"):
         raise ValueError("EPUB asset path required")
@@ -70,7 +70,11 @@ def verify_epub_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
     data = corpus_asset(archive_bytes, endpoint.document_id)
     _check_epub(data)
     transient = endpoint.model_copy(update={"revision": sha256_revision(data)})
-    retrieve_epub_cfi_selection(data, transient)
+    return {"text": retrieve_epub_cfi_selection(data, transient)}
+
+
+def verify_epub_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
+    retrieve_epub_in_corpus(archive_bytes, raw_endpoint)
     return {"verified": True}
 
 

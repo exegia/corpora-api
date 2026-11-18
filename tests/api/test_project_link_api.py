@@ -129,3 +129,82 @@ def test_resolve_verifies_both_passages_before_recording_decision(monkeypatch):
         == 422
     )
     assert calls == ["corpora_current_project_link"]
+
+
+def test_project_member_retrieves_both_reference_selections(monkeypatch):
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    body, actor = sample()
+    project = uuid4()
+    claims = {"sub": str(actor), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
+    value = draft_reference(LinkSave.model_validate(body), actor).model_dump(mode="json")
+    revision = {
+        "version": 1,
+        "actor_id": str(actor),
+        "recorded_at": "2026-01-01T00:00:00Z",
+        "reason": "draft",
+        "action": "edit",
+        "reference": value,
+    }
+    calls = []
+
+    def rpc(_self, name, params):
+        calls.append(name)
+        assert name == "corpora_read_current_project_link" and params["p_actor"] == str(actor)
+        return {"status": "ok", "revision": revision}
+
+    async def corpus(actual, *, ref):
+        assert actual == claims and ref == body["source"]["locators"][0]["anchor_id"]
+        return {"node": 1, "text": "Text-Fabric selection"}
+
+    async def document(actual, selected, kind):
+        assert actual == claims and selected.document_id == "sources/book.pdf" and kind == "pdf"
+        return "PDF selection"
+
+    monkeypatch.setattr(links.CreationRPC, "call", rpc)
+    monkeypatch.setattr(links, "resolve_corpus_reference", corpus)
+    monkeypatch.setattr(links, "retrieve_document", document)
+    client = TestClient(app_module.app)
+    path = f"/v1/projects/{project}/references/{body['reference_id']}/retrieve"
+    assert client.post(path, json={"side": "source"}).status_code == 401
+    headers = {"Authorization": "Bearer valid"}
+    source = client.post(path, headers=headers, json={"side": "source"})
+    target = client.post(path, headers=headers, json={"side": "target"})
+    assert source.status_code == target.status_code == 200
+    assert source.json()["fragments"] == ["Text-Fabric selection"]
+    assert target.json()["fragments"] == ["PDF selection"]
+    assert source.json()["version"] == 1 and source.headers["cache-control"] == "no-store"
+    assert client.post(path, headers=headers, json={"side": "other"}).status_code == 422
+    assert calls == ["corpora_read_current_project_link"] * 2
+    monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "not_found"})
+    assert client.post(path, headers=headers, json={"side": "target"}).status_code == 404
+
+
+def test_retrieval_bounds_the_encoded_response(monkeypatch):
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    body, actor = sample()
+    claims = {"sub": str(actor), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
+    value = draft_reference(LinkSave.model_validate(body), actor).model_dump(mode="json")
+    revision = {
+        "version": 1,
+        "actor_id": str(actor),
+        "recorded_at": "2026-01-01T00:00:00Z",
+        "reason": "draft",
+        "action": "edit",
+        "reference": value,
+    }
+    monkeypatch.setattr(
+        links.CreationRPC, "call", lambda *_: {"status": "ok", "revision": revision}
+    )
+
+    async def corpus(_claims, *, ref):
+        return {"node": 1, "text": "\u0001" * 700_000}
+
+    monkeypatch.setattr(links, "resolve_corpus_reference", corpus)
+    client = TestClient(app_module.app)
+    path = f"/v1/projects/{uuid4()}/references/{body['reference_id']}/retrieve"
+    response = client.post(path, headers={"Authorization": "Bearer valid"}, json={"side": "source"})
+    assert response.status_code == 413

@@ -196,6 +196,13 @@ history; members cannot edit or decide.
 Projects with recorded reference history cannot be deleted, preserving the
 ledger and its project identity.
 
+After applying `project_link_retrieval`, a project member with access to both
+corpora can POST `{"side":"source"}` or `{"side":"target"}` to
+`/v1/projects/{project_id}/references/{reference_id}/retrieve`. The response
+identifies the reference version and endpoint and returns the selected text as
+ordered fragments. Retrieval checks the current corpus revision and reports
+unsupported or unverifiable selections instead of returning guessed text.
+
 After applying `project_link_resolution`, owners and superadmins can POST to
 `/resolve` to verify both revision-pinned selections, then `/approve` to record
 approval. Text-Fabric passages and EPUB CFI ranges with exact text evidence are

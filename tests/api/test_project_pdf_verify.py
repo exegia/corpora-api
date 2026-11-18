@@ -96,6 +96,7 @@ def case(*, rotate=0, text="Hello world"):
 def test_pdf_whole_word_selection_in_killable_worker():
     archive, endpoint = case()
     assert run_corpus(archive, "verify_pdf", raw_endpoint=endpoint) == {"verified": True}
+    assert run_corpus(archive, "retrieve_pdf", raw_endpoint=endpoint) == {"text": "Hello"}
 
 
 def test_pdf_contiguous_word_range_requires_each_matching_rectangle():

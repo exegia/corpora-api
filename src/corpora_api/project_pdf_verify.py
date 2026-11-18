@@ -156,7 +156,7 @@ def _page_words(data: bytes, page: int, width: float, height: float):
     return words
 
 
-def verify_pdf_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
+def retrieve_pdf_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
     endpoint = LinkEndpoint.model_validate(raw_endpoint)
     if not endpoint.document_id or not endpoint.document_id.lower().endswith(".pdf"):
         raise ValueError("PDF asset path required")
@@ -204,4 +204,9 @@ def verify_pdf_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
         != "valid"
     ):
         raise ValueError("PDF selection text does not match")
+    return {"text": stream[selector.start : selector.end]}
+
+
+def verify_pdf_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
+    retrieve_pdf_in_corpus(archive_bytes, raw_endpoint)
     return {"verified": True}

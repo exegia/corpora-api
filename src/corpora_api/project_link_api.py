@@ -1,5 +1,6 @@
 """Durable project references with live project and corpus authorization."""
 
+import json
 from typing import Any, Literal
 from uuid import UUID
 
@@ -11,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from corpora_api.auth import require_user
 from corpora_api.corpus_creation import CreationRPC, _session
 from corpora_api.corpus_metadata import CorpusMetadataError
-from corpora_api.project_document import verify_epub, verify_pdf
+from corpora_api.project_document import retrieve_document, verify_epub, verify_pdf
 from corpora_api.project_link_models import (
     LinkDecision,
     LinkEndpoint,
@@ -39,6 +40,21 @@ class LinkHistory(BaseModel):
     next_before: int | None
 
 
+class SelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    side: Literal["source", "target"]
+
+
+class RetrievedSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: UUID
+    reference_id: UUID
+    version: int = Field(strict=True, ge=1)
+    side: Literal["source", "target"]
+    endpoint: LinkEndpoint
+    fragments: list[str]
+
+
 def _call(name: str, params: dict[str, Any]) -> Any:
     try:
         return CreationRPC(max_response_bytes=524288).call(name, params)
@@ -57,10 +73,12 @@ def _status(value: Any) -> None:
         raise HTTPException(409, "A linked corpus has changed")
 
 
-async def _resolve_reference(request: Request, project: UUID, ref: UUID, version: int) -> None:
+async def _current_reference(
+    request: Request, project: UUID, ref: UUID, *, edit: bool
+) -> LinkRevision:
     value = await run_in_threadpool(
         _call,
-        "corpora_current_project_link",
+        "corpora_current_project_link" if edit else "corpora_read_current_project_link",
         {
             **_session(request.state.user_claims),
             "p_project": str(project),
@@ -80,6 +98,11 @@ async def _resolve_reference(request: Request, project: UUID, ref: UUID, version
             raise ValueError("Mismatched reference")
     except (ValueError, TypeError, KeyError, IndexError):
         raise HTTPException(503, "Project linking is unavailable") from None
+    return latest
+
+
+async def _resolve_reference(request: Request, project: UUID, ref: UUID, version: int) -> None:
+    latest = await _current_reference(request, project, ref, edit=True)
     if latest.version != version:
         raise HTTPException(409, "Reference version changed")
     for endpoint in (latest.reference.source, latest.reference.target):
@@ -147,6 +170,59 @@ async def save_reference(
     )
     response.headers["Cache-Control"] = "no-store"
     return _receipt(value, project_id, body.reference_id, body.expected_version or 0)
+
+
+@router.post("/{project_id}/references/{reference_id}/retrieve", response_model=RetrievedSelection)
+async def retrieve_selection(
+    project_id: UUID,
+    reference_id: UUID,
+    body: SelectionRequest,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> RetrievedSelection:
+    """Retrieve one selection after checking the project and both corpus permissions."""
+    latest = await _current_reference(request, project_id, reference_id, edit=False)
+    raw = latest.reference.source if body.side == "source" else latest.reference.target
+    try:
+        selected = LinkEndpoint.model_validate(raw.model_dump(mode="json"))
+    except ValueError:
+        raise HTTPException(422, "Reference endpoint is invalid") from None
+    fragments = []
+    if selected.document_id == ".corpora/source.corpus" and all(
+        isinstance(locator, StructuralLocator) for locator in selected.locators
+    ):
+        for locator in selected.locators:
+            assert isinstance(locator, StructuralLocator)
+            value = await resolve_corpus_reference(request.state.user_claims, ref=locator.anchor_id)
+            if (
+                type(value.get("node")) is not int
+                or value["node"] < 1
+                or not isinstance(value.get("text"), str)
+            ):
+                raise HTTPException(503, "Corpus reference retrieval failed")
+            fragments.append(value["text"])
+            if sum(len(fragment.encode("utf-8")) for fragment in fragments) > 3_000_000:
+                raise HTTPException(413, "Selection exceeds the response size limit")
+    elif len(selected.locators) == 1 and isinstance(selected.locators[0], EpubLocator):
+        fragments.append(await retrieve_document(request.state.user_claims, selected, "epub"))
+    elif len(selected.locators) == 1 and isinstance(selected.locators[0], PdfLocator):
+        fragments.append(await retrieve_document(request.state.user_claims, selected, "pdf"))
+    else:
+        raise HTTPException(422, "This selection cannot yet be retrieved")
+    response.headers["Cache-Control"] = "no-store"
+    result = RetrievedSelection(
+        project_id=project_id,
+        reference_id=reference_id,
+        version=latest.version,
+        side=body.side,
+        endpoint=selected,
+        fragments=fragments,
+    )
+    encoded = json.dumps(result.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 3_900_000:
+        raise HTTPException(413, "Selection exceeds the response size limit")
+    return result
 
 
 @router.post("/{project_id}/references/{reference_id}/{action}", response_model=LinkReceipt)

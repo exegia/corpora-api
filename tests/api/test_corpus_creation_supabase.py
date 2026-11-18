@@ -1498,6 +1498,16 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
         )
         db.execute(next(migrations.glob("*_project_linking_ledger.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_resolution.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
+        for role in ("anon", "authenticated"):
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (role, "public.corpora_read_current_project_link(uuid,uuid,bigint,uuid,uuid)"),
+            ).fetchone()[0]
+        assert db.execute(
+            "SELECT has_function_privilege('service_role',%s,'EXECUTE')",
+            ("public.corpora_read_current_project_link(uuid,uuid,bigint,uuid,uuid)",),
+        ).fetchone()[0]
         endpoint = {
             "work_id": "work",
             "edition_id": "edition",
@@ -1648,6 +1658,21 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             json={"expected_version": 2, "reason": "approved"},
         )
         assert approved.status_code == 200, approved.text
+        member_headers = {"Authorization": "Bearer " + foreign[1]}
+        epub_selection = api.post(
+            link_path + f"/{epub_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "target"},
+        )
+        assert epub_selection.status_code == 200, epub_selection.text
+        assert epub_selection.json()["fragments"] == ["John"]
+        corpus_selection = api.post(
+            link_path + f"/{epub_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "source"},
+        )
+        assert corpus_selection.status_code == 200, corpus_selection.text
+        assert corpus_selection.json()["fragments"][0].strip() == "We"
         pdf_ref = str(uuid4())
         _, pdf_target = pdf_case()
         pdf_target["package_id"] = corpus
@@ -1675,11 +1700,26 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             json={"expected_version": 2, "reason": "approved"},
         )
         assert approved_pdf.status_code == 200, approved_pdf.text
+        pdf_selection = api.post(
+            link_path + f"/{pdf_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "target"},
+        )
+        assert pdf_selection.status_code == 200, pdf_selection.text
+        assert pdf_selection.json()["fragments"] == ["Hello"]
         db.execute(
             "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
             (corpus, member["sub"]),
         )
         assert history(member) == {"status": "not_found"}
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/retrieve",
+                headers=member_headers,
+                json={"side": "target"},
+            ).status_code
+            == 404
+        )
         db.execute(
             "INSERT INTO public.corpora_corpus_readers(corpus_id,user_id,added_by) "
             "VALUES (%s,%s,%s)",
@@ -1690,6 +1730,14 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             (project, member["sub"]),
         )
         assert history(member) == {"status": "not_found"}
+        assert (
+            api.post(
+                link_path + f"/{epub_ref}/retrieve",
+                headers=member_headers,
+                json={"side": "target"},
+            ).status_code
+            == 404
+        )
     finally:
         db.execute("DROP TABLE IF EXISTS public.corpora_project_link_revisions CASCADE")
         db.execute("DROP TABLE IF EXISTS public.corpora_project_link_heads CASCADE")
