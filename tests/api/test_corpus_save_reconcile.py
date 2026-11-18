@@ -165,3 +165,100 @@ def test_lost_finalization_ack_only_observes_same_candidate(verified, monkeypatc
         "corpora_finish_save_reconciliation",
         "corpora_find_version_save_result",
     ]
+
+
+def test_resume_initial_import_fences_concurrent_retries(verified, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    value = verified.target.model_dump(mode="json")
+    target = reconcile.SaveReconciliationTarget.model_validate(
+        {**value, "mode": "import", "expected_sequence": 0}
+    )
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    local = threading.local()
+    state = {"sha": target.expected_parent_sha, "attempts": 0, "wins": 0}
+
+    class API:
+        endpoint = "https://huggingface.co"
+
+        def repo_info(self, _repo, *, revision, **_kwargs):
+            if revision.startswith("corpora-stage-"):
+                return SimpleNamespace(id=target.repo_id, private=True, sha=target.stage_sha)
+            with lock:
+                sha = state["sha"]
+            local.op_reads = getattr(local, "op_reads", 0) + 1
+            if local.op_reads == 2:
+                barrier.wait(timeout=5)
+            return SimpleNamespace(id=target.repo_id, private=True, sha=sha)
+
+        def create_commit(self, _repo, operations, *, revision, parent_commit, **_kwargs):
+            assert revision == "corpora-op-" + str(target.operation_id)
+            assert parent_commit == target.expected_parent_sha and operations
+            with lock:
+                state["attempts"] += 1
+                if state["sha"] != parent_commit:
+                    raise ValueError("parent changed")
+                state["sha"] = verified.sha
+                state["wins"] += 1
+            return SimpleNamespace(oid=verified.sha)
+
+    monkeypatch.setattr(reconcile, "HfApi", lambda **_kwargs: API())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(lambda _: reconcile.resume_initial_import(target, 10), range(2))) == [
+            None,
+            None,
+        ]
+    assert state["attempts"] == 2 and state["wins"] == 1
+    completions = [entry for entry in verified.calls if entry[0] == "corpora_complete_import"]
+    assert len(completions) == 2 and all(entry[1]["p_sha"] == verified.sha for entry in completions)
+
+
+def test_resume_does_not_write_to_an_already_changed_branch(verified, monkeypatch):
+    value = verified.target.model_dump(mode="json")
+    target = reconcile.SaveReconciliationTarget.model_validate(
+        {**value, "mode": "import", "expected_sequence": 0}
+    )
+    writes = []
+
+    class API:
+        endpoint = "https://huggingface.co"
+
+        def repo_info(self, _repo, *, revision, **_kwargs):
+            return SimpleNamespace(
+                id=target.repo_id,
+                private=True,
+                sha=target.stage_sha if revision.startswith("corpora-stage-") else verified.sha,
+            )
+
+        def create_commit(self, *_args, **_kwargs):
+            writes.append(True)
+
+    monkeypatch.setattr(reconcile, "HfApi", lambda **_kwargs: API())
+    reconcile.resume_initial_import(target, 10)
+    assert writes == [] and verified.calls[-1][0] == "corpora_complete_import"
+
+
+def test_resume_never_writes_when_staging_evidence_changes(verified, monkeypatch):
+    value = verified.target.model_dump(mode="json")
+    target = reconcile.SaveReconciliationTarget.model_validate(
+        {**value, "mode": "import", "expected_sequence": 0}
+    )
+    writes = []
+
+    class API:
+        endpoint = "https://huggingface.co"
+
+        def repo_info(self, _repo, *, revision, **_kwargs):
+            sha = "f" * 40 if revision.startswith("corpora-stage-") else target.expected_parent_sha
+            return SimpleNamespace(id=target.repo_id, private=True, sha=sha)
+
+        def create_commit(self, *_args, **_kwargs):
+            writes.append(True)
+
+    monkeypatch.setattr(reconcile, "HfApi", lambda **_kwargs: API())
+    with pytest.raises(ValueError):
+        reconcile.resume_initial_import(target, 10)
+    assert writes == []
+    assert not any(entry[0] == "corpora_complete_import" for entry in verified.calls)

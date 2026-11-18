@@ -10,7 +10,7 @@ from typing import Literal
 from uuid import UUID
 
 import httpx
-from huggingface_hub import HfApi
+from huggingface_hub import CommitOperationAdd, HfApi
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from corpora_api.corpus_archive_prepare import prepare_corpus_archive
@@ -144,3 +144,63 @@ def execute_save_reconciliation(target: SaveReconciliationTarget, deadline: floa
             )
             if rpc.call(find, params) is not True:
                 raise
+
+
+def resume_initial_import(target: SaveReconciliationTarget, deadline: float) -> None:
+    """Retry only an unchanged operation branch with its original Git parent fence."""
+    if target.mode != "import" or target.expected_sequence != 0:
+        raise ValueError("Only initial imports can be resumed")
+    token = os.environ["HF_CORPUS_PROVISION_TOKEN"]
+    api = HfApi(endpoint="https://huggingface.co", token=token)
+    ref = "corpora-op-" + str(target.operation_id)
+    info = api.repo_info(target.repo_id, repo_type=target.repo_type, revision=ref, token=token)
+    if info.id != target.repo_id or info.private is not True:
+        raise ValueError("Private operation branch unavailable")
+    if info.sha == target.expected_parent_sha:
+        with httpx.Client(timeout=15, trust_env=False) as client:
+            reader = CorpusHubStager(api, client, token)
+            publisher = CorpusHubPublisher(api, client, token)
+            stage_ref = "corpora-stage-" + str(target.operation_id)
+            publisher._check_private_ref(
+                target.repo_id, target.repo_type, stage_ref, target.stage_sha
+            )
+            archive = reader._read_verified_bytes(
+                target.repo_id,
+                target.repo_type,
+                target.stage_sha,
+                target.stage_path,
+                target.archive_size,
+                target.input_sha256,
+            )
+            publisher._check_private_ref(
+                target.repo_id, target.repo_type, stage_ref, target.stage_sha
+            )
+            prepared = prepare_corpus_archive(
+                "staged.corpus",
+                archive,
+                target.input_sha256,
+                ValidationBridge(),
+                expected_format="corpus",
+            )
+            files = publication_files(prepared)
+            publisher._check_private_ref(
+                target.repo_id, target.repo_type, ref, target.expected_parent_sha
+            )
+            try:
+                api.create_commit(
+                    target.repo_id,
+                    [
+                        CommitOperationAdd(path_in_repo=path, path_or_fileobj=data)
+                        for path, data in sorted(files.items())
+                    ],
+                    commit_message="Store validated Corpora content",
+                    repo_type=target.repo_type,
+                    revision=ref,
+                    parent_commit=target.expected_parent_sha,
+                    token=token,
+                )
+            except Exception:
+                # A lost response or a competing fenced commit is not a failure receipt.
+                pass
+    # Even after a successful write, finalize only after complete read-back verification.
+    execute_save_reconciliation(target, deadline)

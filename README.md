@@ -155,7 +155,11 @@ LFS transfers. An uncertain operation blocks a new import. After applying
 `/v1/corpora/{id}/imports/{operation_id}/reconcile`: an unstaged operation can
 be safely marked failed, while a staged operation completes only after its
 published candidate is verified. Unavailable or ambiguous evidence leaves the
-operation uncertain; reconciliation never redispatches a Hub write.
+operation uncertain; reconciliation never redispatches a Hub write. If the
+operation branch exists but still points to its original parent, the owner or
+superadmin can explicitly POST to `/v1/corpora/{id}/imports/{operation_id}/resume`.
+The retry uses the same staged bytes and a Git parent check, so a changed branch
+cannot be overwritten. Completion still requires full read-back verification.
 
 `GET /v1/corpora/{id}/versions` lists immutable content versions for the owner
 or configured superadmin with a live session. Results are newest first; `limit`
