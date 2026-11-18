@@ -1751,6 +1751,65 @@ def _exercise_project_linking_permissions(
             "WHERE project_id=%s AND reference_id=%s AND version=3",
             (corpus, project, reference),
         )
+        # A previously absent head can be created while the preview is waiting
+        # on a corpus lock. The result must use the authorized snapshot, not the
+        # newly created head whose private corpus was never checked.
+        import psycopg
+
+        race_id = str(uuid4())
+        race_candidate = {**candidate, "id": race_id}
+        race_reference = {
+            **normalized,
+            "id": race_id,
+            "source": {**normalized["source"], "package_id": old_corpus},
+            "target": {**normalized["target"], "package_id": old_corpus},
+        }
+        with (
+            psycopg.connect(os.environ["DB_URL"], autocommit=False) as blocker,
+            psycopg.connect(os.environ["DB_URL"], autocommit=True) as reader,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            blocker.execute(
+                "SELECT id FROM public.corpora_corpus_metadata WHERE id=%s FOR UPDATE", (corpus,)
+            )
+            blocker_pid = blocker.execute("SELECT pg_backend_pid()").fetchone()[0]
+            reader_pid = reader.execute("SELECT pg_backend_pid()").fetchone()[0]
+            future = executor.submit(
+                lambda: reader.execute(
+                    "SELECT public.corpora_preview_project_link_import(%s,%s,%s,%s,%s)",
+                    (
+                        member["sub"],
+                        member["session_id"],
+                        member["exp"],
+                        project,
+                        Jsonb([race_candidate]),
+                    ),
+                ).fetchone()[0]
+            )
+            try:
+                for _ in range(100):
+                    if db.execute(
+                        "SELECT %s = ANY(pg_blocking_pids(%s))", (blocker_pid, reader_pid)
+                    ).fetchone()[0]:
+                        break
+                    time.sleep(0.01)
+                else:
+                    pytest.fail("Preview did not reach the blocked corpus access check")
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_heads VALUES (%s,%s,1)",
+                    (project, race_id),
+                )
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_revisions "
+                    "(project_id,reference_id,version,actor_id,reason,action,source_corpus,"
+                    "target_corpus,reference) VALUES (%s,%s,1,%s,'race','edit',%s,%s,%s)",
+                    (project, race_id, actor["sub"], old_corpus, old_corpus, Jsonb(race_reference)),
+                )
+            finally:
+                blocker.rollback()
+            assert future.result(timeout=5)["items"] == [
+                {"reference_id": race_id, "outcome": "new", "current_version": None}
+            ]
         db.execute(
             "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
             "WHERE project_id=%s AND reference_id=%s AND version=1",
