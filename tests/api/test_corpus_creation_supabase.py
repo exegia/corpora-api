@@ -106,6 +106,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_edit_intents",
                 "corpus_save_reconciliation",
                 "uncertain_creation_discard",
+                "unstaged_save_recovery",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -1009,6 +1010,45 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
     path = f"/v1/corpora/{corpus}/manifest"
     with monkeypatch.context() as patch:
         patch.setattr(edit_api.hub_reader, "transfer_authorized", transfer)
+
+        def lose_before_staging(*args, **kwargs):
+            raise TimeoutError("Simulated timeout before the staging receipt")
+
+        patch.setattr(edit_api, "run_import_worker", lose_before_staging)
+        lost_id = str(uuid4())
+        lost = api.patch(
+            path,
+            headers={"Authorization": "Bearer " + admin[1]},
+            json={**body, "operation_id": lost_id},
+        )
+        assert lost.status_code == 503
+        lost_claim = db.execute(
+            "SELECT worker_claim FROM public.corpora_corpus_write_ops WHERE id=%s", (lost_id,)
+        ).fetchone()[0]
+        reconcile_path = f"/v1/corpora/{corpus}/edits/{lost_id}/reconcile"
+        assert (
+            api.post(reconcile_path, headers={"Authorization": "Bearer " + foreign[1]}).status_code
+            == 404
+        )
+        recovered = api.post(reconcile_path, headers={"Authorization": "Bearer " + admin[1]})
+        assert recovered.status_code == 200 and recovered.json()["state"] == "failed"
+        assert (
+            api.post(reconcile_path, headers={"Authorization": "Bearer " + admin[1]}).json()
+            == recovered.json()
+        )
+        assert (
+            creation.CreationRPC().call(
+                "corpora_stage_version_save",
+                {
+                    "p_operation": lost_id,
+                    "p_claim": str(lost_claim),
+                    "p_stage_sha": "b" * 40,
+                    "p_publication": str(uuid4()),
+                },
+            )
+            is False
+        )
+
         patch.setattr(edit_api, "run_import_worker", publish)
         assert (
             api.patch(

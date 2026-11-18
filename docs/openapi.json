@@ -5343,7 +5343,7 @@
     },
     "/v1/corpora/{corpus_id}/edits/{operation_id}/reconcile": {
       "post": {
-        "description": "Verify an uncertain published result without redispatching a Hub write.",
+        "description": "Resolve an uncertain save, without sending another Hub write.\n\nAn unstaged save can be marked failed and retried with a new operation ID.\nA staged save remains uncertain unless its published result can be verified.",
         "operationId": "reconcile_edit_v1_corpora__corpus_id__edits__operation_id__reconcile_post",
         "parameters": [
           {
