@@ -130,6 +130,12 @@ class LinkImportApplyItem(BaseModel):
     outcome: Literal["imported", "unchanged"]
     version: int = Field(strict=True, ge=1)
 
+    @model_validator(mode="after")
+    def valid_version(self) -> "LinkImportApplyItem":
+        if self.outcome == "imported" and self.version != 1:
+            raise ValueError("Newly imported references start at version 1")
+        return self
+
 
 class LinkImportApply(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -376,6 +376,15 @@ def test_import_records_unverified_source_claims_and_requires_valid_receipts(mon
     assert claim["actor_id"] == str(claimed_actor) and claim["version"] == 7
     assert claim["provenance"] == original["provenance"]
     assert claim["publication"] == "published" and claim["review"] == "approved"
+    monkeypatch.setattr(
+        links.CreationRPC,
+        "call",
+        lambda *_: {
+            "status": "ok",
+            "items": [{"reference_id": body["reference_id"], "outcome": "imported", "version": 2}],
+        },
+    )
+    assert client.post(path, headers=headers, json=payload).status_code == 503
     monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "conflict"})
     assert client.post(path, headers=headers, json=payload).status_code == 409
     monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "ok", "items": []})
