@@ -18,6 +18,8 @@ import pytest
 from fastapi.testclient import TestClient
 from test_corpus_hub_publish import real_archive
 from test_project_epub_verify import epub
+from test_project_pdf_verify import case as pdf_case
+from test_project_pdf_verify import pdf
 
 from corpora_api import corpus_creation as creation
 from corpora_api.auth import verify_user_token
@@ -291,6 +293,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 with io.BytesIO(archive) as data:
                     with zipfile.ZipFile(data, "a", zipfile.ZIP_DEFLATED) as fixture:
                         fixture.writestr("sources/book.epub", epub())
+                        fixture.writestr("sources/book.pdf", pdf())
                     archive = data.getvalue()
                 import_operation = _exercise_import_rpc(params, foreign, db, archive)
                 history_path = path + "/versions"
@@ -1645,6 +1648,33 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             json={"expected_version": 2, "reason": "approved"},
         )
         assert approved.status_code == 200, approved.text
+        pdf_ref = str(uuid4())
+        _, pdf_target = pdf_case()
+        pdf_target["package_id"] = corpus
+        pdf_target["revision"] = head_sha
+        saved_pdf = api.post(
+            link_path,
+            headers=admin_headers,
+            json={
+                "reference_id": pdf_ref,
+                "source": endpoint,
+                "target": pdf_target,
+                "reason": "PDF link",
+            },
+        )
+        assert saved_pdf.status_code == 200, saved_pdf.text
+        verified_pdf = api.post(
+            link_path + f"/{pdf_ref}/resolve",
+            headers=admin_headers,
+            json={"expected_version": 1, "reason": "verified PDF"},
+        )
+        assert verified_pdf.status_code == 200, verified_pdf.text
+        approved_pdf = api.post(
+            link_path + f"/{pdf_ref}/approve",
+            headers=admin_headers,
+            json={"expected_version": 2, "reason": "approved"},
+        )
+        assert approved_pdf.status_code == 200, approved_pdf.text
         db.execute(
             "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
             (corpus, member["sub"]),

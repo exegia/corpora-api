@@ -112,7 +112,7 @@ def test_epub_resolution_requires_current_authorized_digest(monkeypatch):
 
     from fastapi import HTTPException
 
-    from corpora_api import project_epub
+    from corpora_api import project_document as project_epub
     from corpora_api.project_link_models import LinkEndpoint
 
     archive, raw = case()
