@@ -1,5 +1,6 @@
 """Project ownership and session revocation against a disposable local Supabase."""
 
+import importlib
 import os
 import time
 from pathlib import Path
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("CORPORA_TEST_LOCAL_SUPABASE"), reason="requires disposable local Supabase"
@@ -15,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.parametrize("with_restrictive_policy", [False, True])
-def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_policy):
+def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_policy, monkeypatch):
     psycopg = pytest.importorskip("psycopg")
     url, dsn = os.environ["API_URL"].rstrip("/"), os.environ["DB_URL"]
     assert urlparse(url).hostname in {"localhost", "127.0.0.1", "::1"}
@@ -23,6 +25,7 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
     anon, service = os.environ["ANON_KEY"], os.environ["SERVICE_ROLE_KEY"]
     migrations = Path(__file__).resolve().parents[2] / "supabase/migrations"
     users = []
+    emails = []
     with psycopg.connect(dsn, autocommit=True) as db, httpx.Client(timeout=15) as client:
         assert db.execute("SELECT to_regclass('public.projects') IS NULL").fetchone()[0]
         assert db.execute("SELECT to_regclass('public.user_directory') IS NULL").fetchone()[0]
@@ -85,6 +88,7 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
             db.execute("ROLLBACK")
             db.execute("UPDATE public.projects SET owner_id=NULL WHERE id=%s", (unassigned,))
             db.execute(migration)
+            db.execute(next(migrations.glob("*_project_membership.sql")).read_text())
             assert (
                 db.execute(
                     "SELECT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname='public' "
@@ -93,15 +97,26 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 is with_restrictive_policy
             )
             for _ in range(3):
+                email = f"{uuid4()}@example.org"
                 response = client.post(
                     url + "/auth/v1/signup",
                     headers={"apikey": anon},
-                    json={"email": f"{uuid4()}@example.org", "password": str(uuid4())},
+                    json={"email": email, "password": str(uuid4())},
                 )
                 assert response.status_code == 200
+                emails.append(email)
                 users.append((response.json()["user"]["id"], response.json()["access_token"]))
             owner, other, admin = users
             db.execute("INSERT INTO corpora_session_guard.superadmins VALUES (%s)", (admin[0],))
+            unconfirmed_email = f"{uuid4()}@example.org"
+            unconfirmed = client.post(
+                url + "/auth/v1/admin/users",
+                headers={"apikey": service, "Authorization": "Bearer " + service},
+                json={"email": unconfirmed_email, "password": str(uuid4()), "email_confirm": False},
+            )
+            assert unconfirmed.status_code == 200
+            unconfirmed_id = unconfirmed.json()["id"]
+            users.append((unconfirmed_id, ""))
             for role in ("anon", "authenticated"):
                 for privilege in ("TRUNCATE", "REFERENCES", "TRIGGER"):
                     assert not db.execute(
@@ -170,12 +185,90 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 client.patch(claim_url, headers=headers(other), json={"owner_id": other[0]}).json()
                 == []
             )
+            for key, value in {
+                "SUPABASE_URL": url,
+                "SUPABASE_SERVICE_ROLE_KEY": service,
+                "SUPABASE_JWKS_URL": url + "/auth/v1/.well-known/jwks.json",
+                "SUPABASE_JWT_ISSUER": url + "/auth/v1",
+            }.items():
+                monkeypatch.setenv(key, value)
+            app = importlib.import_module("corpora_api.app").app
+            with TestClient(app) as api:
+                member_path = f"/v1/projects/{project_id}/members/{other[0]}"
+                unowned_path = f"/v1/projects/{unassigned}/members/{owner[0]}"
+
+                def bearer(user):
+                    return {"Authorization": "Bearer " + user[1]}
+
+                assert api.put(member_path).status_code == 401
+                assert api.put(member_path, headers=bearer(other)).status_code == 404
+                # SQL NULL ownership must never authorize a non-admin.
+                assert api.put(unowned_path, headers=bearer(other)).status_code == 404
+                assert (
+                    api.get(f"/v1/projects/{unassigned}/members", headers=bearer(other)).status_code
+                    == 404
+                )
+                added = api.put(member_path, headers=bearer(owner))
+                assert added.status_code == 200 and added.json()["present"] is True
+                assert api.put(member_path, headers=bearer(owner)).json() == added.json()
+                assert (
+                    api.put(
+                        f"/v1/projects/{project_id}/members/{uuid4()}", headers=bearer(owner)
+                    ).status_code
+                    == 404
+                )
+                assert (
+                    api.put(
+                        f"/v1/projects/{project_id}/members/{unconfirmed_id}", headers=bearer(owner)
+                    ).status_code
+                    == 404
+                )
+                page = api.get(f"/v1/projects/{project_id}/members", headers=bearer(admin))
+                assert page.status_code == 200 and page.json()["items"][0]["user_id"] == other[0]
+                assert (
+                    api.get(f"/v1/projects/{project_id}/members", headers=bearer(other)).status_code
+                    == 404
+                )
+                assert api.delete(member_path, headers=bearer(other)).status_code == 404
+                assert api.delete(member_path, headers=bearer(admin)).json()["present"] is False
+                assert api.delete(member_path, headers=bearer(admin)).json()["present"] is False
+                by_email = f"/v1/projects/{project_id}/members"
+                assert (
+                    api.post(by_email, headers=bearer(other), json={"email": emails[1]}).status_code
+                    == 404
+                )
+                assert (
+                    api.post(
+                        by_email, headers=bearer(owner), json={"email": "missing@example.org"}
+                    ).status_code
+                    == 404
+                )
+                assert (
+                    api.post(
+                        by_email, headers=bearer(owner), json={"email": unconfirmed_email}
+                    ).status_code
+                    == 404
+                )
+                added_by_email = api.post(
+                    by_email, headers=bearer(owner), json={"email": emails[1].upper()}
+                )
+                assert added_by_email.status_code == 200, added_by_email.text
+                assert added_by_email.json()["user_id"] == other[0]
+                assert api.put(member_path, headers=bearer(admin)).json()["present"] is True
+                for role in ("anon", "authenticated", "service_role"):
+                    for privilege in ("INSERT", "UPDATE", "DELETE"):
+                        assert not db.execute(
+                            "SELECT has_table_privilege(%s,%s,%s)",
+                            (role, "public.corpora_project_members", privilege),
+                        ).fetchone()[0]
             claimed = client.patch(claim_url, headers=headers(admin), json={"owner_id": other[0]})
             assert claimed.status_code == 200 and claimed.json()[0]["owner_id"] == other[0]
             assert (
                 client.post(url + "/auth/v1/logout?scope=local", headers=headers(owner)).status_code
                 == 204
             )
+            with TestClient(app) as api:
+                assert api.delete(member_path, headers=bearer(owner)).status_code == 401
             revoked = client.patch(target, headers=headers(owner), json={"name": "revoked"})
             assert revoked.status_code >= 400
             assert client.get(directory, headers=headers(owner)).status_code >= 400
@@ -185,7 +278,29 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 ).fetchone()[0]
                 == "owner changed"
             )
+            deleted = client.delete(target, headers=headers(admin))
+            assert deleted.status_code == 200 and len(deleted.json()) == 1
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM public.corpora_project_members WHERE project_id=%s",
+                    (project_id,),
+                ).fetchone()[0]
+                == 0
+            )
         finally:
+            db.execute("DROP TABLE IF EXISTS public.corpora_project_members CASCADE")
+            db.execute(
+                "DROP FUNCTION IF EXISTS "
+                "public.corpora_set_project_member(uuid,uuid,bigint,uuid,uuid,boolean) CASCADE"
+            )
+            db.execute(
+                "DROP FUNCTION IF EXISTS "
+                "public.corpora_list_project_members(uuid,uuid,bigint,uuid,uuid,integer) CASCADE"
+            )
+            db.execute(
+                "DROP FUNCTION IF EXISTS "
+                "public.corpora_add_project_member_by_email(uuid,uuid,bigint,uuid,text) CASCADE"
+            )
             db.execute("DROP TABLE IF EXISTS public.projects CASCADE")
             db.execute("DROP TABLE IF EXISTS public.user_directory CASCADE")
             db.execute("DROP FUNCTION IF EXISTS public.corpora_directory_reader() CASCADE")
