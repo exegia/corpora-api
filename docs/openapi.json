@@ -6768,6 +6768,68 @@
         ]
       }
     },
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/reconcile": {
+      "post": {
+        "description": "Verify an uncertain initial import without issuing another Hub write.",
+        "operationId": "reconcile_import_v1_corpora__corpus_id__imports__operation_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Reconcile Import",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}/index": {
       "get": {
         "description": "Read the corpus's current immutable version. Public corpora allow anonymous reads; private corpora require owner or superadmin access. A supplied token must have a live session. Backing Hugging Face storage remains private. Reads admitted before an access change may finish; responses are not cacheable.",

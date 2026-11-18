@@ -81,6 +81,41 @@ def test_verified_candidate_can_finalize_without_new_hub_writes(verified):
     }
 
 
+def test_initial_import_uses_its_own_verified_finalization(verified):
+    value = verified.target.model_dump(mode="json")
+    target = reconcile.SaveReconciliationTarget.model_validate(
+        {**value, "mode": "import", "expected_sequence": 0}
+    )
+    reconcile.execute_save_reconciliation(target, 10)
+    assert verified.calls[-1][0] == "corpora_complete_import"
+    with pytest.raises(ValidationError):
+        reconcile.SaveReconciliationTarget.model_validate(
+            {**value, "mode": "save", "expected_sequence": 0}
+        )
+
+
+def test_lost_import_ack_checks_only_the_matching_result(verified, monkeypatch):
+    value = verified.target.model_dump(mode="json")
+    target = reconcile.SaveReconciliationTarget.model_validate(
+        {**value, "mode": "import", "expected_sequence": 0}
+    )
+    calls = []
+
+    def rpc(_self, name, params):
+        calls.append((name, params))
+        if name == "corpora_complete_import":
+            raise TimeoutError("Lost acknowledgement")
+        assert name == "corpora_find_import_result" and params == calls[0][1]
+        return True
+
+    monkeypatch.setattr(reconcile.CreationRPC, "call", rpc)
+    reconcile.execute_save_reconciliation(target, 10)
+    assert [name for name, _ in calls] == [
+        "corpora_complete_import",
+        "corpora_find_import_result",
+    ]
+
+
 def test_wrong_git_parent_never_finalizes(verified, monkeypatch):
     objects, wrong_sha = candidate(publication_files(verified.source), parent="f" * 40)
 

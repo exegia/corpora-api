@@ -175,3 +175,75 @@ def test_capacity_is_reserved_before_admission(configured):
     with worker.ImportSlot(), worker.ImportSlot(), TestClient(app_module.app) as api:
         assert upload(api, configured).status_code == 503
     assert not configured.calls and not configured.dispatches
+
+
+def test_uncertain_import_reconciliation_verifies_without_redispatch(configured, monkeypatch):
+    claim, publication = uuid4(), uuid4()
+    target = {
+        "status": "ready",
+        "mode": "import",
+        "corpus_id": str(configured.corpus),
+        "operation_id": str(configured.operation),
+        "claim_id": str(claim),
+        "publication_claim": str(publication),
+        "repo_id": f"fixture/corpus-{configured.corpus}",
+        "repo_type": "dataset",
+        "expected_sequence": 0,
+        "expected_parent_sha": "a" * 40,
+        "input_sha256": "b" * 64,
+        "archive_size": 7,
+        "stage_sha": "c" * 40,
+        "stage_path": f".corpora-staging/{configured.operation}/{claim}.corpus",
+    }
+    calls = []
+
+    def rpc(_self, name, _params):
+        calls.append(name)
+        if name == "corpora_get_import_reconciliation":
+            return target
+        assert name == "corpora_get_import"
+        return {
+            "status": "existing",
+            "corpus_id": str(configured.corpus),
+            "operation_id": str(configured.operation),
+            "state": "completed",
+            "sequence": 1,
+        }
+
+    verified = []
+    monkeypatch.setattr(imports.CreationRPC, "call", rpc)
+    monkeypatch.setattr(
+        worker, "run_reconciliation_worker", lambda value, *, slot: verified.append(value)
+    )
+    with TestClient(app_module.app) as api:
+        path = configured.path + "/" + str(configured.operation) + "/reconcile"
+        assert api.post(path).status_code == 401
+        response = api.post(path, headers=configured.headers)
+    assert response.status_code == 200 and response.json()["state"] == "completed"
+    assert calls == ["corpora_get_import_reconciliation", "corpora_get_import"]
+    assert verified[0]["mode"] == "import" and not configured.dispatches
+
+
+def test_ambiguous_import_stays_uncertain(configured, monkeypatch):
+    result = {
+        "status": "existing",
+        "corpus_id": str(configured.corpus),
+        "operation_id": str(configured.operation),
+        "state": "uncertain",
+        "sequence": None,
+    }
+    calls = []
+
+    def rpc(_self, name, _params):
+        calls.append(name)
+        return {"status": "unresolved"} if name == "corpora_get_import_reconciliation" else result
+
+    monkeypatch.setattr(imports.CreationRPC, "call", rpc)
+    with TestClient(app_module.app) as api:
+        response = api.post(
+            configured.path + "/" + str(configured.operation) + "/reconcile",
+            headers=configured.headers,
+        )
+    assert response.status_code == 202 and response.json()["state"] == "uncertain"
+    assert calls == ["corpora_get_import_reconciliation", "corpora_get_import"]
+    assert not configured.dispatches

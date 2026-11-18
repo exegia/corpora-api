@@ -226,3 +226,53 @@ async def get_import(
     return await run_in_threadpool(
         import_status, request.state.user_claims, corpus_id, operation_id
     )
+
+
+@router.post(
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/reconcile", response_model=CorpusImportInfo
+)
+async def reconcile_import(
+    corpus_id: UUID,
+    operation_id: UUID,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> CorpusImportInfo:
+    """Verify an uncertain initial import without issuing another Hub write."""
+    from corpora_api.corpus_import_worker import ImportSlot, run_reconciliation_worker
+    from corpora_api.corpus_save_reconcile import SaveReconciliationTarget
+
+    require_creation_config(creating=True)
+    rpc = CreationRPC()
+    identity = {
+        **_session(request.state.user_claims),
+        "p_corpus": str(corpus_id),
+        "p_operation": str(operation_id),
+    }
+    with ImportSlot() as slot:
+        value = await run_in_threadpool(rpc.call, "corpora_get_import_reconciliation", identity)
+        if isinstance(value, dict) and value.get("status") == "ready":
+            try:
+                target = SaveReconciliationTarget.model_validate(value)
+                if (
+                    target.mode != "import"
+                    or target.corpus_id != corpus_id
+                    or target.operation_id != operation_id
+                ):
+                    raise ValueError("Mismatched import reconciliation target")
+            except (TypeError, ValueError):
+                raise CorpusMetadataError("Invalid import reconciliation target") from None
+            try:
+                await run_in_threadpool(
+                    run_reconciliation_worker, target.model_dump(mode="json"), slot=slot
+                )
+            except Exception:
+                # Missing or changing Hub evidence is not proof of failure.
+                pass
+            value = await run_in_threadpool(rpc.call, "corpora_get_import", identity)
+        elif value == {"status": "unresolved"}:
+            value = await run_in_threadpool(rpc.call, "corpora_get_import", identity)
+        info = _info(value, corpus_id, operation_id)
+    response.status_code = 200 if info.state in ("completed", "failed") else 202
+    response.headers["Cache-Control"] = "no-store"
+    return info
