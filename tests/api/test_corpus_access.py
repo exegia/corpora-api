@@ -198,3 +198,138 @@ def test_mutation_and_deletion_status_routes_never_admit_anonymous(configured, m
             == 401
         )
         assert api.get(path + "/deletions/" + str(operation)).status_code == 401
+
+
+@pytest.mark.parametrize("failure", [None, "extra", "pagination", "changed", "lost_ack"])
+def test_uncertain_discard_only_deletes_an_unchanged_empty_private_repository(configured, failure):
+    corpus, _ = configured
+    sha = "a" * 40
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "DELETE":
+            if failure == "lost_ack":
+                raise httpx.ReadTimeout("lost acknowledgement")
+            return httpx.Response(200, stream=httpx.ByteStream(b"{}"))
+        if request.url.path.endswith("/tree/" + sha):
+            tree = [{"path": ".gitattributes", "type": "file"}]
+            if failure == "extra":
+                tree.append({"path": "data.tf", "type": "file"})
+            headers = (
+                {"Link": '<https://example.test/next>; rel="next"'}
+                if failure == "pagination"
+                else {}
+            )
+            return httpx.Response(
+                200, headers=headers, stream=httpx.ByteStream(json.dumps(tree).encode())
+            )
+        if "DELETE" in calls:
+            return httpx.Response(404, stream=httpx.ByteStream(b"{}"))
+        value = {
+            "id": f"fixture/corpus-{corpus}",
+            "private": True,
+            "sha": "b" * 40 if failure == "changed" else sha,
+        }
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(value).encode()))
+
+    async def invoke():
+        return await access.PrivateHubLifecycle(lambda: httpx.MockTransport(handler)).operate(
+            corpus, f"fixture/corpus-{corpus}", "dataset", sha=sha, delete=True, empty_only=True
+        )
+
+    if failure:
+        with pytest.raises(CorpusMetadataError):
+            asyncio.run(invoke())
+    else:
+        assert asyncio.run(invoke()) == sha
+        assert calls == ["GET", "GET", "DELETE", "GET"]
+    assert calls.count("DELETE") == (1 if failure in {None, "lost_ack"} else 0)
+
+
+@pytest.mark.parametrize("state", ["executing", "uncertain", "completed"])
+def test_uncertain_discard_retry_never_contacts_hub(configured, monkeypatch, state):
+    corpus, operation = configured
+    monkeypatch.setattr(
+        access.CreationRPC,
+        "call",
+        lambda *_: {
+            "status": "existing",
+            "corpus_id": str(corpus),
+            "operation_id": str(operation),
+            "state": state,
+        },
+    )
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("A retry must never contact the Hub")
+
+    monkeypatch.setattr(access.PrivateHubLifecycle, "operate", unexpected)
+    result = asyncio.run(
+        access.discard_uncertain_creation(
+            {"sub": str(uuid4()), "session_id": str(uuid4()), "exp": int(time.time()) + 3600},
+            corpus,
+            access.DeletionRequest(operation_id=operation, expected_revision=1),
+        )
+    )
+    assert result.state == state
+
+
+def test_uncertain_discard_admits_superadmin_before_hub_and_completes_once(configured, monkeypatch):
+    corpus, operation = configured
+    claim_id = uuid4()
+    sha = "a" * 40
+    repo = f"fixture/corpus-{corpus}"
+    calls = []
+
+    def rpc(_, name, params):
+        calls.append(name)
+        if name == "corpora_uncertain_discard_status":
+            return {"status": "absent"}
+        if name == "corpora_uncertain_discard_target":
+            return {
+                "status": "ok",
+                "corpus_id": str(corpus),
+                "repo_id": repo,
+                "repo_type": "dataset",
+            }
+        if name == "corpora_begin_uncertain_discard":
+            assert params["p_observed_sha"] == sha
+            return {
+                "status": "claimed",
+                "corpus_id": str(corpus),
+                "operation_id": str(operation),
+                "claim_id": str(claim_id),
+                "repo_id": repo,
+                "repo_type": "dataset",
+                "observed_sha": sha,
+            }
+        if name == "corpora_finish_corpus_deletion":
+            assert params["p_claim"] == str(claim_id) and params["p_completed"] is True
+            return True
+        raise AssertionError(name)
+
+    async def hub(_, _corpus, _repo, _kind, **kwargs):
+        calls.append("hub_delete" if kwargs.get("delete") else "hub_inspect")
+        assert kwargs["empty_only"] is True
+        if kwargs.get("delete"):
+            assert kwargs["sha"] == sha
+        return sha
+
+    monkeypatch.setattr(access.CreationRPC, "call", rpc)
+    monkeypatch.setattr(access.PrivateHubLifecycle, "operate", hub)
+    claims = {"sub": str(uuid4()), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    result = asyncio.run(
+        access.discard_uncertain_creation(
+            claims, corpus, access.DeletionRequest(operation_id=operation, expected_revision=1)
+        )
+    )
+    assert result.state == "completed"
+    assert calls == [
+        "corpora_uncertain_discard_status",
+        "corpora_uncertain_discard_target",
+        "hub_inspect",
+        "corpora_begin_uncertain_discard",
+        "hub_delete",
+        "corpora_finish_corpus_deletion",
+    ]

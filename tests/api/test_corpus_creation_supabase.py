@@ -105,6 +105,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_version_save",
                 "corpus_edit_intents",
                 "corpus_save_reconciliation",
+                "uncertain_creation_discard",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -383,6 +384,81 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 )
                 assert second_page["next_cursor"] is None
 
+                # Only a superadmin can discard an old, uncertain creation, exactly once.
+                provision_id = db.execute(
+                    "SELECT id FROM public.corpora_corpus_provision_ops WHERE corpus_id=%s",
+                    (lost_id,),
+                ).fetchone()[0]
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='uncertain' WHERE id=%s",
+                    (provision_id,),
+                )
+                rpc = creation.CreationRPC()
+                target = {**creation._session(admin[0]), "p_corpus": lost_id, "p_revision": 1}
+                assert rpc.call("corpora_uncertain_discard_target", target) == {
+                    "status": "conflict"
+                }
+                assert rpc.call(
+                    "corpora_uncertain_discard_target", {**target, **creation._session(foreign[0])}
+                ) == {"status": "not_found"}
+                # Simulate elapsed time only in this disposable local test database.
+                with db.transaction():
+                    db.execute(
+                        "ALTER TABLE public.corpora_corpus_provision_ops "
+                        "DISABLE TRIGGER corpora_corpus_validate_provision"
+                    )
+                    db.execute(
+                        "UPDATE public.corpora_corpus_provision_ops "
+                        "SET claimed_at=clock_timestamp()-interval '61 seconds' WHERE id=%s",
+                        (provision_id,),
+                    )
+                    db.execute(
+                        "ALTER TABLE public.corpora_corpus_provision_ops "
+                        "ENABLE TRIGGER corpora_corpus_validate_provision"
+                    )
+                assert rpc.call("corpora_uncertain_discard_target", target)["status"] == "ok"
+                discard = {**target, "p_operation": str(uuid4()), "p_observed_sha": "a" * 40}
+                assert rpc.call(
+                    "corpora_begin_uncertain_discard", {**discard, **creation._session(foreign[0])}
+                ) == {"status": "not_found"}
+                claimed = rpc.call("corpora_begin_uncertain_discard", discard)
+                assert claimed["status"] == "claimed"
+                assert rpc.call("corpora_begin_uncertain_discard", discard)["state"] == "executing"
+                assert (
+                    rpc.call(
+                        "corpora_finish_corpus_deletion",
+                        {
+                            "p_operation": discard["p_operation"],
+                            "p_claim": claimed["claim_id"],
+                            "p_completed": True,
+                        },
+                    )
+                    is True
+                )
+                assert (
+                    rpc.call(
+                        "corpora_uncertain_discard_status",
+                        {k: v for k, v in discard.items() if k != "p_observed_sha"},
+                    )["state"]
+                    == "completed"
+                )
+                for role in ("anon", "authenticated", "service_role"):
+                    assert not db.execute(
+                        "SELECT has_table_privilege("
+                        "%s,'public.corpora_corpus_uncertain_discards','INSERT')",
+                        (role,),
+                    ).fetchone()[0]
+                for (signature,) in db.execute(
+                    "SELECT oid::regprocedure::text FROM pg_proc "
+                    "WHERE pronamespace='public'::regnamespace AND proname IN "
+                    "('corpora_uncertain_discard_target','corpora_uncertain_discard_status',"
+                    "'corpora_begin_uncertain_discard')"
+                ).fetchall():
+                    for role in ("anon", "authenticated", "service_role"):
+                        assert db.execute(
+                            "SELECT has_function_privilege(%s,%s,'EXECUTE')", (role, signature)
+                        ).fetchone()[0] == (role == "service_role")
+
                 # Accepted work may start/finish after logout; new attempts may not.
                 entered.clear()
                 release.clear()
@@ -453,6 +529,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
             # Empty local registry was asserted above; remove only its fixture schema.
             db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
+                "uncertain_discards",
                 "version_intents",
                 "version_saves",
                 "deletions",
