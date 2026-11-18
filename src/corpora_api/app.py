@@ -212,7 +212,13 @@ app.include_router(corpus_detail_router)
 app.include_router(corpus_version_history_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
+    allow_origins=[
+        "https://docs.exegia.co",
+        "http://localhost:4321",
+        "https://corpora.exegia.co",
+        "https://staging.corpora-apps.vercel.app",
+        "http://localhost:5173",
+    ],
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=[
         "Authorization",
