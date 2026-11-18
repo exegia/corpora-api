@@ -5217,6 +5217,68 @@
         ]
       }
     },
+    "/v1/corpora/{corpus_id}/discard-uncertain-creation": {
+      "post": {
+        "description": "Superadmin: discard an uncertain creation only when its private repository is empty.",
+        "operationId": "discard_creation_v1_corpora__corpus_id__discard_uncertain_creation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusDeletion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Discard Creation",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}/edits/{operation_id}": {
       "get": {
         "description": "Inspect an edit without redispatching its worker.",
