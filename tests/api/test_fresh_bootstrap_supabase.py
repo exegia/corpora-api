@@ -45,7 +45,7 @@ def test_fresh_bootstrap_auth_and_private_storage():
         "Authorization": "Bearer " + anon,
         "Prefer": "return=representation",
     }
-    project_id, directory_id, document_id = str(uuid4()), str(uuid4()), str(uuid4())
+    project_id, other_project, directory_id, document_id = (str(uuid4()) for _ in range(4))
     users: list[tuple[str, dict[str, str]]] = []
     objects: list[tuple[str, str]] = []
     with (
@@ -128,6 +128,7 @@ def test_fresh_bootstrap_auth_and_private_storage():
             response = client.post(
                 url + "/rest/v1/projects",
                 headers=owner[1],
+                params={"select": "id,owner_id"},
                 json={"id": project_id, "name": "Temporary project", "user_id": directory_id},
             )
             assert response.status_code == 201, response.text
@@ -157,6 +158,75 @@ def test_fresh_bootstrap_auth_and_private_storage():
             assert client.post(
                 lookup, headers=anonymous, json={"p_project": project_id}
             ).status_code in (401, 403, 404)
+            for headers in (anonymous, owner[1], outsider[1]):
+                assert (
+                    client.get(
+                        url + "/rest/v1/projects", headers=headers, params={"select": "id,name"}
+                    ).status_code
+                    == 200
+                )
+                assert client.get(
+                    url + "/rest/v1/projects",
+                    headers=headers,
+                    params={"select": "id,corpus_document_id"},
+                ).status_code in (401, 403)
+            project_detail = (
+                "id,name,description,status,type,created_at,updated_at,owner_id,language,category,"
+                "user_directory(id,name,username),organizations(id,name,website),"
+                "project_licences(agreed_at,licences(id,title,url,domain_content,domain_data,"
+                "domain_software,family,maintainer,status),user_directory(id,name,username))"
+            )
+            response = client.get(
+                url + "/rest/v1/projects",
+                headers=owner[1],
+                params={"id": "eq." + project_id, "select": project_detail},
+            )
+            assert response.status_code == 200, response.text
+            response = client.get(
+                url + "/rest/v1/projects",
+                headers=anonymous,
+                params={"id": "eq." + project_id, "select": project_detail},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()[0]["user_directory"] is None
+            assert (
+                client.get(
+                    url + "/rest/v1/user_directory",
+                    headers=anonymous,
+                    params={"select": "id,name,username"},
+                ).json()
+                == []
+            )
+            response = client.post(
+                url + "/rest/v1/projects",
+                headers=outsider[1],
+                params={"select": "id"},
+                json={"id": other_project, "name": "Other project", "user_id": directory_id},
+            )
+            assert response.status_code == 201, response.text
+            for value in (document_id, str(uuid4())):
+                response = client.patch(
+                    url + "/rest/v1/projects",
+                    headers=outsider[1],
+                    params={"id": "eq." + other_project, "select": "id"},
+                    json={"corpus_document_id": value},
+                )
+                assert response.status_code >= 400 and "DOCUMENT_UNAVAILABLE" in response.text
+            db.execute(
+                "UPDATE public.corpus_documents SET owner_id=%s WHERE id=%s",
+                (outsider[0], document_id),
+            )
+            response = client.patch(
+                url + "/rest/v1/projects",
+                headers=outsider[1],
+                params={"id": "eq." + other_project, "select": "id"},
+                json={"corpus_document_id": document_id},
+            )
+            assert response.status_code == 200, response.text
+            db.execute(
+                "UPDATE public.corpus_documents SET owner_id=%s WHERE id=%s",
+                (member[0], document_id),
+            )
             response = client.post(
                 url + "/rest/v1/licences",
                 headers=member[1],
@@ -194,6 +264,7 @@ def test_fresh_bootstrap_auth_and_private_storage():
             for bucket, path in objects:
                 client.delete(url + f"/storage/v1/object/{bucket}/" + path, headers=admin_headers)
             db.execute("DELETE FROM public.projects WHERE id=%s", (project_id,))
+            db.execute("DELETE FROM public.projects WHERE id=%s", (other_project,))
             db.execute("DELETE FROM public.corpus_documents WHERE id=%s", (document_id,))
             if users:
                 db.execute(
