@@ -200,9 +200,16 @@ integration tracked in exegia/corpora-web#125.
 After applying `secure_corpus_documents`, signed-in users own new legacy
 document records and private-bucket uploads; superadmins can manage them.
 Existing document records remain unassigned until a superadmin verifies and
-claims them. The Storage object owner may read their own existing object, but
-historical anonymous access means its integrity must be checked independently.
-The public licence catalogue remains readable; only superadmins may change it.
+claims them. After applying `restrict_legacy_bucket_reads`, direct client downloads
+and new signed URLs are denied; owners may upload and remove their own objects,
+and trusted service access remains available. Previously issued signed URLs
+require separate revocation. Historical anonymous access means old object integrity
+must be checked independently. The public licence catalogue remains readable;
+only superadmins may change it.
+
+After applying `protect_organization_writes`, organization names remain publicly
+readable. Creating an organization requires a live signed-in session; direct
+client updates are disabled because the current web app has no update flow.
 
 After applying `project_linking_ledger`, project owners and superadmins can
 save a draft with `POST /v1/projects/{project_id}/references`. Each endpoint
