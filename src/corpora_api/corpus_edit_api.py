@@ -44,7 +44,17 @@ class ManifestEdit(EditBase):
 
 
 class NodeEdit(EditBase):
-    features: dict[str, StrictStr | StrictInt | None] = Field(min_length=1)
+    features: dict[str, StrictStr | StrictInt | None] | None = Field(default=None, min_length=1)
+    text: str | None = None
+    text_feature: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def one_edit(self) -> NodeEdit:
+        if (self.features is None) == (self.text is None):
+            raise ValueError("Specify either node features or replacement text")
+        if (self.text is None) != (self.text_feature is None):
+            raise ValueError("Text replacement requires a text feature")
+        return self
 
 
 class RestoreEdit(EditBase):
@@ -88,7 +98,9 @@ def _intent(corpus: UUID, kind: str, node: int | None, edit: EditBase) -> str:
                 "corpus_id": str(corpus),
                 "kind": kind,
                 "node": node,
-                "request": edit.model_dump(mode="json", exclude={"operation_id"}),
+                "request": edit.model_dump(
+                    mode="json", exclude={"operation_id"}, exclude_none=True
+                ),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -182,11 +194,12 @@ async def _edit(
         if isinstance(edit, RestoreEdit):
             archive = bytes(data)
         else:
-            args = (
-                {"manifest": edit.changes}
-                if isinstance(edit, ManifestEdit)
-                else {"node": node, "features": edit.features}
-            )
+            if isinstance(edit, ManifestEdit):
+                args = {"manifest": edit.changes}
+            elif edit.text is not None:
+                args = {"node": node, "text": edit.text, "text_feature": edit.text_feature}
+            else:
+                args = {"node": node, "features": edit.features}
             try:
                 result = await run_in_threadpool(run_corpus, bytes(data), "edit", **args)
                 archive = base64.b64decode(result["archive"], validate=True)
