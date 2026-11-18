@@ -167,10 +167,18 @@ Hub commit. It changes API access only: the backing Hugging Face repository stay
 private. A real change advances the metadata revision; a stale revision returns
 409. `GET /v1/corpora/{id}/metadata` and `/visibility` permit anonymous reads of a
 public ready corpus. Private, missing and deleted corpora return 404 to anonymous
-or foreign readers. A supplied invalid or revoked token returns 401 even for a
+or unshared readers. A supplied invalid or revoked token returns 401 even for a
 public corpus. Owner listing, writes and operation receipts still require a live
 session. These responses use `Cache-Control: no-store`; making a corpus private
 again takes effect on subsequent reads. A read already admitted may finish.
+
+After applying `corpus_reader_sharing`, an owner or superadmin can grant a
+confirmed account read-only access with `POST /v1/corpora/{id}/readers` using
+its email, or `PUT /v1/corpora/{id}/readers/{user_id}` using its Auth UUID.
+No email is sent. List grants with `GET /v1/corpora/{id}/readers` and revoke
+one with `DELETE /v1/corpora/{id}/readers/{user_id}`. Signed-in readers can
+discover ready shared corpora with `GET /v1/corpora/shared`; sharing does not
+grant editing or sharing rights, and revocation applies to subsequent reads.
 
 `DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
 and `expected_revision`. Admission rejects active or uncertain provisioning/import

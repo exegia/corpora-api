@@ -107,6 +107,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_save_reconciliation",
                 "uncertain_creation_discard",
                 "unstaged_save_recovery",
+                "corpus_reader_sharing",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -530,6 +531,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
             # Empty local registry was asserted above; remove only its fixture schema.
             db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
+                "readers",
                 "uncertain_discards",
                 "version_intents",
                 "version_saves",
@@ -1246,6 +1248,55 @@ def _exercise_access_lifecycle(
     assert api.get(path + "/metadata").status_code == 404
     assert api.get(path + "/visibility").status_code == 404
     assert api.get(path + "/metadata", headers=header(foreign)).status_code == 404
+    readers = path + "/readers"
+    foreign_id = foreign[0]["sub"]
+    foreign_email = db.execute(
+        "SELECT email FROM auth.users WHERE id=%s", (foreign_id,)
+    ).fetchone()[0]
+    assert api.get("/v1/corpora/shared").status_code == 401
+    assert (
+        api.post(readers, headers=header(foreign), json={"email": foreign_email}).status_code == 404
+    )
+    assert api.put(readers + "/" + str(uuid4()), headers=header(admin)).status_code == 404
+    grant = api.post(readers, headers=header(admin), json={"email": foreign_email.upper()})
+    assert grant.status_code == 200 and grant.json()["user_id"] == foreign_id
+    assert api.put(readers + "/" + foreign_id, headers=header(admin)).json()["present"] is True
+    listed_readers = api.get(readers, headers=header(admin))
+    assert (
+        listed_readers.status_code == 200
+        and listed_readers.json()["items"][0]["user_id"] == foreign_id
+    )
+    assert api.get(readers, headers=header(foreign)).status_code == 404
+    assert api.get(path + "/metadata", headers=header(foreign)).status_code == 200
+    allowed_reads(header(foreign))
+    assert (
+        api.get(
+            "/v1/refs/resolve", params={"ref": reference_id}, headers=header(foreign)
+        ).status_code
+        == 200
+    )
+    shared = api.get("/v1/corpora/shared", headers=header(foreign))
+    assert shared.status_code == 200 and corpus in [item["id"] for item in shared.json()["items"]]
+    assert (
+        api.patch(
+            path + "/metadata",
+            headers=header(foreign),
+            json={"expected_revision": 6, "title": "Denied"},
+        ).status_code
+        == 404
+    )
+    assert api.delete(readers + "/" + foreign_id, headers=header(foreign)).status_code == 404
+    revoked_reader = api.delete(readers + "/" + foreign_id, headers=header(admin))
+    assert revoked_reader.status_code == 200 and revoked_reader.json()["present"] is False
+    assert api.delete(readers + "/" + foreign_id, headers=header(admin)).json()["present"] is False
+    denied_reads(header(foreign), 404)
+    assert api.get("/v1/corpora/shared", headers=header(foreign)).json()["items"] == []
+    for role in ("anon", "authenticated", "service_role"):
+        for privilege in ("INSERT", "UPDATE", "DELETE"):
+            assert not db.execute(
+                "SELECT has_table_privilege(%s,%s,%s)",
+                (role, "public.corpora_corpus_readers", privilege),
+            ).fetchone()[0]
     patch = {"expected_revision": 6, "visibility": "public"}
     assert api.patch(path + "/visibility", headers=header(foreign), json=patch).status_code == 404
     published = api.patch(path + "/visibility", headers=header(admin), json=patch)

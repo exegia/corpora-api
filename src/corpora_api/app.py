@@ -64,6 +64,7 @@ from corpora_api.corpus_metadata import (
     CorpusMetadataNotFound,
 )
 from corpora_api.corpus_metadata_api import router as corpus_metadata_router
+from corpora_api.corpus_readers_api import router as corpus_readers_router
 from corpora_api.corpus_version_history_api import router as corpus_version_history_router
 from corpora_api.drafts import DraftStore
 from corpora_api.ingest import (
@@ -196,6 +197,7 @@ app = FastAPI(
     ],
 )
 app.include_router(project_members_router)
+app.include_router(corpus_readers_router)
 app.include_router(corpus_metadata_router)
 app.include_router(corpus_import_router)
 app.include_router(corpus_edit_router)
