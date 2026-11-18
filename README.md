@@ -150,9 +150,12 @@ There are two local worker slots and a 120-second worker deadline. Lost admissio
 acknowledgements, capacity exhaustion, and uncertain worker outcomes return 503;
 check the operation status using the same UUID. Git branch creation and commit
 publication are not automatically redispatched. The SDK may retry content-addressed
-LFS transfers. An uncertain operation blocks a new import and needs reconciliation;
-there is no automatic recovery or replacement import. Editing existing content
-and restoring versions are separate work.
+LFS transfers. An uncertain operation blocks a new import. After applying
+`uncertain_import_recovery`, the owner or superadmin can POST to
+`/v1/corpora/{id}/imports/{operation_id}/reconcile`: an unstaged operation can
+be safely marked failed, while a staged operation completes only after its
+published candidate is verified. Unavailable or ambiguous evidence leaves the
+operation uncertain; reconciliation never redispatches a Hub write.
 
 `GET /v1/corpora/{id}/versions` lists immutable content versions for the owner
 or configured superadmin with a live session. Results are newest first; `limit`

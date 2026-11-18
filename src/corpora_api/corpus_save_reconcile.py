@@ -29,13 +29,14 @@ from corpora_api.validation import ValidationBridge
 class SaveReconciliationTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["ready"]
+    mode: Literal["save", "import"] = "save"
     corpus_id: UUID
     operation_id: UUID
     claim_id: UUID
     publication_claim: UUID
     repo_id: str
     repo_type: Literal["dataset"]
-    expected_sequence: int = Field(strict=True, gt=0, lt=2**63 - 1)
+    expected_sequence: int = Field(strict=True, ge=0, lt=2**63 - 1)
     expected_parent_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     archive_size: int = Field(strict=True, gt=0, le=3_000_000)
@@ -51,6 +52,7 @@ class SaveReconciliationTarget(BaseModel):
             or self.claim_id == self.publication_claim
             or self.stage_sha == self.expected_parent_sha
             or self.stage_path != f".corpora-staging/{self.operation_id}/{self.claim_id}.corpus"
+            or (self.mode == "import") != (self.expected_sequence == 0)
         ):
             raise ValueError("Invalid save reconciliation target")
         return self
@@ -127,8 +129,18 @@ def execute_save_reconciliation(target: SaveReconciliationTarget, deadline: floa
         }
         rpc = CreationRPC()
         try:
-            if rpc.call("corpora_finish_save_reconciliation", params) is not True:
+            finish = (
+                "corpora_complete_import"
+                if target.mode == "import"
+                else "corpora_finish_save_reconciliation"
+            )
+            if rpc.call(finish, params) is not True:
                 raise ValueError("Save reconciliation was rejected")
         except Exception:
-            if rpc.call("corpora_find_version_save_result", params) is not True:
+            find = (
+                "corpora_find_import_result"
+                if target.mode == "import"
+                else "corpora_find_version_save_result"
+            )
+            if rpc.call(find, params) is not True:
                 raise

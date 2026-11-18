@@ -108,6 +108,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "uncertain_creation_discard",
                 "unstaged_save_recovery",
                 "corpus_reader_sharing",
+                "uncertain_import_recovery",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -867,6 +868,33 @@ def _exercise_import_rpc(session, foreign, db, archive):
     }
     denied = {**params, **creation._session(foreign[0])}
     assert rpc.call("corpora_begin_import", denied) == {"status": "not_found"}
+    unstaged = {**params, "p_operation": str(uuid4())}
+    first = rpc.call("corpora_begin_import", unstaged)
+    assert first["status"] == "claimed"
+    assert (
+        rpc.call(
+            "corpora_mark_import_uncertain",
+            {"p_operation": unstaged["p_operation"], "p_claim": first["claim_id"]},
+        )
+        is True
+    )
+    identity = {**session, "p_operation": unstaged["p_operation"]}
+    assert rpc.call(
+        "corpora_get_import_reconciliation", {**identity, **creation._session(foreign[0])}
+    ) == {"status": "not_found"}
+    assert rpc.call("corpora_get_import_reconciliation", identity)["state"] == "failed"
+    assert (
+        rpc.call(
+            "corpora_stage_import",
+            {
+                "p_operation": unstaged["p_operation"],
+                "p_claim": first["claim_id"],
+                "p_stage_sha": "b" * 40,
+                "p_publication": str(uuid4()),
+            },
+        )
+        is False
+    )
     barrier = threading.Barrier(2)
 
     def begin(_):
@@ -901,6 +929,13 @@ def _exercise_import_rpc(session, foreign, db, archive):
     assert rpc.call("corpora_stage_import", stage) is True
     assert rpc.call("corpora_stage_import", stage) is False  # one publication dispatch
     assert rpc.call("corpora_complete_import", {**complete, "p_publication": str(uuid4())}) is False
+    assert (
+        rpc.call("corpora_mark_import_uncertain", {"p_operation": operation, "p_claim": claim})
+        is True
+    )
+    target = rpc.call("corpora_get_import_reconciliation", {**session, "p_operation": operation})
+    assert target["status"] == "ready" and target["mode"] == "import"
+    assert target["expected_sequence"] == 0 and target["operation_id"] == operation
     assert rpc.call("corpora_complete_import", complete) is True
     assert rpc.call("corpora_complete_import", complete) is True
     assert rpc.call("corpora_find_import_result", complete) is True
@@ -919,8 +954,8 @@ def _exercise_import_rpc(session, foreign, db, archive):
         "SELECT m.state,m.revision,h.sequence,o.state FROM public.corpora_corpus_metadata m "
         "JOIN public.corpora_corpus_heads h ON h.corpus_id=m.id "
         "JOIN public.corpora_corpus_write_ops o ON o.corpus_id=m.id "
-        "WHERE m.id=%s",
-        (session["p_corpus"],),
+        "WHERE m.id=%s AND o.id=%s",
+        (session["p_corpus"], operation),
     ).fetchone() == ("ready", 6, 1, "completed")
     for table in (
         "imports",
