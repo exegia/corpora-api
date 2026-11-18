@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Literal, Self
 from uuid import UUID
 
-from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator
+from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator, TextLocator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
@@ -95,6 +95,8 @@ async def _source_text(claims: dict, endpoint: LinkEndpoint) -> str:
         return await retrieve_document(claims, endpoint, "epub")
     if isinstance(locator, PdfLocator):
         return await retrieve_document(claims, endpoint, "pdf")
+    if isinstance(locator, TextLocator):
+        return await retrieve_document(claims, endpoint, "cusx")
     raise HTTPException(422, "This source selection cannot yet be verified")
 
 

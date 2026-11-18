@@ -142,6 +142,10 @@ def _main() -> None:
             from corpora_api.project_pdf_verify import verify_pdf_in_corpus
 
             value = verify_pdf_in_corpus(data, **args)
+        elif operation == "verify_cusx":
+            from corpora_api.project_cusx_verify import verify_cusx_in_corpus
+
+            value = verify_cusx_in_corpus(data, **args)
         elif operation == "retrieve_epub":
             from corpora_api.project_epub_verify import retrieve_epub_in_corpus
 
@@ -150,6 +154,10 @@ def _main() -> None:
             from corpora_api.project_pdf_verify import retrieve_pdf_in_corpus
 
             value = retrieve_pdf_in_corpus(data, **args)
+        elif operation == "retrieve_cusx":
+            from corpora_api.project_cusx_verify import retrieve_cusx_in_corpus
+
+            value = retrieve_cusx_in_corpus(data, **args)
         elif operation == "scope":
             raw = args["scope"]
             raw["level"] = ScopeLevel(raw["level"])

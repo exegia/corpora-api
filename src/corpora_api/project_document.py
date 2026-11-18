@@ -5,7 +5,7 @@ import shutil
 from typing import Any
 from uuid import UUID
 
-from corpora_linking.models import PdfLocator
+from corpora_linking.models import PdfLocator, TextLocator
 from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
 
@@ -87,9 +87,28 @@ async def verify_pdf(claims: Any, endpoint: LinkEndpoint) -> None:
     await verify_document(claims, endpoint, "verify_pdf")
 
 
+def _check_cusx(endpoint: LinkEndpoint) -> None:
+    if (
+        not endpoint.document_id
+        or not endpoint.document_id.lower().endswith(".cusx")
+        or len(endpoint.locators) != 1
+        or not isinstance(endpoint.locators[0], TextLocator)
+        or endpoint.locators[0].stream_id != "cusx-itertext/v1"
+        or endpoint.locators[0].normalization != "preserve"
+    ):
+        raise HTTPException(422, "This C-USX selection cannot yet be verified")
+
+
+async def verify_cusx(claims: Any, endpoint: LinkEndpoint) -> None:
+    _check_cusx(endpoint)
+    await verify_document(claims, endpoint, "verify_cusx")
+
+
 async def retrieve_document(claims: Any, endpoint: LinkEndpoint, kind: str) -> str:
     if kind == "pdf":
         _check_pdf(endpoint)
+    elif kind == "cusx":
+        _check_cusx(endpoint)
     elif kind != "epub":
         raise HTTPException(422, "Unsupported document selection")
     result = await _document(claims, endpoint, "retrieve_" + kind)
