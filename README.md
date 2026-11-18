@@ -224,6 +224,15 @@ approved, current reference can be published again. Every decision requires the
 current `expected_version` and a reason, and is retained in history. Publication
 does not grant project membership, corpus access, or public visibility.
 
+Project owners and superadmins can register citation discoveries with an exact
+source selection, matching quote, and cited name at
+`POST /v1/projects/{project_id}/discoveries`. This records source evidence;
+it does not identify a target corpus or create a reference. The same caller can
+retry the same discovery ID and evidence safely. Authorized project members
+can read its history; owners and superadmins can accept or reject it with the
+current version and a reason. Reading or reviewing requires current access to
+the source corpus, and accepting requires its revision still to be current.
+
 After applying `project_link_resolution`, owners and superadmins can POST to
 `/resolve` to verify both revision-pinned selections, then `/approve` to record
 approval. Text-Fabric passages and EPUB CFI ranges with exact text evidence are

@@ -2022,6 +2022,201 @@
         "title": "DiagnosticReport",
         "type": "object"
       },
+      "DiscoveryEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "cited_name": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Cited Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "quote": {
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Quote",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "accepted",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "quote",
+          "cited_name"
+        ],
+        "title": "DiscoveryEvidence",
+        "type": "object"
+      },
+      "DiscoveryHistory": {
+        "properties": {
+          "discovery_id": {
+            "format": "uuid",
+            "title": "Discovery Id",
+            "type": "string"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryRevision"
+            },
+            "title": "Revisions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "discovery_id",
+          "revisions",
+          "next_before"
+        ],
+        "title": "DiscoveryHistory",
+        "type": "object"
+      },
+      "DiscoveryReceipt": {
+        "properties": {
+          "discovery_id": {
+            "format": "uuid",
+            "title": "Discovery Id",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "discovery_id",
+          "version"
+        ],
+        "title": "DiscoveryReceipt",
+        "type": "object"
+      },
+      "DiscoveryRegistration": {
+        "additionalProperties": false,
+        "properties": {
+          "cited_name": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Cited Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "quote": {
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Quote",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "quote",
+          "cited_name",
+          "reason"
+        ],
+        "title": "DiscoveryRegistration",
+        "type": "object"
+      },
+      "DiscoveryRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "register",
+              "accept",
+              "reject"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/DiscoveryEvidence"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "actor_id",
+          "recorded_at",
+          "reason",
+          "action",
+          "evidence"
+        ],
+        "title": "DiscoveryRevision",
+        "type": "object"
+      },
       "DraftCreateRequest": {
         "properties": {
           "job_id": {
@@ -8635,6 +8830,244 @@
         "summary": "Detect or select language",
         "tags": [
           "language"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/discoveries": {
+      "post": {
+        "description": "Record verified citation evidence without inventing a target corpus.",
+        "operationId": "register_discovery_v1_projects__project_id__discoveries_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoveryRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Register Discovery",
+        "tags": [
+          "Project discoveries"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/discoveries/{discovery_id}": {
+      "get": {
+        "description": "Read the history with project and source-corpus access.",
+        "operationId": "discovery_history_v1_projects__project_id__discoveries__discovery_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discovery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Discovery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 10,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Discovery History",
+        "tags": [
+          "Project discoveries"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/discoveries/{discovery_id}/{action}": {
+      "post": {
+        "description": "Record an owner or superadmin review decision.",
+        "operationId": "decide_discovery_v1_projects__project_id__discoveries__discovery_id___action__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discovery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Discovery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "enum": [
+                "accept",
+                "reject"
+              ],
+              "title": "Action",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Decide Discovery",
+        "tags": [
+          "Project discoveries"
         ]
       }
     },
