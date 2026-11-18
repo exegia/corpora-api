@@ -2559,6 +2559,7 @@
       "ReferenceCreate": {
         "properties": {
           "corpus": {
+            "description": "UUID of the stored corpus",
             "title": "Corpus",
             "type": "string"
           },
@@ -2629,6 +2630,7 @@
       "ShortcodeCreate": {
         "properties": {
           "corpus": {
+            "description": "UUID of the stored corpus",
             "title": "Corpus",
             "type": "string"
           },
@@ -6833,6 +6835,7 @@
     },
     "/v1/refs": {
       "post": {
+        "description": "Create a corpus reference pinned to its current stored revision.",
         "operationId": "create_reference_v1_refs_post",
         "requestBody": {
           "content": {
@@ -6937,6 +6940,7 @@
     },
     "/v1/refs/resolve": {
       "get": {
+        "description": "Resolve a UUID-and-revision reference against the current corpus snapshot.\n\nThe revision is the stored 40-character commit ID. A previous revision returns 409.",
         "operationId": "resolve_reference_v1_refs_resolve_get",
         "parameters": [
           {
@@ -7074,6 +7078,7 @@
     },
     "/v1/refs/shortcode": {
       "get": {
+        "description": "Render a UUID-and-revision reference as a shortcode.",
         "operationId": "get_reference_shortcode_v1_refs_shortcode_get",
         "parameters": [
           {
@@ -7209,6 +7214,7 @@
         ]
       },
       "post": {
+        "description": "Create a shortcode that identifies the corpus and stored revision.",
         "operationId": "create_reference_shortcode_v1_refs_shortcode_post",
         "requestBody": {
           "content": {

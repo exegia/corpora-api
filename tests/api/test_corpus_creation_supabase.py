@@ -1235,6 +1235,14 @@ def _exercise_access_lifecycle(
     denied_reads({}, 404)
     denied_reads(header(foreign), 404)
     allowed_reads(header(admin))
+    ref_body = {"corpus": corpus, "node": 1}
+    assert api.post("/v1/refs", json=ref_body, headers=header(foreign)).status_code == 404
+    assert api.post("/v1/refs", json=ref_body, headers=header(owner)).status_code == 401
+    reference = api.post("/v1/refs", json=ref_body, headers=header(admin))
+    assert reference.status_code == 200, reference.text
+    reference_id = reference.json()["ref"]
+    resolved = api.get("/v1/refs/resolve", params={"ref": reference_id}, headers=header(admin))
+    assert resolved.status_code == 200 and resolved.json()["node"] == 1
     assert api.get(path + "/metadata").status_code == 404
     assert api.get(path + "/visibility").status_code == 404
     assert api.get(path + "/metadata", headers=header(foreign)).status_code == 404
@@ -1251,6 +1259,12 @@ def _exercise_access_lifecycle(
     assert api.get(path + "/visibility").json() == published.json()
     allowed_reads({})
     allowed_reads(header(foreign))
+    assert (
+        api.get(
+            "/v1/refs/resolve", params={"ref": reference_id}, headers=header(foreign)
+        ).status_code
+        == 200
+    )
     denied_reads(header(owner), 401)  # Logged-out tokens are never anonymous.
     assert api.patch(path + "/visibility", headers=header(admin), json=patch).status_code == 409
     private = api.patch(
@@ -1286,6 +1300,10 @@ def _exercise_access_lifecycle(
         assert api.get(path + "/metadata", headers=user_headers).status_code == 404
         assert api.get(path + "/visibility", headers=user_headers).status_code == 404
         denied_reads(user_headers, 404)
+    assert (
+        api.get("/v1/refs/resolve", params={"ref": reference_id}, headers=header(admin)).status_code
+        == 404
+    )
     assert api.get(path, headers=header(admin)).status_code == 404
     assert (
         api.patch(
