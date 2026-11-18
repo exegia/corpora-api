@@ -1269,6 +1269,7 @@ def _exercise_access_lifecycle(
     assert api.get(readers, headers=header(foreign)).status_code == 404
     assert api.get(path + "/metadata", headers=header(foreign)).status_code == 200
     allowed_reads(header(foreign))
+    _exercise_project_linking_permissions(db, corpus, head_sha, admin, foreign)
     assert (
         api.get(
             "/v1/refs/resolve", params={"ref": reference_id}, headers=header(foreign)
@@ -1430,3 +1431,107 @@ def _exercise_access_lifecycle(
             assert db.execute(
                 "SELECT has_function_privilege(%s,%s,'EXECUTE')", (role, signature)
             ).fetchone()[0] == (role == "service_role")
+
+
+def _exercise_project_linking_permissions(db, corpus, head_sha, admin, foreign):
+    """Verify both project and corpus grants using actual Auth sessions and SQL guards."""
+    from psycopg.types.json import Jsonb
+
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    migrations = Path(__file__).resolve().parents[2] / "supabase/migrations"
+    assert db.execute("SELECT to_regclass('public.projects') IS NULL").fetchone()[0]
+    assert db.execute("SELECT to_regclass('public.corpora_project_members') IS NULL").fetchone()[0]
+    project, reference = str(uuid4()), str(uuid4())
+    actor, member = admin[0], foreign[0]
+    try:
+        db.execute("CREATE TABLE public.projects(id uuid PRIMARY KEY,owner_id uuid)")
+        db.execute("CREATE TABLE public.corpora_project_members(project_id uuid,user_id uuid)")
+        db.execute("INSERT INTO public.projects VALUES (%s,%s)", (project, actor["sub"]))
+        db.execute(
+            "INSERT INTO public.corpora_project_members VALUES (%s,%s)", (project, member["sub"])
+        )
+        db.execute(next(migrations.glob("*_project_linking_ledger.sql")).read_text())
+        endpoint = {
+            "work_id": "work",
+            "edition_id": "edition",
+            "package_id": corpus,
+            "revision": head_sha,
+            "document_id": ".corpora/source.corpus",
+            "locators": [{"kind": "structural", "anchor_id": f"{corpus}@{head_sha}/Mini!word1"}],
+        }
+        body = LinkSave.model_validate(
+            {
+                "reference_id": reference,
+                "source": endpoint,
+                "target": endpoint,
+                "reason": "first revision",
+            }
+        )
+        value = Jsonb(draft_reference(body, UUID(actor["sub"])).model_dump(mode="json"))
+
+        def save(user, expected=None):
+            return db.execute(
+                "SELECT public.corpora_save_project_link(%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    user["sub"],
+                    user["session_id"],
+                    user["exp"],
+                    project,
+                    reference,
+                    expected,
+                    "test",
+                    value,
+                ),
+            ).fetchone()[0]
+
+        def history(user):
+            return db.execute(
+                "SELECT public.corpora_project_link_history(%s,%s,%s,%s,%s,%s,%s)",
+                (user["sub"], user["session_id"], user["exp"], project, reference, None, 10),
+            ).fetchone()[0]
+
+        def decide(user, expected, action):
+            return db.execute(
+                "SELECT public.corpora_decide_project_link(%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    user["sub"],
+                    user["session_id"],
+                    user["exp"],
+                    project,
+                    reference,
+                    expected,
+                    "test",
+                    action,
+                ),
+            ).fetchone()[0]
+
+        assert save(actor) == {"status": "ok", "version": 1}
+        assert save(actor) == {"status": "conflict"}
+        assert save(member, 1) == {"status": "not_found"}
+        assert history(member)["revisions"][0]["version"] == 1
+        assert decide(actor, 1, "reject") == {"status": "ok", "version": 2}
+        assert decide(actor, 2, "reject") == {"status": "invalid_transition"}
+        assert save(actor, 2) == {"status": "invalid_transition"}
+        assert decide(actor, 2, "reopen") == {"status": "ok", "version": 3}
+        assert [r["version"] for r in history(member)["revisions"]] == [3, 2, 1]
+        db.execute(
+            "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
+            (corpus, member["sub"]),
+        )
+        assert history(member) == {"status": "not_found"}
+        db.execute(
+            "INSERT INTO public.corpora_corpus_readers(corpus_id,user_id,added_by) "
+            "VALUES (%s,%s,%s)",
+            (corpus, member["sub"], actor["sub"]),
+        )
+        db.execute(
+            "DELETE FROM public.corpora_project_members WHERE project_id=%s AND user_id=%s",
+            (project, member["sub"]),
+        )
+        assert history(member) == {"status": "not_found"}
+    finally:
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_link_revisions CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_link_heads CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_members CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.projects CASCADE")

@@ -180,6 +180,17 @@ one with `DELETE /v1/corpora/{id}/readers/{user_id}`. Signed-in readers can
 discover ready shared corpora with `GET /v1/corpora/shared`; sharing does not
 grant editing or sharing rights, and revocation applies to subsequent reads.
 
+After applying `project_linking_ledger`, project owners and superadmins can
+save a draft with `POST /v1/projects/{project_id}/references`. Each endpoint
+requires a corpus UUID, full immutable repository commit, asset path and exact
+selection; short corpus references are rejected. Drafts remain unresolved: a
+saved selection is not proof that the referenced asset or passage was resolved.
+Use `GET /v1/projects/{project_id}/references/{reference_id}/history` for
+revision history and POST to `/reject` or `/reopen` to record a decision.
+Changes require the current `expected_version`. Project members can read only
+when they also have access to every corpus represented in the requested
+history; members cannot edit or decide.
+
 `DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
 and `expected_revision`. Admission rejects active or uncertain provisioning/import
 operations with 409. It atomically hides the corpus before sending one bounded

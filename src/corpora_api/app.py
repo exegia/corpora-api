@@ -123,6 +123,7 @@ from corpora_api.models import (
     TFCheckReport,
     ValidationResponse,
 )
+from corpora_api.project_link_api import router as project_link_router
 from corpora_api.project_members_api import router as project_members_router
 from corpora_api.references import reference
 from corpora_api.storage import (
@@ -197,6 +198,7 @@ app = FastAPI(
     ],
 )
 app.include_router(project_members_router)
+app.include_router(project_link_router)
 app.include_router(corpus_readers_router)
 app.include_router(corpus_metadata_router)
 app.include_router(corpus_import_router)
