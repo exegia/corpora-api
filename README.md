@@ -216,6 +216,14 @@ current reference revision, including its provenance and review state, ordered
 by reference UUID. Export does not change publication or review state; a missing
 or inaccessible reference causes the entire request to fail.
 
+After applying `project_link_publication`, a project owner or superadmin can
+POST to `/v1/projects/{project_id}/references/{reference_id}/publish` to mark an
+approved, resolved reference published within that project. Its corpus revisions
+must still be current. POST to `/withdraw` to remove that published status; an
+approved, current reference can be published again. Every decision requires the
+current `expected_version` and a reason, and is retained in history. Publication
+does not grant project membership, corpus access, or public visibility.
+
 After applying `project_link_resolution`, owners and superadmins can POST to
 `/resolve` to verify both revision-pinned selections, then `/approve` to record
 approval. Text-Fabric passages and EPUB CFI ranges with exact text evidence are

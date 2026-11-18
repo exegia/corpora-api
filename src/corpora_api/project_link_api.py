@@ -291,13 +291,13 @@ async def retrieve_selection(
 async def decide_reference(
     project_id: UUID,
     reference_id: UUID,
-    action: Literal["reject", "reopen", "resolve", "approve"],
+    action: Literal["reject", "reopen", "resolve", "approve", "publish", "withdraw"],
     body: LinkDecision,
     request: Request,
     response: Response,
     _user: str = Depends(require_user),
 ) -> LinkReceipt:
-    """Verify, approve, reject, or reopen a reference."""
+    """Record a review or project-only publication decision."""
     if action == "resolve":
         await _resolve_reference(request, project_id, reference_id, body.expected_version)
     value = await run_in_threadpool(
