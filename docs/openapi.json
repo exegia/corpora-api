@@ -3138,6 +3138,105 @@
         "title": "LinkHistory",
         "type": "object"
       },
+      "LinkImportPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LinkImportPreviewItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_project_id": {
+            "description": "Unverified source-project claim from the file",
+            "format": "uuid",
+            "title": "Source Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_project_id",
+          "items"
+        ],
+        "title": "LinkImportPreview",
+        "type": "object"
+      },
+      "LinkImportPreviewItem": {
+        "additionalProperties": false,
+        "properties": {
+          "current_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "outcome": {
+            "enum": [
+              "new",
+              "unchanged",
+              "conflict"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id",
+          "outcome",
+          "current_version"
+        ],
+        "title": "LinkImportPreviewItem",
+        "type": "object"
+      },
+      "LinkImportPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/LinkRevision"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Revisions",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "revisions"
+        ],
+        "title": "LinkImportPreviewRequest",
+        "type": "object"
+      },
       "LinkReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -9796,6 +9895,68 @@
           }
         ],
         "summary": "Export References",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/import-preview": {
+      "post": {
+        "description": "Preview a JSON reference import without changing the destination project.\n\nUnchanged compares endpoints and relationship, not source review history.\nA plan is advisory: apply must repeat authorization and conflict checks.\nInaccessible projects or corpora return 404 for the entire plan.",
+        "operationId": "preview_reference_import_v1_projects__project_id__references_import_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkImportPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkImportPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Preview Reference Import",
         "tags": [
           "Project links"
         ]

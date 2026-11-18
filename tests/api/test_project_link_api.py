@@ -255,3 +255,61 @@ def test_export_preserves_current_reference_provenance_and_requires_complete_acc
     assert client.post(path, headers=headers, json=data).status_code == 404
     monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "ok", "revisions": []})
     assert client.post(path, headers=headers, json=data).status_code == 503
+
+
+def test_import_preview_is_read_only_and_validates_authorization_and_receipts(monkeypatch):
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    body, actor = sample()
+    project, source_project = uuid4(), uuid4()
+    claims = {"sub": str(actor), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
+    reference = draft_reference(LinkSave.model_validate(body), actor).model_dump(mode="json")
+    payload = {
+        "schema_version": "1",
+        "project_id": str(source_project),
+        "revisions": [
+            {
+                "version": 2,
+                "actor_id": str(actor),
+                "recorded_at": "2026-01-01T00:00:00Z",
+                "reason": "exported",
+                "action": "edit",
+                "reference": reference,
+            }
+        ],
+    }
+    calls = []
+
+    def rpc(_self, name, params):
+        calls.append((name, params))
+        assert name == "corpora_preview_project_link_import"
+        assert params["p_actor"] == str(actor)
+        assert params["p_items"][0]["id"] == body["reference_id"]
+        return {
+            "status": "ok",
+            "items": [
+                {"reference_id": body["reference_id"], "outcome": "new", "current_version": None}
+            ],
+        }
+
+    monkeypatch.setattr(links.CreationRPC, "call", rpc)
+    client = TestClient(app_module.app)
+    path = f"/v1/projects/{project}/references/import-preview"
+    assert client.post(path, json=payload).status_code == 401
+    headers = {"Authorization": "Bearer valid"}
+    response = client.post(path, headers=headers, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["items"][0]["outcome"] == "new"
+    assert len(calls) == 1
+    duplicate = {**payload, "revisions": payload["revisions"] * 2}
+    assert client.post(path, headers=headers, json=duplicate).status_code == 422
+    short = reference.copy()
+    short["target"] = {**reference["target"], "package_id": None}
+    invalid = {**payload, "revisions": [{**payload["revisions"][0], "reference": short}]}
+    assert client.post(path, headers=headers, json=invalid).status_code == 422
+    monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "not_found"})
+    assert client.post(path, headers=headers, json=payload).status_code == 404
+    monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "ok", "items": []})
+    assert client.post(path, headers=headers, json=payload).status_code == 503

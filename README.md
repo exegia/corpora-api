@@ -240,6 +240,17 @@ current reference revision, including its provenance and review state, ordered
 by reference UUID. Export does not change publication or review state; a missing
 or inaccessible reference causes the entire request to fail.
 
+After applying `project_link_import_preview`, a project owner or superadmin can
+POST an existing export JSON document to
+`/v1/projects/{project_id}/references/import-preview`. It returns `new`,
+`unchanged`, or `conflict` for each reference, and the current destination
+version when one exists. Unchanged compares the endpoints and relationship,
+not imported review history. Both incoming and existing referenced corpora must
+be accessible; inaccessible data causes a 404 for the whole request. The source
+project ID and provenance are claims from the file, not verified authorship.
+The preview makes no changes and is advisory: import is not implemented yet,
+and a future apply operation must recheck access and destination versions.
+
 After applying `project_link_publication`, a project owner or superadmin can
 POST to `/v1/projects/{project_id}/references/{reference_id}/publish` to mark an
 approved, resolved reference published within that project. Its corpus revisions

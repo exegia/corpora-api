@@ -6,7 +6,7 @@ from uuid import UUID
 
 from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from corpora_api.auth import require_user
@@ -72,6 +72,42 @@ class LinkExport(BaseModel):
     schema_version: Literal["1"] = "1"
     project_id: UUID
     revisions: list[LinkRevision]
+
+
+class LinkImportPreviewRequest(LinkExport):
+    revisions: list[LinkRevision] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_import(self) -> "LinkImportPreviewRequest":
+        if len(json.dumps(self.model_dump(mode="json"), ensure_ascii=False).encode()) > 350_000:
+            raise ValueError("Import exceeds the size limit")
+        ids = [row.reference.id for row in self.revisions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Reference IDs must be distinct")
+        for row in self.revisions:
+            for endpoint in (row.reference.source, row.reference.target):
+                LinkEndpoint.model_validate(endpoint.model_dump(mode="json"))
+        return self
+
+
+class LinkImportPreviewItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reference_id: UUID
+    outcome: Literal["new", "unchanged", "conflict"]
+    current_version: int | None = Field(strict=True, ge=1)
+
+    @model_validator(mode="after")
+    def consistent_version(self) -> "LinkImportPreviewItem":
+        if (self.outcome == "new") != (self.current_version is None):
+            raise ValueError("Invalid preview version")
+        return self
+
+
+class LinkImportPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: UUID
+    source_project_id: UUID = Field(description="Unverified source-project claim from the file")
+    items: list[LinkImportPreviewItem]
 
 
 def _call(name: str, params: dict[str, Any]) -> Any:
@@ -232,6 +268,57 @@ async def export_references(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Content-Disposition"] = 'attachment; filename="corpora-links.json"'
     return result
+
+
+@router.post("/{project_id}/references/import-preview", response_model=LinkImportPreview)
+async def preview_reference_import(
+    project_id: UUID,
+    body: LinkImportPreviewRequest,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> LinkImportPreview:
+    """Preview a JSON reference import without changing the destination project.
+
+    Unchanged compares endpoints and relationship, not source review history.
+    A plan is advisory: apply must repeat authorization and conflict checks.
+    Inaccessible projects or corpora return 404 for the entire plan.
+    """
+    candidates = [
+        {
+            "id": str(row.reference.id),
+            "source": row.reference.source.model_dump(mode="json"),
+            "target": row.reference.target.model_dump(mode="json"),
+            "relationship": row.reference.relationship,
+        }
+        for row in body.revisions
+    ]
+    value = await run_in_threadpool(
+        _call,
+        "corpora_preview_project_link_import",
+        {
+            **_session(request.state.user_claims),
+            "p_project": str(project_id),
+            "p_items": candidates,
+        },
+    )
+    _status(value)
+    try:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"status", "items"}
+            or value["status"] != "ok"
+        ):
+            raise ValueError("Invalid preview")
+        items = [LinkImportPreviewItem.model_validate(item) for item in value["items"]]
+        if [item.reference_id for item in items] != sorted(
+            row.reference.id for row in body.revisions
+        ):
+            raise ValueError("Mismatched preview items")
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(503, "Project linking is unavailable") from None
+    response.headers["Cache-Control"] = "no-store"
+    return LinkImportPreview(project_id=project_id, source_project_id=body.project_id, items=items)
 
 
 @router.post("/{project_id}/references/{reference_id}/retrieve", response_model=RetrievedSelection)
