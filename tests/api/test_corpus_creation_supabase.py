@@ -1517,7 +1517,19 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
         db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_publication.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_citation_discoveries.sql")).read_text())
         for role in ("anon", "authenticated"):
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (
+                    role,
+                    "public.corpora_register_project_discovery(uuid,uuid,bigint,uuid,uuid,text,jsonb)",
+                ),
+            ).fetchone()[0]
+            assert not db.execute(
+                "SELECT has_table_privilege(%s,%s,'SELECT')",
+                (role, "public.corpora_project_discovery_revisions"),
+            ).fetchone()[0]
             assert not db.execute(
                 "SELECT has_function_privilege(%s,%s,'EXECUTE')",
                 (role, "public.corpora_read_current_project_link(uuid,uuid,bigint,uuid,uuid)"),
@@ -1695,6 +1707,79 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
         )
         assert corpus_selection.status_code == 200, corpus_selection.text
         assert corpus_selection.json()["fragments"][0].strip() == "We"
+        discovery = str(uuid4())
+        discovery_path = f"/v1/projects/{project}/discoveries"
+        discovery_body = {
+            "id": discovery,
+            "source": endpoint,
+            "quote": corpus_selection.json()["fragments"][0],
+            "cited_name": "Example work",
+            "reason": "record citation",
+        }
+        assert (
+            api.post(discovery_path, json=discovery_body, headers=member_headers).status_code == 404
+        )
+        bad_quote = {**discovery_body, "quote": "different text"}
+        assert api.post(discovery_path, json=bad_quote, headers=member_headers).status_code == 404
+        assert api.post(discovery_path, json=bad_quote, headers=admin_headers).status_code == 422
+        first = api.post(discovery_path, json=discovery_body, headers=admin_headers)
+        assert first.status_code == 200, first.text
+        assert first.json()["version"] == 1
+        assert (
+            api.post(discovery_path, json=discovery_body, headers=admin_headers).json()
+            == first.json()
+        )
+        changed = {**discovery_body, "cited_name": "Changed"}
+        assert api.post(discovery_path, json=changed, headers=admin_headers).status_code == 409
+        url = discovery_path + "/" + discovery
+        assert (
+            api.get(url, headers=member_headers).json()["revisions"][0]["evidence"]["status"]
+            == "pending"
+        )
+        decision = {"expected_version": 1, "reason": "reviewed"}
+        assert api.post(url + "/accept", json=decision, headers=member_headers).status_code == 404
+        accepted = api.post(url + "/accept", json=decision, headers=admin_headers)
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["version"] == 2
+        assert api.post(url + "/accept", json=decision, headers=admin_headers).status_code == 409
+        history_result = api.get(url, headers=member_headers)
+        assert [entry["action"] for entry in history_result.json()["revisions"]] == [
+            "accept",
+            "register",
+        ]
+        assert history_result.json()["revisions"][0]["evidence"]["status"] == "accepted"
+        first_page = api.get(url + "?limit=1", headers=member_headers).json()
+        assert first_page["next_before"] == 2
+        second_page = api.get(url + "?limit=1&before=2", headers=member_headers).json()
+        assert second_page["revisions"][0]["action"] == "register"
+        assert second_page["next_before"] is None
+        stale_id = str(uuid4())
+        stale_body = {**discovery_body, "id": stale_id}
+        assert api.post(discovery_path, json=stale_body, headers=admin_headers).status_code == 200
+        old_source = {
+            **endpoint,
+            "revision": "a" * 40,
+            "locators": [{"kind": "structural", "anchor_id": f"{corpus}@{'a' * 40}/Mini!word1"}],
+        }
+        db.execute(
+            "UPDATE public.corpora_project_discovery_revisions "
+            "SET evidence=jsonb_set(evidence,'{source}',%s) "
+            "WHERE project_id=%s AND discovery_id=%s AND version=1",
+            (Jsonb(old_source), project, stale_id),
+        )
+        assert (
+            api.post(
+                discovery_path, json={**stale_body, "source": old_source}, headers=admin_headers
+            ).status_code
+            == 200
+        )
+        stale_url = discovery_path + "/" + stale_id
+        assert (
+            api.post(stale_url + "/accept", json=decision, headers=admin_headers).status_code == 409
+        )
+        assert (
+            api.post(stale_url + "/reject", json=decision, headers=admin_headers).status_code == 200
+        )
         pdf_ref = str(uuid4())
         _, pdf_target = pdf_case()
         pdf_target["package_id"] = corpus
@@ -1834,6 +1919,7 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             (corpus, member["sub"]),
         )
         assert history(member) == {"status": "not_found"}
+        assert api.get(url, headers=member_headers).status_code == 404
         assert (
             api.post(
                 link_path + "/export",
@@ -1869,6 +1955,8 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             == 404
         )
     finally:
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_discovery_revisions CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_discoveries CASCADE")
         db.execute("DROP TABLE IF EXISTS public.corpora_project_link_revisions CASCADE")
         db.execute("DROP TABLE IF EXISTS public.corpora_project_link_heads CASCADE")
         db.execute("DROP TABLE IF EXISTS public.corpora_project_members CASCADE")
