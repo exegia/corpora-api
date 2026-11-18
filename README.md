@@ -154,6 +154,12 @@ LFS transfers. An uncertain operation blocks a new import and needs reconciliati
 there is no automatic recovery or replacement import. Editing existing content
 and restoring versions are separate work.
 
+`GET /v1/corpora/{id}/versions` lists immutable content versions for the owner
+or configured superadmin with a live session. Results are newest first; `limit`
+is 1–100 and `next_before` can be passed as `before` for the next page. A
+missing, deleted or unauthorized corpus returns 404. Version history remains
+editor-only even when the corpus itself is public.
+
 After applying `corpus_access_lifecycle`, `PATCH /v1/corpora/{id}/visibility`
 accepts `expected_revision` and `visibility` (`private` or `public`) from an owner
 or configured superadmin. Publishing requires ready content and a verified private
