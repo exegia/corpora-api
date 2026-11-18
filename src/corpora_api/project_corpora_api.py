@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from corpora_api.auth import require_user
-from corpora_api.corpus_creation import CreationRPC, _session, require_creation_config
+from corpora_api.corpus_creation import CreationRPC, _session
 from corpora_api.corpus_metadata import CorpusMetadataError
 from corpora_api.corpus_metadata_api import CorpusSummary
 
@@ -33,7 +33,6 @@ class ProjectCorpusReceipt(BaseModel):
 
 
 def _call(name: str, params: dict[str, Any]) -> Any:
-    require_creation_config()
     value = CreationRPC(max_response_bytes=524288).call(name, params)
     if value == {"status": "not_found"}:
         raise HTTPException(404, "Project or corpus not found")

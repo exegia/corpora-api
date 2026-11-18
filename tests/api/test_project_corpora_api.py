@@ -15,7 +15,7 @@ def context(monkeypatch):
     actor, session, project, corpus = (uuid4() for _ in range(4))
     claims = {"sub": str(actor), "session_id": str(session), "exp": int(time.time()) + 3600}
     monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
-    monkeypatch.setattr(corpora, "require_creation_config", lambda: None)
+    monkeypatch.delenv("CORPORA_CORPUS_CREATION_ENABLED", raising=False)
     return TestClient(app_module.app), project, corpus, claims
 
 
