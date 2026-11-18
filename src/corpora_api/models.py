@@ -291,7 +291,7 @@ AIChatEvent = (
 
 
 class ReferenceCreate(BaseModel):
-    corpus: str
+    corpus: str = Field(description="UUID of the stored corpus")
     node: int = Field(ge=1)
     end_node: int | None = Field(default=None, ge=1)
     lang: str | None = None

@@ -40,5 +40,5 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.uv.sources]
-corpora-corpus-validate = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "packages/corpus-validate", rev = "5c284034089e10309dd905a16ed51ad87ffd1e30" }
-corpora-schema-types = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "generated/python", rev = "5c284034089e10309dd905a16ed51ad87ffd1e30" }
+corpora-corpus-validate = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "packages/corpus-validate", rev = "fbecd324389fbcd36b8434844cea3c5cf2ef8724" }
+corpora-schema-types = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "generated/python", rev = "fbecd324389fbcd36b8434844cea3c5cf2ef8724" }

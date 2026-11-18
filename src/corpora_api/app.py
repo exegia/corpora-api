@@ -1106,48 +1106,59 @@ _REFERENCE_RESPONSES = {
 
 @app.post("/v1/refs", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def create_reference(
-    body: ReferenceCreate, user_id: Annotated[str, Depends(require_user)]
+    body: ReferenceCreate,
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
 ) -> dict[str, Any]:
-    return await run_in_threadpool(reference, corpus_storage, user_id, **body.model_dump())
+    """Create a corpus reference pinned to its current stored revision."""
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(request.state.user_claims, **body.model_dump())
 
 
 @app.get("/v1/refs/resolve", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def resolve_reference(
-    user_id: Annotated[str, Depends(require_user)],
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
     ref: str,
     corpus: str | None = None,
     lang: str | None = None,
 ) -> dict[str, Any]:
-    return await run_in_threadpool(
-        reference, corpus_storage, user_id, ref=ref, corpus=corpus, lang=lang
-    )
+    """Resolve a UUID-and-revision reference against the current corpus snapshot.
+
+    The revision is the stored 40-character commit ID. A previous revision returns 409.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(request.state.user_claims, ref=ref, corpus=corpus, lang=lang)
 
 
 @app.get("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def get_reference_shortcode(
-    user_id: Annotated[str, Depends(require_user)],
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
     ref: str,
     corpus: str | None = None,
     url_template: str | None = None,
 ) -> dict[str, Any]:
-    return await run_in_threadpool(
-        reference,
-        corpus_storage,
-        user_id,
-        ref=ref,
-        corpus=corpus,
-        shortcode=True,
-        url_template=url_template,
+    """Render a UUID-and-revision reference as a shortcode."""
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(
+        request.state.user_claims, ref=ref, corpus=corpus, shortcode=True, url_template=url_template
     )
 
 
 @app.post("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def create_reference_shortcode(
-    body: ShortcodeCreate, user_id: Annotated[str, Depends(require_user)]
+    body: ShortcodeCreate,
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
 ) -> dict[str, Any]:
-    return await run_in_threadpool(
-        reference, corpus_storage, user_id, **body.model_dump(), shortcode=True
-    )
+    """Create a shortcode that identifies the corpus and stored revision."""
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(request.state.user_claims, **body.model_dump(), shortcode=True)
 
 
 async def _read_stored_corpus_view(
