@@ -248,8 +248,16 @@ version when one exists. Unchanged compares the endpoints and relationship,
 not imported review history. Both incoming and existing referenced corpora must
 be accessible; inaccessible data causes a 404 for the whole request. The source
 project ID and provenance are claims from the file, not verified authorship.
-The preview makes no changes and is advisory: import is not implemented yet,
-and a future apply operation must recheck access and destination versions.
+The preview makes no changes and is advisory: apply rechecks access and conflicts.
+
+After applying `project_link_import`, POST an object containing that export as
+`export` and a nonblank `reason` to
+`/v1/projects/{project_id}/references/import`. New links are imported together
+as unresolved drafts with pending review; matching links are reported unchanged.
+A conflicting link prevents the whole batch from being written. New links record
+the signed-in importer and retain source authorship, review state and provenance
+as explicitly unverified evidence in the reference. Unchanged links retain their
+existing provenance. A retry does not create duplicate revisions.
 
 After applying `project_link_publication`, a project owner or superadmin can
 POST to `/v1/projects/{project_id}/references/{reference_id}/publish` to mark an

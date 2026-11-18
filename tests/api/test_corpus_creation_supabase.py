@@ -1521,6 +1521,7 @@ def _exercise_project_linking_permissions(
         db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_import_preview.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_import.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_publication.sql")).read_text())
         db.execute(next(migrations.glob("*_project_citation_discoveries.sql")).read_text())
         db.execute(next(migrations.glob("*_managed_project_corpora.sql")).read_text())
@@ -1719,6 +1720,81 @@ def _exercise_project_linking_permissions(
         assert api.post(preview_path, json=request).status_code == 401
         assert api.post(preview_path, headers=member_headers, json=request).status_code == 404
         assert api.post(preview_path, headers=revoked_headers, json=request).status_code == 401
+        import_project = str(uuid4())
+        db.execute("INSERT INTO public.projects VALUES (%s,%s)", (import_project, actor["sub"]))
+        assert db.execute(
+            "SELECT public.corpora_save_project_link(%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                actor["sub"],
+                actor["session_id"],
+                actor["exp"],
+                import_project,
+                reference,
+                None,
+                "existing",
+                value,
+            ),
+        ).fetchone()[0] == {"status": "ok", "version": 1}
+        first, second = str(uuid4()), str(uuid4())
+
+        def revision(ref_id, relationship="core:cites"):
+            return {
+                **request["revisions"][0],
+                "reference": {**normalized, "id": ref_id, "relationship": relationship},
+            }
+
+        import_path = f"/v1/projects/{import_project}/references/import"
+
+        def import_payload(revisions):
+            return {"reason": "source import", "export": {**request, "revisions": revisions}}
+
+        with_conflict = import_payload([revision(first), revision(reference, "core:quotes")])
+        for _ in range(30):
+            response = api.post(import_path, headers=admin_headers, json=with_conflict)
+            if response.status_code != 503:
+                break
+            time.sleep(0.1)
+        assert response.status_code == 409, response.text
+        assert (
+            db.execute(
+                "SELECT count(*) FROM public.corpora_project_link_heads WHERE project_id=%s",
+                (import_project,),
+            ).fetchone()[0]
+            == 1
+        )
+        import_body = import_payload([revision(first), revision(second)])
+        assert api.post(import_path, json=import_body).status_code == 401
+        assert api.post(import_path, headers=member_headers, json=import_body).status_code == 404
+        assert api.post(import_path, headers=revoked_headers, json=import_body).status_code == 401
+        response = api.post(import_path, headers=admin_headers, json=import_body)
+        assert response.status_code == 200, response.text
+        assert {item["outcome"] for item in response.json()["items"]} == {"imported"}
+        stored = db.execute(
+            "SELECT reference FROM public.corpora_project_link_revisions "
+            "WHERE project_id=%s AND reference_id=%s",
+            (import_project, first),
+        ).fetchone()[0]
+        assert stored["review"] == "pending" and stored["publication"] == "draft"
+        assert stored["provenance"]["agent_id"] == actor["sub"]
+        assert stored["provenance"]["method"] == "project-import"
+        assert stored["provenance"]["evidence"][0].startswith("Unverified import claim: ")
+        exported = api.post(
+            f"/v1/projects/{import_project}/references/export",
+            headers=admin_headers,
+            json={"reference_ids": [first]},
+        )
+        assert exported.status_code == 200, exported.text
+        assert exported.json()["revisions"][0]["reference"]["provenance"] == stored["provenance"]
+        retry = api.post(import_path, headers=admin_headers, json=import_body)
+        assert retry.status_code == 200, retry.text
+        assert {item["outcome"] for item in retry.json()["items"]} == {"unchanged"}
+        assert (
+            db.execute(
+                "SELECT count(*) FROM public.corpora_project_link_heads WHERE project_id=%s",
+                (import_project,),
+            ).fetchone()[0]
+            == 3
+        )
         assert (
             db.execute(
                 "SELECT count(*) FROM public.corpora_project_link_revisions WHERE project_id=%s",
@@ -1810,6 +1886,89 @@ def _exercise_project_linking_permissions(
             assert future.result(timeout=5)["items"] == [
                 {"reference_id": race_id, "outcome": "new", "current_version": None}
             ]
+        first_id, second_id = sorted((str(uuid4()), str(uuid4())))
+
+        def import_candidate(ref_id):
+            imported_value = {
+                **normalized,
+                "id": ref_id,
+                "provenance": {
+                    "origin": "manual",
+                    "agent_id": member["sub"],
+                    "method": "project-import",
+                    "evidence": ["Unverified import claim: {}"],
+                },
+            }
+            return {
+                "id": ref_id,
+                "source": imported_value["source"],
+                "target": imported_value["target"],
+                "relationship": imported_value["relationship"],
+                "value": imported_value,
+            }
+
+        first_candidate, second_candidate = import_candidate(first_id), import_candidate(second_id)
+        private_race_reference = {
+            **race_reference,
+            "id": second_id,
+        }
+        with (
+            psycopg.connect(os.environ["DB_URL"], autocommit=False) as blocker,
+            psycopg.connect(os.environ["DB_URL"], autocommit=True) as writer,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            blocker.execute(
+                "SELECT id FROM public.corpora_corpus_metadata WHERE id=%s FOR UPDATE", (corpus,)
+            )
+            blocker_pid = blocker.execute("SELECT pg_backend_pid()").fetchone()[0]
+            writer_pid = writer.execute("SELECT pg_backend_pid()").fetchone()[0]
+            future = executor.submit(
+                lambda: writer.execute(
+                    "SELECT public.corpora_import_project_links(%s,%s,%s,%s,%s,%s)",
+                    (
+                        member["sub"],
+                        member["session_id"],
+                        member["exp"],
+                        project,
+                        "race import",
+                        Jsonb([first_candidate, second_candidate]),
+                    ),
+                ).fetchone()[0]
+            )
+            try:
+                for _ in range(100):
+                    if db.execute(
+                        "SELECT %s = ANY(pg_blocking_pids(%s))", (blocker_pid, writer_pid)
+                    ).fetchone()[0]:
+                        break
+                    time.sleep(0.01)
+                else:
+                    pytest.fail("Import did not reach the blocked corpus access check")
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_heads VALUES (%s,%s,1)",
+                    (project, second_id),
+                )
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_revisions "
+                    "(project_id,reference_id,version,actor_id,reason,action,source_corpus,"
+                    "target_corpus,reference) VALUES (%s,%s,1,%s,'race','edit',%s,%s,%s)",
+                    (
+                        project,
+                        second_id,
+                        actor["sub"],
+                        old_corpus,
+                        old_corpus,
+                        Jsonb(private_race_reference),
+                    ),
+                )
+            finally:
+                blocker.rollback()
+            assert future.result(timeout=5) == {"status": "not_found"}
+        assert not db.execute(
+            "SELECT EXISTS(SELECT 1 FROM public.corpora_project_link_heads "
+            "WHERE project_id=%s AND reference_id=%s)",
+            (project, first_id),
+        ).fetchone()[0]
         db.execute(
             "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
             "WHERE project_id=%s AND reference_id=%s AND version=1",

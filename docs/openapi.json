@@ -3138,6 +3138,86 @@
         "title": "LinkHistory",
         "type": "object"
       },
+      "LinkImportApply": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LinkImportApplyItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_project_id": {
+            "description": "Unverified source-project claim from the file",
+            "format": "uuid",
+            "title": "Source Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_project_id",
+          "items"
+        ],
+        "title": "LinkImportApply",
+        "type": "object"
+      },
+      "LinkImportApplyItem": {
+        "additionalProperties": false,
+        "properties": {
+          "outcome": {
+            "enum": [
+              "imported",
+              "unchanged"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reference_id",
+          "outcome",
+          "version"
+        ],
+        "title": "LinkImportApplyItem",
+        "type": "object"
+      },
+      "LinkImportApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "export": {
+            "$ref": "#/components/schemas/LinkImportPreviewRequest"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "export",
+          "reason"
+        ],
+        "title": "LinkImportApplyRequest",
+        "type": "object"
+      },
       "LinkImportPreview": {
         "additionalProperties": false,
         "properties": {
@@ -9895,6 +9975,68 @@
           }
         ],
         "summary": "Export References",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/import": {
+      "post": {
+        "description": "Atomically import new references after rechecking access and conflicts.\n\nIdentical references are left unchanged; a conflict prevents all writes.\nImported references start as unresolved drafts with pending review. Source\nauthorship and history are retained as explicitly unverified evidence.",
+        "operationId": "import_references_v1_projects__project_id__references_import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkImportApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkImportApply"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Import References",
         "tags": [
           "Project links"
         ]
