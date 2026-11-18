@@ -968,6 +968,51 @@
         "title": "CorpusDeletion",
         "type": "object"
       },
+      "CorpusEditInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "state": {
+            "enum": [
+              "admitted",
+              "executing",
+              "uncertain",
+              "completed",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "operation_id",
+          "state"
+        ],
+        "title": "CorpusEditInfo",
+        "type": "object"
+      },
       "CorpusImportInfo": {
         "additionalProperties": false,
         "properties": {
@@ -2216,6 +2261,88 @@
         "title": "LanguageRequest",
         "type": "object"
       },
+      "ManifestEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "additionalProperties": true,
+            "minProperties": 1,
+            "title": "Changes",
+            "type": "object"
+          },
+          "expected_commit": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Expected Commit",
+            "type": "string"
+          },
+          "expected_sequence": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Sequence",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_sequence",
+          "expected_commit",
+          "changes"
+        ],
+        "title": "ManifestEdit",
+        "type": "object"
+      },
+      "NodeEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Expected Commit",
+            "type": "string"
+          },
+          "expected_sequence": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Sequence",
+            "type": "integer"
+          },
+          "features": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "minProperties": 1,
+            "title": "Features",
+            "type": "object"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_sequence",
+          "expected_commit",
+          "features"
+        ],
+        "title": "NodeEdit",
+        "type": "object"
+      },
       "PurposeField": {
         "additionalProperties": true,
         "properties": {
@@ -2439,6 +2566,34 @@
           "node"
         ],
         "title": "ReferenceCreate",
+        "type": "object"
+      },
+      "RestoreEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Expected Commit",
+            "type": "string"
+          },
+          "expected_sequence": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Sequence",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_sequence",
+          "expected_commit"
+        ],
+        "title": "RestoreEdit",
         "type": "object"
       },
       "ShortcodeCreate": {
@@ -5032,6 +5187,68 @@
         ]
       }
     },
+    "/v1/corpora/{corpus_id}/edits/{operation_id}": {
+      "get": {
+        "description": "Inspect an edit without redispatching its worker.",
+        "operationId": "get_edit_v1_corpora__corpus_id__edits__operation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Get Edit",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}/imports": {
       "post": {
         "description": "Store the initial validated .corpus; use one operation UUID for identical retries.",
@@ -5322,6 +5539,66 @@
         "tags": [
           "Corpora"
         ]
+      },
+      "patch": {
+        "description": "Create a new version with changed manifest fields.",
+        "operationId": "edit_manifest_v1_corpora__corpus_id__manifest_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManifestEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Edit Manifest",
+        "tags": [
+          "Corpora"
+        ]
       }
     },
     "/v1/corpora/{corpus_id}/metadata": {
@@ -5524,6 +5801,75 @@
           {}
         ],
         "summary": "Get Node",
+        "tags": [
+          "Corpora"
+        ]
+      },
+      "patch": {
+        "description": "Create a new version with changed Text-Fabric node features.",
+        "operationId": "edit_node_v1_corpora__corpus_id__nodes__node__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "title": "Node",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Edit Node",
         "tags": [
           "Corpora"
         ]
@@ -5749,6 +6095,77 @@
           }
         ],
         "summary": "Get Corpus Versions",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/versions/{sequence}/restore": {
+      "post": {
+        "description": "Restore a previous snapshot as a new version with the current head as parent.",
+        "operationId": "restore_version_v1_corpora__corpus_id__versions__sequence__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sequence",
+            "required": true,
+            "schema": {
+              "title": "Sequence",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Restore Version",
         "tags": [
           "Corpora"
         ]
