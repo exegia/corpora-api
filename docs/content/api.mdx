@@ -17,6 +17,22 @@ The pages below are generated from the FastAPI OpenAPI schema checked into this 
 - [Convert EPUB to Text-Fabric](/api/convert_epub_v1_conversions_epub_to_tf_post)
 - [Convert PDF to TEI and Text-Fabric](/api/convert_pdf_v1_conversions_pdf_to_tf_post)
 
+## Corpus text and versions
+
+A signed-in corpus owner or superadmin can [list versions](/api/get_corpus_versions_v1_corpora__corpus_id__versions_get), then [edit a node](/api/edit_node_v1_corpora__corpus_id__nodes__node__patch) using the current version's sequence and commit SHA. Send a new operation UUID for each edit; repeat the same UUID and request to check or safely retry it.
+
+```json
+{
+  "operation_id": "00000000-0000-4000-8000-000000000001",
+  "expected_sequence": 1,
+  "expected_commit": "0123456789abcdef0123456789abcdef01234567",
+  "text_feature": "text",
+  "text": "Replacement paragraph text"
+}
+```
+
+The text feature depends on the corpus; inspect the node's features before editing. Replacement creates a new version and may change node IDs. The editor rejects a change if it cannot safely remap existing nested nodes, word attributes, links, or annotations; it also requires a default text format made from the selected feature.
+
 ## Language and service
 
 - [Detect or select language](/api/detect_language_v1_language_detect_post)

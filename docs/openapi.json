@@ -2311,34 +2311,64 @@
             "type": "integer"
           },
           "features": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "string"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "minProperties": 1,
-            "title": "Features",
-            "type": "object"
+                "minProperties": 1,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Features"
           },
           "operation_id": {
             "format": "uuid",
             "title": "Operation Id",
             "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "text_feature": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Feature"
           }
         },
         "required": [
           "operation_id",
           "expected_sequence",
-          "expected_commit",
-          "features"
+          "expected_commit"
         ],
         "title": "NodeEdit",
         "type": "object"

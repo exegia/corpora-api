@@ -444,8 +444,8 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     db,
                     monkeypatch,
                     archive,
-                    head_sha="5" * 40,
-                    version_count=4,
+                    head_sha="9" * 40,
+                    version_count=5,
                 )
                 assert api.get(history_path, headers=headers(admin)).status_code == 404
         finally:
@@ -867,9 +867,10 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
     uploads = []
 
     async def transfer(_row, sha, path, *, max_bytes, timeout, sink):
-        assert sha in ("c" * 40, "f" * 40) and path == ".corpora/source.corpus"
-        assert max_bytes == len(archive)
-        await sink(archive)
+        assert sha in ("c" * 40, "f" * 40, "5" * 40) and path == ".corpora/source.corpus"
+        selected = uploads[2] if sha == "5" * 40 else archive
+        assert max_bytes == len(selected)
+        await sink(selected)
 
     def publish(claim, _filename, data, *, slot):
         uploads.append(data)
@@ -880,9 +881,12 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
             "p_claim": str(claim.claim_id),
             "p_publication": publication,
         }
-        stage_sha, final_sha = [("d" * 40, "e" * 40), ("6" * 40, "f" * 40), ("7" * 40, "5" * 40)][
-            len(uploads) - 1
-        ]
+        stage_sha, final_sha = [
+            ("d" * 40, "e" * 40),
+            ("6" * 40, "f" * 40),
+            ("7" * 40, "5" * 40),
+            ("8" * 40, "9" * 40),
+        ][len(uploads) - 1]
         assert rpc.call("corpora_stage_version_save", {**params, "p_stage_sha": stage_sha}) is True
         if len(uploads) == 3:
             raise TimeoutError("Simulated ambiguous Hub response")
@@ -1000,11 +1004,31 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
             api.post(reconcile_path, headers={"Authorization": "Bearer " + admin[1]}).json()
             == recovered.json()
         )
-    assert len(uploads) == 3
+        text_body = {
+            "operation_id": str(uuid4()),
+            "expected_sequence": 4,
+            "expected_commit": "5" * 40,
+            "text_feature": "text",
+            "text": "We read ",
+        }
+        text_path = f"/v1/corpora/{corpus}/nodes/7"
+        text_saved = api.patch(
+            text_path, headers={"Authorization": "Bearer " + admin[1]}, json=text_body
+        )
+        assert text_saved.status_code == 201, text_saved.text
+        assert text_saved.json()["sequence"] == 5
+        assert (
+            api.patch(
+                text_path, headers={"Authorization": "Bearer " + admin[1]}, json=text_body
+            ).status_code
+            == 200
+        )
+    assert len(uploads) == 4
     assert read_archive(uploads[0], "manifest")["description"] == "Edited through the API"
     assert uploads[1] == archive
     assert read_archive(uploads[2], "manifest")["description"] == "Recovered"
-    return uploads[2]
+    assert read_archive(uploads[3], "node", node=7)["text"] == "We read "
+    return uploads[3]
 
 
 def _exercise_access_lifecycle(
@@ -1082,7 +1106,7 @@ def _exercise_access_lifecycle(
             assert result.status_code == 200, result.text
             assert result.headers["cache-control"] == "no-store"
             if view == "content":
-                assert result.json()["passages"][0]["text"] == "In the gap and out."
+                assert result.json()["passages"][0]["text"] == "We read gap and out."
                 assert [t["node"] for p in result.json()["passages"] for t in p["tokens"]] == [
                     1,
                     2,

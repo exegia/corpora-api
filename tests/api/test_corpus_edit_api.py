@@ -318,3 +318,104 @@ def test_reconcile_without_durable_stage_does_not_start_worker(configured, monke
             headers=configured.headers,
         )
     assert response.status_code == 202 and response.json()["state"] == "uncertain"
+
+
+def test_paragraph_text_edit_rebuilds_word_nodes(configured, monkeypatch):
+    from corpus_validate import edit_archive, read_archive
+
+    archive = configured.data
+    for node in (1, 3, 5):
+        archive = edit_archive(archive, node=node, features={"annotation": None})
+    configured.head.archive_size = len(archive)
+    configured.head.archive_sha256 = hashlib.sha256(archive).hexdigest()
+
+    async def transfer(_row, _sha, _path, *, sink, **_kwargs):
+        await sink(archive)
+
+    monkeypatch.setattr(edits.hub_reader, "transfer_authorized", transfer)
+    with TestClient(app.app) as api:
+        response = api.patch(
+            f"/v1/corpora/{configured.corpus}/nodes/7",
+            headers=configured.headers,
+            json={**configured.body, "text_feature": "text", "text": "Many new words here "},
+        )
+    assert response.status_code == 201, response.text
+    changed = configured.dispatches[0][2]
+    assert read_archive(changed, "node", node=9)["text"] == "Many new words here "
+    assert read_archive(changed, "node", node=10)["text"] == "and out."
+
+
+def test_node_edit_requires_exactly_one_edit_kind(configured):
+    path = f"/v1/corpora/{configured.corpus}/nodes/7"
+    with TestClient(app.app) as api:
+        assert api.patch(path, headers=configured.headers, json=configured.body).status_code == 422
+        assert (
+            api.patch(
+                path,
+                headers=configured.headers,
+                json={
+                    **configured.body,
+                    "features": {"text": "x"},
+                    "text": "x",
+                    "text_feature": "text",
+                },
+            ).status_code
+            == 422
+        )
+        assert (
+            api.patch(
+                path,
+                headers=configured.headers,
+                json={
+                    **configured.body,
+                    "text": "x",
+                },
+            ).status_code
+            == 422
+        )
+    assert not configured.calls and not configured.dispatches
+
+
+def test_feature_edit_retry_identity_is_unchanged_by_new_text_fields(configured):
+    import json
+
+    edit = edits.NodeEdit(**configured.body, features={"lemma": None})
+    old_intent = {
+        "corpus_id": str(configured.corpus),
+        "kind": "node",
+        "node": 7,
+        "request": {
+            "expected_sequence": 1,
+            "expected_commit": "a" * 40,
+            "features": {"lemma": None},
+        },
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            old_intent, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode()
+    ).hexdigest()
+    assert edits._intent(configured.corpus, "node", 7, edit) == digest
+
+
+def test_expanding_a_single_word_dispatches_all_replacement_words(configured, monkeypatch):
+    from corpus_validate import edit_archive, read_archive
+
+    archive = edit_archive(configured.data, node=1, features={"annotation": None})
+    configured.head.archive_size = len(archive)
+    configured.head.archive_sha256 = hashlib.sha256(archive).hexdigest()
+
+    async def transfer(_row, _sha, _path, *, sink, **_kwargs):
+        await sink(archive)
+
+    monkeypatch.setattr(edits.hub_reader, "transfer_authorized", transfer)
+    with TestClient(app.app) as api:
+        response = api.patch(
+            f"/v1/corpora/{configured.corpus}/nodes/1",
+            headers=configured.headers,
+            json={**configured.body, "text_feature": "text", "text": "New words "},
+        )
+    assert response.status_code == 201, response.text
+    changed = configured.dispatches[0][2]
+    assert read_archive(changed, "node", node=1)["text"] == "New "
+    assert read_archive(changed, "node", node=2)["text"] == "words "
