@@ -440,3 +440,5 @@ fixture IDs before writes, delete through the product API, verify the receipt,
 retire temporary accounts/sessions, and remove only run-specific credential files.
 Keep sanitized evidence and report incomplete cleanup. Preserve production audit
 history and permanent server configuration. See [QA testing](https://docs.exegia.co/core/qa-testing).
+
+For a new disposable Supabase development database, see the [fresh bootstrap guide](supabase/bootstrap/README.md).
