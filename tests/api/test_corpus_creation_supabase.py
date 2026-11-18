@@ -1515,10 +1515,15 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
         db.execute(next(migrations.glob("*_project_linking_ledger.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_resolution.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
         for role in ("anon", "authenticated"):
             assert not db.execute(
                 "SELECT has_function_privilege(%s,%s,'EXECUTE')",
                 (role, "public.corpora_read_current_project_link(uuid,uuid,bigint,uuid,uuid)"),
+            ).fetchone()[0]
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (role, "public.corpora_export_project_links(uuid,uuid,bigint,uuid,uuid[])"),
             ).fetchone()[0]
         assert db.execute(
             "SELECT has_function_privilege('service_role',%s,'EXECUTE')",
@@ -1723,11 +1728,38 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
         )
         assert pdf_selection.status_code == 200, pdf_selection.text
         assert pdf_selection.json()["fragments"] == ["Hello"]
+        exported = api.post(
+            link_path + "/export",
+            headers=member_headers,
+            json={"reference_ids": [pdf_ref, epub_ref]},
+        )
+        assert exported.status_code == 200, exported.text
+        entries = exported.json()["revisions"]
+        assert [entry["reference"]["id"] for entry in entries] == sorted([epub_ref, pdf_ref])
+        assert all(
+            entry["reference"]["provenance"]["agent_id"] == actor["sub"] for entry in entries
+        )
+        assert (
+            api.post(
+                link_path + "/export",
+                headers=member_headers,
+                json={"reference_ids": [pdf_ref, str(uuid4())]},
+            ).status_code
+            == 404
+        )
         db.execute(
             "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
             (corpus, member["sub"]),
         )
         assert history(member) == {"status": "not_found"}
+        assert (
+            api.post(
+                link_path + "/export",
+                headers=member_headers,
+                json={"reference_ids": [pdf_ref, epub_ref]},
+            ).status_code
+            == 404
+        )
         assert (
             api.post(
                 link_path + f"/{pdf_ref}/retrieve",

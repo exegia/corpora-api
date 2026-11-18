@@ -209,6 +209,13 @@ EPUB and PDF fragments are checked against their exact quoted text. Retrieval
 checks the current corpus revision and reports unsupported or unverifiable
 selections instead of returning guessed text.
 
+After applying `project_link_export`, a member with access to every referenced
+corpus can POST up to 10 distinct reference UUIDs to
+`/v1/projects/{project_id}/references/export`. The JSON download contains each
+current reference revision, including its provenance and review state, ordered
+by reference UUID. Export does not change publication or review state; a missing
+or inaccessible reference causes the entire request to fail.
+
 After applying `project_link_resolution`, owners and superadmins can POST to
 `/resolve` to verify both revision-pinned selections, then `/approve` to record
 approval. Text-Fabric passages and EPUB CFI ranges with exact text evidence are
