@@ -1520,6 +1520,7 @@ def _exercise_project_linking_permissions(
         db.execute(next(migrations.glob("*_project_link_resolution.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_import_preview.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_publication.sql")).read_text())
         db.execute(next(migrations.glob("*_project_citation_discoveries.sql")).read_text())
         db.execute(next(migrations.glob("*_managed_project_corpora.sql")).read_text())
@@ -1628,7 +1629,8 @@ def _exercise_project_linking_permissions(
                 "reason": "first revision",
             }
         )
-        value = Jsonb(draft_reference(body, UUID(actor["sub"])).model_dump(mode="json"))
+        normalized = draft_reference(body, UUID(actor["sub"])).model_dump(mode="json")
+        value = Jsonb(normalized)
 
         def save(user, expected=None):
             return db.execute(
@@ -1667,6 +1669,63 @@ def _exercise_project_linking_permissions(
             ).fetchone()[0]
 
         assert save(actor) == {"status": "ok", "version": 1}
+        candidate = {
+            "id": reference,
+            "source": normalized["source"],
+            "target": normalized["target"],
+            "relationship": "core:cites",
+        }
+
+        def preview(user, items):
+            return db.execute(
+                "SELECT public.corpora_preview_project_link_import(%s,%s,%s,%s,%s)",
+                (user["sub"], user["session_id"], user["exp"], project, Jsonb(items)),
+            ).fetchone()[0]
+
+        assert preview(actor, [candidate])["items"] == [
+            {"reference_id": reference, "outcome": "unchanged", "current_version": 1}
+        ]
+        changed = {**candidate, "relationship": "core:quotes"}
+        assert preview(actor, [changed])["items"][0]["outcome"] == "conflict"
+        new = {**candidate, "id": str(uuid4())}
+        assert preview(actor, [new])["items"][0] == {
+            "reference_id": new["id"],
+            "outcome": "new",
+            "current_version": None,
+        }
+        assert preview(member, [candidate]) == {"status": "not_found"}
+        request = {
+            "schema_version": "1",
+            "project_id": str(uuid4()),
+            "revisions": [
+                {
+                    "version": 1,
+                    "actor_id": actor["sub"],
+                    "recorded_at": "2026-01-01T00:00:00Z",
+                    "reason": "source export",
+                    "action": "edit",
+                    "reference": normalized,
+                }
+            ],
+        }
+        preview_path = f"/v1/projects/{project}/references/import-preview"
+        for _ in range(30):
+            response = api.post(preview_path, headers=admin_headers, json=request)
+            if response.status_code != 503:
+                break
+            time.sleep(0.1)
+        assert response.status_code == 200, response.text
+        assert response.json()["items"][0]["outcome"] == "unchanged"
+        assert api.post(preview_path, json=request).status_code == 401
+        assert api.post(preview_path, headers=member_headers, json=request).status_code == 404
+        assert api.post(preview_path, headers=revoked_headers, json=request).status_code == 401
+        assert (
+            db.execute(
+                "SELECT count(*) FROM public.corpora_project_link_revisions WHERE project_id=%s",
+                (project,),
+            ).fetchone()[0]
+            == 1
+        )
         assert save(actor) == {"status": "conflict"}
         assert save(member, 1) == {"status": "not_found"}
         assert history(member)["revisions"][0]["version"] == 1
@@ -1679,6 +1738,78 @@ def _exercise_project_linking_permissions(
         # Current resolution must not require access to a corpus that only
         # appears in an older ledger revision.
         db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (member["sub"], project))
+        restricted = {**candidate, "target": {**candidate["target"], "package_id": old_corpus}}
+        assert preview(member, [restricted]) == {"status": "not_found"}
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            (old_corpus, project, reference),
+        )
+        assert preview(member, [candidate]) == {"status": "not_found"}
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            (corpus, project, reference),
+        )
+        # A previously absent head can be created while the preview is waiting
+        # on a corpus lock. The result must use the authorized snapshot, not the
+        # newly created head whose private corpus was never checked.
+        import psycopg
+
+        race_id = str(uuid4())
+        race_candidate = {**candidate, "id": race_id}
+        race_reference = {
+            **normalized,
+            "id": race_id,
+            "source": {**normalized["source"], "package_id": old_corpus},
+            "target": {**normalized["target"], "package_id": old_corpus},
+        }
+        with (
+            psycopg.connect(os.environ["DB_URL"], autocommit=False) as blocker,
+            psycopg.connect(os.environ["DB_URL"], autocommit=True) as reader,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            blocker.execute(
+                "SELECT id FROM public.corpora_corpus_metadata WHERE id=%s FOR UPDATE", (corpus,)
+            )
+            blocker_pid = blocker.execute("SELECT pg_backend_pid()").fetchone()[0]
+            reader_pid = reader.execute("SELECT pg_backend_pid()").fetchone()[0]
+            future = executor.submit(
+                lambda: reader.execute(
+                    "SELECT public.corpora_preview_project_link_import(%s,%s,%s,%s,%s)",
+                    (
+                        member["sub"],
+                        member["session_id"],
+                        member["exp"],
+                        project,
+                        Jsonb([race_candidate]),
+                    ),
+                ).fetchone()[0]
+            )
+            try:
+                for _ in range(100):
+                    if db.execute(
+                        "SELECT %s = ANY(pg_blocking_pids(%s))", (blocker_pid, reader_pid)
+                    ).fetchone()[0]:
+                        break
+                    time.sleep(0.01)
+                else:
+                    pytest.fail("Preview did not reach the blocked corpus access check")
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_heads VALUES (%s,%s,1)",
+                    (project, race_id),
+                )
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_revisions "
+                    "(project_id,reference_id,version,actor_id,reason,action,source_corpus,"
+                    "target_corpus,reference) VALUES (%s,%s,1,%s,'race','edit',%s,%s,%s)",
+                    (project, race_id, actor["sub"], old_corpus, old_corpus, Jsonb(race_reference)),
+                )
+            finally:
+                blocker.rollback()
+            assert future.result(timeout=5)["items"] == [
+                {"reference_id": race_id, "outcome": "new", "current_version": None}
+            ]
         db.execute(
             "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
             "WHERE project_id=%s AND reference_id=%s AND version=1",
