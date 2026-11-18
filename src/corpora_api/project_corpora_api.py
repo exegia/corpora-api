@@ -146,6 +146,6 @@ async def unlink_project_corpus(
     response: Response,
     _user: str = Depends(require_user),
 ) -> ProjectCorpusReceipt:
-    """Unlink an accessible corpus as the project owner or superadmin."""
+    """Idempotently unlink a corpus as the project owner or superadmin."""
     response.headers["Cache-Control"] = "no-store"
     return await run_in_threadpool(_set, request.state.user_claims, project_id, corpus_id, False)

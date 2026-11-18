@@ -1566,6 +1566,13 @@ def _exercise_project_linking_permissions(
             (corpus, member["sub"]),
         )
         assert api.get(corpus_path, headers=member_headers).json()["items"] == []
+        # A project owner who loses corpus access can still clean up its link.
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (member["sub"], project))
+        invisible_delete = api.delete(corpus_path + "/" + corpus, headers=member_headers)
+        assert invisible_delete.status_code == 200 and invisible_delete.json()["linked"] is False
+        unknown_delete = api.delete(corpus_path + "/" + str(uuid4()), headers=member_headers)
+        assert unknown_delete.status_code == 200 and unknown_delete.json()["linked"] is False
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (actor["sub"], project))
         db.execute(
             "INSERT INTO public.corpora_corpus_readers(corpus_id,user_id,added_by) "
             "VALUES (%s,%s,%s)",

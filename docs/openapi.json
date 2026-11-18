@@ -9056,7 +9056,7 @@
     },
     "/v1/projects/{project_id}/corpora/{corpus_id}": {
       "delete": {
-        "description": "Unlink an accessible corpus as the project owner or superadmin.",
+        "description": "Idempotently unlink a corpus as the project owner or superadmin.",
         "operationId": "unlink_project_corpus_v1_projects__project_id__corpora__corpus_id__delete",
         "parameters": [
           {

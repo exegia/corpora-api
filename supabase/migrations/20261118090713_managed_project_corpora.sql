@@ -19,15 +19,17 @@ BEGIN
     IF NOT corpora_session_guard.project_link_access(p_actor,p_session,p_token_exp,p_project,true) THEN
         RETURN jsonb_build_object('status','not_found');
     END IF;
-    access := corpora_session_guard.read_access(p_actor,p_session,p_token_exp,p_corpus);
-    IF access->>'status' IS DISTINCT FROM 'ok' OR access->'head' IS NULL
-       OR access->'head' = 'null'::jsonb OR access#>>'{row,state}' IS DISTINCT FROM 'ready' THEN
-        RETURN jsonb_build_object('status','not_found');
-    END IF;
     IF p_present THEN
+        access := corpora_session_guard.read_access(p_actor,p_session,p_token_exp,p_corpus);
+        IF access->>'status' IS DISTINCT FROM 'ok' OR access->'head' IS NULL
+           OR access->'head' = 'null'::jsonb OR access#>>'{row,state}' IS DISTINCT FROM 'ready' THEN
+            RETURN jsonb_build_object('status','not_found');
+        END IF;
         INSERT INTO public.corpora_project_managed_corpora(project_id,corpus_id,linked_by)
             VALUES(p_project,p_corpus,p_actor) ON CONFLICT DO NOTHING;
     ELSE
+        -- Return the same receipt whether or not the link exists. A manager can
+        -- remove an inaccessible or deleted corpus without learning if it exists.
         DELETE FROM public.corpora_project_managed_corpora
             WHERE project_id=p_project AND corpus_id=p_corpus;
     END IF;
