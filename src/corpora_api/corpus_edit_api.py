@@ -335,3 +335,47 @@ async def get_edit(
     )
     response.headers["Cache-Control"] = "no-store"
     return _info(value, corpus_id, operation_id)
+
+
+@router.post("/{corpus_id}/edits/{operation_id}/reconcile", response_model=CorpusEditInfo)
+async def reconcile_edit(
+    corpus_id: UUID,
+    operation_id: UUID,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> CorpusEditInfo:
+    """Verify an uncertain published result without redispatching a Hub write."""
+    from corpora_api.corpus_import_worker import run_reconciliation_worker
+    from corpora_api.corpus_save_reconcile import SaveReconciliationTarget
+
+    require_creation_config(creating=True)
+    rpc = CreationRPC()
+    identity = {
+        **_session(request.state.user_claims),
+        "p_corpus": str(corpus_id),
+        "p_operation": str(operation_id),
+    }
+    with ImportSlot() as slot:
+        value = await run_in_threadpool(rpc.call, "corpora_get_save_reconciliation", identity)
+        if isinstance(value, dict) and value.get("status") == "ready":
+            try:
+                target = SaveReconciliationTarget.model_validate(value)
+                if target.corpus_id != corpus_id or target.operation_id != operation_id:
+                    raise ValueError("Mismatched reconciliation target")
+            except (TypeError, ValueError):
+                raise CorpusMetadataError("Invalid reconciliation target") from None
+            try:
+                await run_in_threadpool(
+                    run_reconciliation_worker, target.model_dump(mode="json"), slot=slot
+                )
+            except Exception:
+                # A missing or changing ref is not proof the original write failed.
+                pass
+            value = await run_in_threadpool(rpc.call, "corpora_get_version_save", identity)
+        elif value == {"status": "unresolved"}:
+            value = await run_in_threadpool(rpc.call, "corpora_get_version_save", identity)
+        info = _info(value, corpus_id, operation_id)
+    response.status_code = 200 if info.state == "completed" else 202
+    response.headers["Cache-Control"] = "no-store"
+    return info

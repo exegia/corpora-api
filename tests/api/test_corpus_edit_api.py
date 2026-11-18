@@ -242,3 +242,79 @@ def test_concurrent_identical_retry_finds_completed_edit_after_head_moves(config
         )
     assert result.status_code == 200 and result.json()["sequence"] == 2
     assert not configured.calls and not configured.dispatches
+
+
+def test_reconcile_unresolved_candidate_keeps_uncertain_state(configured, monkeypatch):
+    from corpora_api import corpus_import_worker
+
+    claim, publication = uuid4(), uuid4()
+    target = {
+        "status": "ready",
+        "corpus_id": str(configured.corpus),
+        "operation_id": str(configured.operation),
+        "claim_id": str(claim),
+        "publication_claim": str(publication),
+        "repo_id": f"fixture/corpus-{configured.corpus}",
+        "repo_type": "dataset",
+        "expected_sequence": 1,
+        "expected_parent_sha": "a" * 40,
+        "input_sha256": "b" * 64,
+        "archive_size": 10,
+        "stage_sha": "c" * 40,
+        "stage_path": f".corpora-staging/{configured.operation}/{claim}.corpus",
+    }
+
+    def rpc(_self, name, _params):
+        if name == "corpora_get_save_reconciliation":
+            return target
+        assert name == "corpora_get_version_save"
+        return {
+            "status": "existing",
+            "corpus_id": str(configured.corpus),
+            "operation_id": str(configured.operation),
+            "state": "uncertain",
+            "sequence": None,
+        }
+
+    def unavailable(*_args, **_kwargs):
+        raise TimeoutError("Missing or changing Hub ref")
+
+    monkeypatch.setattr(edits.CreationRPC, "call", rpc)
+    monkeypatch.setattr(corpus_import_worker, "run_reconciliation_worker", unavailable)
+    with TestClient(app.app) as api:
+        response = api.post(
+            f"/v1/corpora/{configured.corpus}/edits/{configured.operation}/reconcile",
+            headers=configured.headers,
+        )
+    assert response.status_code == 202
+    assert response.json()["state"] == "uncertain"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_reconcile_without_durable_stage_does_not_start_worker(configured, monkeypatch):
+    from corpora_api import corpus_import_worker
+
+    def rpc(_self, name, _params):
+        if name == "corpora_get_save_reconciliation":
+            return {"status": "unresolved"}
+        assert name == "corpora_get_version_save"
+        return {
+            "status": "existing",
+            "corpus_id": str(configured.corpus),
+            "operation_id": str(configured.operation),
+            "state": "uncertain",
+            "sequence": None,
+        }
+
+    monkeypatch.setattr(edits.CreationRPC, "call", rpc)
+    monkeypatch.setattr(
+        corpus_import_worker,
+        "run_reconciliation_worker",
+        lambda *_a, **_kw: pytest.fail("Must not restart a worker"),
+    )
+    with TestClient(app.app) as api:
+        response = api.post(
+            f"/v1/corpora/{configured.corpus}/edits/{configured.operation}/reconcile",
+            headers=configured.headers,
+        )
+    assert response.status_code == 202 and response.json()["state"] == "uncertain"
