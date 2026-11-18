@@ -178,6 +178,7 @@ def test_document_and_bucket_access_are_owner_scoped():
             )
             db.execute("INSERT INTO public.licences VALUES ('test-catalogue','Test')")
             db.execute(next(migrations.glob("*_secure_corpus_documents.sql")).read_text())
+            db.execute(next(migrations.glob("*_deny_revoked_storage_reads.sql")).read_text())
             deadline = time.monotonic() + 10
             docs = url + "/rest/v1/corpus_documents"
             while client.get(docs, headers=headers(owner)).status_code != 200:
@@ -288,7 +289,12 @@ def test_document_and_bucket_access_are_owner_scoped():
                 == 204
             )
             assert client.get(docs, headers=headers(owner)).status_code >= 400
-            assert client.get(object_url(paths[1]), headers=headers(owner)).status_code != 200
+            assert client.get(object_url(paths[1]), headers=headers(owner)).status_code in (
+                400,
+                401,
+                403,
+                404,
+            )
             assert client.post(docs, headers=headers(owner), json=payload).status_code >= 400
         finally:
             db.execute("ROLLBACK")
@@ -310,6 +316,7 @@ def test_document_and_bucket_access_are_owner_scoped():
             for function in (
                 "corpora_legacy_document_editable(uuid)",
                 "corpora_legacy_superadmin_readable()",
+                "corpora_legacy_storage_session_readable()",
                 "corpora_directory_reader()",
                 "corpora_project_superadmin()",
                 "corpora_project_actor()",
