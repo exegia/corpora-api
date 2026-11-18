@@ -197,6 +197,13 @@ may change them; a named agreement is not verified personal consent. Existing
 Corpora Web project views need the managed-corpus
 integration tracked in exegia/corpora-web#125.
 
+After applying `secure_corpus_documents`, signed-in users own new legacy
+document records and private-bucket uploads; superadmins can manage them.
+Existing document records remain unassigned until a superadmin verifies and
+claims them. The Storage object owner may read their own existing object, but
+historical anonymous access means its integrity must be checked independently.
+The public licence catalogue remains readable; only superadmins may change it.
+
 After applying `project_linking_ledger`, project owners and superadmins can
 save a draft with `POST /v1/projects/{project_id}/references`. Each endpoint
 requires a corpus UUID, full immutable repository commit, asset path and exact
