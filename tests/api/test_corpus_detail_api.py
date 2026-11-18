@@ -266,6 +266,14 @@ def test_references_round_trip_the_authorized_corpus_uuid(fixture):
         ).status_code
         == 400
     )
+    assert (
+        client.get(
+            "/v1/refs/resolve",
+            params={"ref": f"@{SHA}/Mini!word1", "corpus": corpus},
+            headers=headers,
+        ).status_code
+        == 400
+    )
     state["access"]["head"]["commit_sha"] = "b" * 40
     before = len(state["requests"])
     assert (

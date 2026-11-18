@@ -33,7 +33,11 @@ def _selected_corpus(
             else:
                 parsed = tfref.parse(ref)
                 embedded, revision = parsed.corpus, parsed.version
-            if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            if (
+                not embedded
+                or not isinstance(revision, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", revision)
+            ):
                 raise ValueError("Reference must name a revision")
         selected = UUID(str(corpus)) if corpus is not None else UUID(str(embedded))
         if embedded is not None and UUID(str(embedded)) != selected:
