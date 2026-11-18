@@ -87,3 +87,30 @@ def test_project_corpus_pages_validate_order_and_bounds(context, monkeypatch):
     result["rows"] = [row(first) | {"linked": False}]
     assert client.get(path, headers=headers).status_code == 503
     assert client.get(path, headers=headers, params={"limit": 101}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://corpora.exegia.co",
+        "https://staging.corpora-apps.vercel.app",
+        "http://localhost:5173",
+    ],
+)
+def test_web_corpus_preflight_allows_only_configured_origins(context, origin):
+    client, project, corpus, _ = context
+    response = client.options(
+        f"/v1/projects/{project}/corpora/{corpus}",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    denied = client.options(
+        f"/v1/projects/{project}/corpora/{corpus}",
+        headers={"Origin": "https://untrusted.example", "Access-Control-Request-Method": "PUT"},
+    )
+    assert "access-control-allow-origin" not in denied.headers
