@@ -1,4 +1,5 @@
 import importlib
+import json
 import time
 from uuid import uuid4
 
@@ -311,5 +312,80 @@ def test_import_preview_is_read_only_and_validates_authorization_and_receipts(mo
     assert client.post(path, headers=headers, json=invalid).status_code == 422
     monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "not_found"})
     assert client.post(path, headers=headers, json=payload).status_code == 404
+    monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "ok", "items": []})
+    assert client.post(path, headers=headers, json=payload).status_code == 503
+
+
+def test_import_records_unverified_source_claims_and_requires_valid_receipts(monkeypatch):
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    body, actor = sample()
+    project, source_project, claimed_actor = uuid4(), uuid4(), uuid4()
+    claims = {"sub": str(actor), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
+    original = draft_reference(LinkSave.model_validate(body), claimed_actor).model_dump(mode="json")
+    original["review"] = "approved"
+    original["publication"] = "published"
+    payload = {
+        "reason": "Import reviewed links",
+        "export": {
+            "schema_version": "1",
+            "project_id": str(source_project),
+            "revisions": [
+                {
+                    "version": 7,
+                    "actor_id": str(claimed_actor),
+                    "recorded_at": "2026-01-01T00:00:00Z",
+                    "reason": "original",
+                    "action": "publish",
+                    "reference": original,
+                }
+            ],
+        },
+    }
+    captured = []
+
+    def rpc(_self, name, params):
+        assert name == "corpora_import_project_links"
+        captured.append(params)
+        return {
+            "status": "ok",
+            "items": [{"reference_id": body["reference_id"], "outcome": "imported", "version": 1}],
+        }
+
+    monkeypatch.setattr(links.CreationRPC, "call", rpc)
+    client = TestClient(app_module.app)
+    path = f"/v1/projects/{project}/references/import"
+    headers = {"Authorization": "Bearer valid"}
+    assert client.post(path, json=payload).status_code == 401
+    response = client.post(path, headers=headers, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    imported = captured[0]["p_items"][0]["value"]
+    assert (imported["resolution"], imported["review"], imported["publication"]) == (
+        "unresolved",
+        "pending",
+        "draft",
+    )
+    provenance = imported["provenance"]
+    assert provenance["agent_id"] == str(actor) and provenance["method"] == "project-import"
+    prefix = "Unverified import claim: "
+    assert provenance["evidence"][0].startswith(prefix)
+    claim = json.loads(provenance["evidence"][0][len(prefix) :])
+    assert claim["source_project_id"] == str(source_project)
+    assert claim["actor_id"] == str(claimed_actor) and claim["version"] == 7
+    assert claim["provenance"] == original["provenance"]
+    assert claim["publication"] == "published" and claim["review"] == "approved"
+    monkeypatch.setattr(
+        links.CreationRPC,
+        "call",
+        lambda *_: {
+            "status": "ok",
+            "items": [{"reference_id": body["reference_id"], "outcome": "imported", "version": 2}],
+        },
+    )
+    assert client.post(path, headers=headers, json=payload).status_code == 503
+    monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "conflict"})
+    assert client.post(path, headers=headers, json=payload).status_code == 409
     monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "ok", "items": []})
     assert client.post(path, headers=headers, json=payload).status_code == 503

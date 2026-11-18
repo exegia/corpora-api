@@ -4,6 +4,7 @@ import json
 from typing import Any, Literal
 from uuid import UUID
 
+from corpora_linking import Provenance, Reference
 from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -108,6 +109,39 @@ class LinkImportPreview(BaseModel):
     project_id: UUID
     source_project_id: UUID = Field(description="Unverified source-project claim from the file")
     items: list[LinkImportPreviewItem]
+
+
+class LinkImportApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    export: LinkImportPreviewRequest
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def nonempty_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Reason cannot be blank")
+        return value
+
+
+class LinkImportApplyItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reference_id: UUID
+    outcome: Literal["imported", "unchanged"]
+    version: int = Field(strict=True, ge=1)
+
+    @model_validator(mode="after")
+    def valid_version(self) -> "LinkImportApplyItem":
+        if self.outcome == "imported" and self.version != 1:
+            raise ValueError("Newly imported references start at version 1")
+        return self
+
+
+class LinkImportApply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: UUID
+    source_project_id: UUID = Field(description="Unverified source-project claim from the file")
+    items: list[LinkImportApplyItem]
 
 
 def _call(name: str, params: dict[str, Any]) -> Any:
@@ -319,6 +353,92 @@ async def preview_reference_import(
         raise HTTPException(503, "Project linking is unavailable") from None
     response.headers["Cache-Control"] = "no-store"
     return LinkImportPreview(project_id=project_id, source_project_id=body.project_id, items=items)
+
+
+@router.post("/{project_id}/references/import", response_model=LinkImportApply)
+async def import_references(
+    project_id: UUID,
+    body: LinkImportApplyRequest,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> LinkImportApply:
+    """Atomically import new references after rechecking access and conflicts.
+
+    Identical references are left unchanged; a conflict prevents all writes.
+    Imported references start as unresolved drafts with pending review. Source
+    authorship and history are retained as explicitly unverified evidence.
+    """
+    actor = str(UUID(request.state.user_claims["sub"]))
+    candidates = []
+    for row in body.export.revisions:
+        original = row.model_dump(mode="json")
+        claim = {
+            "source_project_id": str(body.export.project_id),
+            "version": original["version"],
+            "actor_id": original["actor_id"],
+            "recorded_at": original["recorded_at"],
+            "reason": original["reason"],
+            "action": original["action"],
+            "provenance": original["reference"]["provenance"],
+            "resolution": original["reference"]["resolution"],
+            "review": original["reference"]["review"],
+            "publication": original["reference"]["publication"],
+        }
+        reference = Reference(
+            id=row.reference.id,
+            source=row.reference.source,
+            target=row.reference.target,
+            relationship=row.reference.relationship,
+            provenance=Provenance(
+                origin="manual",
+                agent_id=actor,
+                method="project-import",
+                evidence=["Unverified import claim: " + json.dumps(claim, ensure_ascii=False)],
+            ),
+        ).model_dump(mode="json")
+        if len(json.dumps(reference, ensure_ascii=False).encode()) > 32768:
+            raise HTTPException(422, "Imported reference exceeds the size limit")
+        candidates.append(
+            {
+                "id": str(row.reference.id),
+                "source": reference["source"],
+                "target": reference["target"],
+                "relationship": reference["relationship"],
+                "value": reference,
+            }
+        )
+    if len(json.dumps(candidates, ensure_ascii=False).encode()) > 300_000:
+        raise HTTPException(422, "Import batch exceeds the size limit")
+    value = await run_in_threadpool(
+        _call,
+        "corpora_import_project_links",
+        {
+            **_session(request.state.user_claims),
+            "p_project": str(project_id),
+            "p_reason": body.reason,
+            "p_items": candidates,
+        },
+    )
+    _status(value)
+    try:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"status", "items"}
+            or value["status"] != "ok"
+        ):
+            raise ValueError("Invalid import receipt")
+        items = [LinkImportApplyItem.model_validate(item) for item in value["items"]]
+        if [item.reference_id for item in items] != sorted(
+            row.reference.id for row in body.export.revisions
+        ):
+            raise ValueError("Mismatched import receipt")
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(503, "Project linking is unavailable") from None
+    response.headers["Cache-Control"] = "no-store"
+    return LinkImportApply(
+        project_id=project_id, source_project_id=body.export.project_id, items=items
+    )
 
 
 @router.post("/{project_id}/references/{reference_id}/retrieve", response_model=RetrievedSelection)
