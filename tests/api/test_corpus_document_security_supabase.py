@@ -31,6 +31,7 @@ def test_document_and_bucket_access_are_owner_scoped():
         "anon update project corpora",
         "anon upload project corpora",
         "test_broad_storage",
+        "corpora_private_objects_operation_guard",
         "corpora_private_objects_read",
         "corpora_private_objects_insert",
         "corpora_private_objects_update",
@@ -181,7 +182,7 @@ def test_document_and_bucket_access_are_owner_scoped():
             db.execute(next(migrations.glob("*_deny_revoked_storage_reads.sql")).read_text())
             deadline = time.monotonic() + 10
             docs = url + "/rest/v1/corpus_documents"
-            while client.get(docs, headers=headers(owner)).status_code != 200:
+            while client.get(docs + "?select=owner_id", headers=headers(owner)).status_code != 200:
                 assert time.monotonic() < deadline
                 time.sleep(0.2)
             assert client.get(docs, headers=headers()).json() == []
@@ -195,10 +196,15 @@ def test_document_and_bucket_access_are_owner_scoped():
             )
             payload = {"name": "owned", "path": paths[1]}
             assert client.post(docs, headers=headers(), json=payload).status_code in (401, 403)
-            forged = client.post(
-                docs, headers=headers(other), json={**payload, "owner_id": owner[0]}
-            )
-            assert forged.status_code in (401, 403)
+            while True:
+                forged = client.post(
+                    docs, headers=headers(other), json={**payload, "owner_id": owner[0]}
+                )
+                if forged.status_code != 400 or "PGRST204" not in forged.text:
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.2)
+            assert forged.status_code in (401, 403), forged.text
             document = client.post(docs, headers=headers(owner), json=payload)
             assert document.status_code == 201, document.text
             document_id = document.json()[0]["id"]
@@ -280,6 +286,38 @@ def test_document_and_bucket_access_are_owner_scoped():
                 403,
                 404,
             )
+            issued = client.post(
+                url + "/storage/v1/object/sign/project-corpora/" + paths[1],
+                headers=headers(owner),
+                json={"expiresIn": 60},
+            )
+            assert issued.status_code == 200, issued.text
+            old_signed_url = url + "/storage/v1" + issued.json()["signedURL"]
+            # Cached direct downloads do not recheck revoked sessions. Prevent
+            # direct reads and URL signing while retaining owner uploads/deletes.
+            with db.transaction():
+                db.execute(next(migrations.glob("*_restrict_legacy_bucket_reads.sql")).read_text())
+            assert client.get(object_url(paths[1]), headers=headers(owner)).status_code != 200
+            assert client.get(object_url(paths[1]), headers=headers(admin)).status_code != 200
+            assert client.get(object_url(paths[1]), headers=service_headers).content == b"updated"
+            signed = client.post(
+                url + "/storage/v1/object/sign/project-corpora/" + paths[1],
+                headers=headers(owner),
+                json={"expiresIn": 60},
+            )
+            assert signed.status_code != 200
+            # Existing signed URLs are independent credentials and remain valid.
+            # Their signing key or object path must be separately revoked.
+            old_signed = client.get(old_signed_url)
+            assert old_signed.status_code == 200
+            replaced = client.post(
+                object_url(paths[1]),
+                headers={**headers(owner), "x-upsert": "true"},
+                content=b"replacement",
+            )
+            assert replaced.status_code in (200, 201), replaced.text
+            removed = client.delete(object_url(paths[1]), headers=headers(owner))
+            assert removed.status_code in (200, 204), removed.text
             claimed = client.patch(
                 docs + "?id=eq." + unowned, headers=headers(admin), json={"owner_id": owner[0]}
             )
