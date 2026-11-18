@@ -1,9 +1,13 @@
 import hashlib
 import io
 import zipfile
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
+from huggingface_hub import CommitOperationDelete
 
+from corpora_api import corpus_hub_publish as hub_publish
 from corpora_api.corpus_archive_inventory import inventory_corpus_archive
 from corpora_api.corpus_archive_prepare import PreparedCorpusArchive
 from corpora_api.corpus_git_pack import GitObject
@@ -15,6 +19,7 @@ from corpora_api.corpus_hub_publish import (
     verify_downloaded_candidate,
 )
 from corpora_api.corpus_hub_stage import CorpusStageError
+from corpora_api.corpus_publication_claim import CorpusPublicationClaim
 
 
 def prepared(extra=None, *, cache=True):
@@ -152,6 +157,54 @@ def candidate(files, *, parent="a" * 40, lfs=frozenset()):
     )
     objects[commit.oid()] = commit
     return objects, commit.oid()
+
+
+def test_subsequent_publication_removes_old_files_and_attests_parent(monkeypatch):
+    corpus, operation, claim_id, publication = (uuid4() for _ in range(4))
+    previous = prepared({"tf/removed.tf": b"removed"})
+    current = prepared({"tf/added.tf": b"added"})
+    objects, sha = candidate(publication_files(current))
+    repo = f"fixture/corpus-{corpus}"
+    stage = SimpleNamespace(
+        corpus_id=corpus,
+        operation_id=operation,
+        claim_id=claim_id,
+        repo_id=repo,
+        repo_type="dataset",
+        input_format="corpus",
+        archive_sha256=current.inventory.archive_sha256,
+        archive_size=current.inventory.archive_size,
+        requested_base_sha="a" * 40,
+    )
+    operations = []
+
+    class API:
+        endpoint = "https://huggingface.co"
+
+        def repo_info(self, *_args, revision, **_kwargs):
+            return SimpleNamespace(id=repo, private=True, sha=revision)
+
+        def create_branch(self, *_args, **_kwargs):
+            pass
+
+        def create_commit(self, _repo, changes, **kwargs):
+            operations.extend(changes)
+            assert kwargs["parent_commit"] == "a" * 40
+            return SimpleNamespace(oid=sha)
+
+    monkeypatch.setenv("HF_CORPUS_ORGANIZATION", "fixture")
+    monkeypatch.setattr(hub_publish, "download_commit_pack", lambda *_a, **_kw: None)
+    monkeypatch.setattr(hub_publish, "decode_git_pack", lambda *_: objects)
+    publisher = hub_publish.CorpusHubPublisher(API(), None, "placeholder")
+    monkeypatch.setattr(publisher, "_check_private_ref", lambda *_: None)
+    attestation = publisher.publish(
+        CorpusPublicationClaim(stage, publication), current, deadline=100, previous=previous
+    )
+    assert [op.path_in_repo for op in operations if isinstance(op, CommitOperationDelete)] == [
+        "tf/removed.tf"
+    ]
+    assert attestation.parent_sha == "a" * 40
+    assert attestation.commit_sha == sha
 
 
 def test_layout_keeps_original_bytes_and_adds_managed_archive():

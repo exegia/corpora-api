@@ -102,6 +102,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_initial_import",
                 "corpus_access_lifecycle",
                 "corpus_version_history",
+                "corpus_version_save",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -127,7 +128,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 )
                 if (
                     response.status_code == 200
-                    and "/rpc/corpora_list_corpus_versions" in response.json().get("paths", {})
+                    and "/rpc/corpora_begin_version_save" in response.json().get("paths", {})
                 ):
                     break
                 assert time.monotonic() < deadline
@@ -313,6 +314,12 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                         json={**params, "p_before": None, "p_limit": 10},
                     )
                     assert denied_history.status_code in (401, 403, 404)
+                    denied_save = auth.post(
+                        url + "/rest/v1/rpc/corpora_version_save_base",
+                        headers={"apikey": anon, "Authorization": "Bearer " + token},
+                        json={"p_operation": str(uuid4()), "p_claim": str(uuid4())},
+                    )
+                    assert denied_save.status_code in (401, 403, 404)
                 for role in ("anon", "authenticated", "service_role"):
                     for table in (
                         "auth.sessions",
@@ -431,6 +438,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
             # Empty local registry was asserted above; remove only its fixture schema.
             db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
+                "version_saves",
                 "deletions",
                 "access",
                 "imports",
@@ -587,6 +595,94 @@ def _exercise_history_paging(api, db, owner, foreign, admin):
     ).json()
     assert [version["sequence"] for version in second["versions"]] == [1]
     assert second["next_before"] is None
+    rpc = creation.CreationRPC()
+    operation = str(uuid4())
+    params = {
+        **creation._session(owner[0]),
+        "p_corpus": corpus,
+        "p_operation": operation,
+        "p_sequence": 3,
+        "p_parent": "3" * 40,
+        "p_digest": "f" * 64,
+        "p_size": 123,
+    }
+    assert rpc.call("corpora_begin_version_save", {**params, **creation._session(foreign[0])}) == {
+        "status": "not_found"
+    }
+    barrier = threading.Barrier(2)
+
+    def begin(_):
+        barrier.wait(timeout=5)
+        return creation.CreationRPC().call("corpora_begin_version_save", params)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(begin, range(2)))
+    assert sorted(result["status"] for result in results) == ["claimed", "existing"]
+    claim = next(result["claim_id"] for result in results if result["status"] == "claimed")
+    assert rpc.call("corpora_begin_version_save", {**params, "p_size": 124})["status"] == "conflict"
+    base = rpc.call("corpora_version_save_base", {"p_operation": operation, "p_claim": claim})
+    assert base["sequence"] == 3 and base["commit_sha"] == "3" * 40
+    assert base["archive_size"] == 100 and base["archive_sha256"] == "e" * 64
+    assert (
+        rpc.call(
+            "corpora_version_save_base",
+            {
+                "p_operation": operation,
+                "p_claim": str(uuid4()),
+            },
+        )
+        is None
+    )
+    publication = str(uuid4())
+    staged = {
+        "p_operation": operation,
+        "p_claim": claim,
+        "p_stage_sha": "9" * 40,
+        "p_publication": publication,
+    }
+    assert rpc.call("corpora_stage_version_save", staged) is True
+    assert rpc.call("corpora_stage_version_save", staged) is False
+    completed = {
+        "p_operation": operation,
+        "p_claim": claim,
+        "p_publication": publication,
+        "p_sha": "4" * 40,
+    }
+    assert rpc.call("corpora_complete_version_save", completed) is True
+    assert rpc.call("corpora_complete_version_save", completed) is True
+    assert rpc.call("corpora_complete_version_save", {**completed, "p_sha": "5" * 40}) is False
+    assert rpc.call("corpora_find_version_save_result", completed) is True
+    access = rpc.call(
+        "corpora_read_corpus_access",
+        {
+            **creation._session(owner[0]),
+            "p_corpus": corpus,
+        },
+    )
+    assert access["head"]["sequence"] == 4
+    assert access["head"]["archive_size"] == 123
+    assert access["head"]["archive_sha256"] == "f" * 64
+    assert api.get(path, headers=headers(owner)).json()["current_sequence"] == 4
+    assert (
+        rpc.call(
+            "corpora_begin_version_save",
+            {
+                **params,
+                "p_operation": str(uuid4()),
+            },
+        )["status"]
+        == "conflict"
+    )
+    assert (
+        rpc.call(
+            "corpora_version_save_base",
+            {
+                "p_operation": operation,
+                "p_claim": claim,
+            },
+        )
+        is None
+    )
     db.execute(
         "UPDATE public.corpora_corpus_access SET visibility='private',deleted_at=now() "
         "WHERE corpus_id=%s",
