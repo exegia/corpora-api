@@ -64,6 +64,7 @@ def case(extra=None):
 def test_valid_epub_selection_is_verified_in_killable_worker():
     archive, endpoint = case()
     assert run_corpus(archive, "verify_epub", raw_endpoint=endpoint) == {"verified": True}
+    assert run_corpus(archive, "retrieve_epub", raw_endpoint=endpoint) == {"text": "John"}
 
 
 @pytest.mark.parametrize("alter", ["quote", "href", "missing", "utf16"])

@@ -16,7 +16,7 @@ from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.project_link_models import LinkEndpoint
 
 
-async def verify_document(claims: Any, endpoint: LinkEndpoint, operation: str) -> None:
+async def _document(claims: Any, endpoint: LinkEndpoint, operation: str) -> dict[str, Any]:
     access = await run_in_threadpool(read_access, claims, UUID(endpoint.package_id or ""))
     if access.row.state != "ready" or access.head is None:
         raise HTTPException(404, "Corpus content is not available")
@@ -48,7 +48,11 @@ async def verify_document(claims: Any, endpoint: LinkEndpoint, operation: str) -
     except CorpusProcessError as error:
         status = 503 if error.kind == "unavailable" else 422
         raise HTTPException(status, "Document selection could not be verified") from None
-    if result != {"verified": True}:
+    return result
+
+
+async def verify_document(claims: Any, endpoint: LinkEndpoint, operation: str) -> None:
+    if await _document(claims, endpoint, operation) != {"verified": True}:
         raise HTTPException(503, "Document verification returned an invalid result")
 
 
@@ -56,7 +60,7 @@ async def verify_epub(claims: Any, endpoint: LinkEndpoint) -> None:
     await verify_document(claims, endpoint, "verify_epub")
 
 
-async def verify_pdf(claims: Any, endpoint: LinkEndpoint) -> None:
+def _check_pdf(endpoint: LinkEndpoint) -> None:
     if (
         not endpoint.document_id
         or not endpoint.document_id.lower().endswith(".pdf")
@@ -76,4 +80,24 @@ async def verify_pdf(claims: Any, endpoint: LinkEndpoint) -> None:
         raise HTTPException(422, "This PDF selection cannot yet be verified")
     if not shutil.which("pdfinfo") or not shutil.which("pdftotext"):
         raise HTTPException(503, "PDF verification is unavailable")
+
+
+async def verify_pdf(claims: Any, endpoint: LinkEndpoint) -> None:
+    _check_pdf(endpoint)
     await verify_document(claims, endpoint, "verify_pdf")
+
+
+async def retrieve_document(claims: Any, endpoint: LinkEndpoint, kind: str) -> str:
+    if kind == "pdf":
+        _check_pdf(endpoint)
+    elif kind != "epub":
+        raise HTTPException(422, "Unsupported document selection")
+    result = await _document(claims, endpoint, "retrieve_" + kind)
+    if (
+        set(result) != {"text"}
+        or not isinstance(result["text"], str)
+        or not result["text"]
+        or len(result["text"].encode("utf-8")) > 32768
+    ):
+        raise HTTPException(503, "Document retrieval returned an invalid result")
+    return result["text"]

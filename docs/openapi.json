@@ -3709,6 +3709,72 @@
         "title": "RestoreEdit",
         "type": "object"
       },
+      "RetrievedSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          },
+          "fragments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fragments",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "source",
+              "target"
+            ],
+            "title": "Side",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "reference_id",
+          "version",
+          "side",
+          "endpoint",
+          "fragments"
+        ],
+        "title": "RetrievedSelection",
+        "type": "object"
+      },
+      "SelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "side": {
+            "enum": [
+              "source",
+              "target"
+            ],
+            "title": "Side",
+            "type": "string"
+          }
+        },
+        "required": [
+          "side"
+        ],
+        "title": "SelectionRequest",
+        "type": "object"
+      },
       "ShortcodeCreate": {
         "properties": {
           "corpus": {
@@ -8843,6 +8909,78 @@
           }
         ],
         "summary": "Reference History",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/{reference_id}/retrieve": {
+      "post": {
+        "description": "Retrieve a selection; Text-Fabric text uses the core reference renderer.",
+        "operationId": "retrieve_selection_v1_projects__project_id__references__reference_id__retrieve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievedSelection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Retrieve Selection",
         "tags": [
           "Project links"
         ]
