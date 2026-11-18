@@ -32,7 +32,9 @@ class DiscoveryEvidence(BaseModel):
     def bounded(self) -> Self:
         if not self.quote.strip() or not self.cited_name.strip() or len(self.source.locators) != 1:
             raise ValueError("Discovery needs one exact source selection and citation")
-        if len(json.dumps(self.model_dump(mode="json"), ensure_ascii=False).encode()) > 32768:
+        # Review changes the status, so keep the evidence limit independent of it.
+        serialized = self.model_dump(mode="json", exclude={"status"})
+        if len(json.dumps(serialized, ensure_ascii=False).encode()) > 32768:
             raise ValueError("Discovery evidence exceeds size limit")
         return self
 
