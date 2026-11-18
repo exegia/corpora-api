@@ -132,6 +132,10 @@ def _main() -> None:
             value = read_archive(data, **args)
         elif operation == "reference":
             value = reference_archive(data, **args)
+        elif operation == "verify_epub":
+            from corpora_api.project_epub_verify import verify_epub_in_corpus
+
+            value = verify_epub_in_corpus(data, **args)
         elif operation == "scope":
             raw = args["scope"]
             raw["level"] = ScopeLevel(raw["level"])
