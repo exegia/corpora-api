@@ -1516,6 +1516,7 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
         db.execute(next(migrations.glob("*_project_link_resolution.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_publication.sql")).read_text())
         for role in ("anon", "authenticated"):
             assert not db.execute(
                 "SELECT has_function_privilege(%s,%s,'EXECUTE')",
@@ -1709,6 +1710,14 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             },
         )
         assert saved_pdf.status_code == 200, saved_pdf.text
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=admin_headers,
+                json={"expected_version": 1, "reason": "premature"},
+            ).status_code
+            == 409
+        )
         verified_pdf = api.post(
             link_path + f"/{pdf_ref}/resolve",
             headers=admin_headers,
@@ -1721,6 +1730,79 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             json={"expected_version": 2, "reason": "approved"},
         )
         assert approved_pdf.status_code == 200, approved_pdf.text
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            ("a" * 40, project, pdf_ref),
+        )
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=admin_headers,
+                json={"expected_version": 3, "reason": "stale"},
+            ).status_code
+            == 409
+        )
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            (head_sha, project, pdf_ref),
+        )
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=member_headers,
+                json={"expected_version": 3, "reason": "not owner"},
+            ).status_code
+            == 404
+        )
+        published = api.post(
+            link_path + f"/{pdf_ref}/publish",
+            headers=admin_headers,
+            json={"expected_version": 3, "reason": "publish in project"},
+        )
+        assert published.status_code == 200 and published.json()["version"] == 4
+        assert api.get(link_path + f"/{pdf_ref}/history").status_code == 401
+        published_history = api.get(link_path + f"/{pdf_ref}/history", headers=member_headers)
+        assert published_history.json()["revisions"][0]["reference"]["publication"] == "published"
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=admin_headers,
+                json={"expected_version": 3, "reason": "stale retry"},
+            ).status_code
+            == 409
+        )
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=4",
+            ("a" * 40, project, pdf_ref),
+        )
+        withdrawn = api.post(
+            link_path + f"/{pdf_ref}/withdraw",
+            headers=admin_headers,
+            json={"expected_version": 4, "reason": "withdraw"},
+        )
+        assert withdrawn.status_code == 200 and withdrawn.json()["version"] == 5
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=5",
+            (head_sha, project, pdf_ref),
+        )
+        republished = api.post(
+            link_path + f"/{pdf_ref}/publish",
+            headers=admin_headers,
+            json={"expected_version": 5, "reason": "republish"},
+        )
+        assert republished.status_code == 200 and republished.json()["version"] == 6
+        actions = api.get(link_path + f"/{pdf_ref}/history", headers=member_headers).json()[
+            "revisions"
+        ]
+        assert [entry["action"] for entry in actions[:3]] == ["publish", "withdraw", "publish"]
         pdf_selection = api.post(
             link_path + f"/{pdf_ref}/retrieve",
             headers=member_headers,

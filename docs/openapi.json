@@ -2953,7 +2953,9 @@
               "resolve",
               "approve",
               "reject",
-              "reopen"
+              "reopen",
+              "publish",
+              "withdraw"
             ],
             "title": "Action",
             "type": "string"
@@ -9161,7 +9163,7 @@
     },
     "/v1/projects/{project_id}/references/{reference_id}/{action}": {
       "post": {
-        "description": "Verify, approve, reject, or reopen a reference.",
+        "description": "Record a review or project-only publication decision.",
         "operationId": "decide_reference_v1_projects__project_id__references__reference_id___action__post",
         "parameters": [
           {
@@ -9193,7 +9195,9 @@
                 "reject",
                 "reopen",
                 "resolve",
-                "approve"
+                "approve",
+                "publish",
+                "withdraw"
               ],
               "title": "Action",
               "type": "string"

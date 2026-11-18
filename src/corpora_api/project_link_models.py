@@ -94,7 +94,7 @@ class LinkRevision(BaseModel):
     actor_id: UUID
     recorded_at: datetime
     reason: str
-    action: Literal["edit", "resolve", "approve", "reject", "reopen"]
+    action: Literal["edit", "resolve", "approve", "reject", "reopen", "publish", "withdraw"]
     reference: Reference
 
 
