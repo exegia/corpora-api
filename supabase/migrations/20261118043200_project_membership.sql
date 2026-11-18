@@ -26,7 +26,8 @@ BEGIN
         SELECT 1 FROM corpora_session_guard.superadmins WHERE user_id=p_actor)) THEN
         RETURN pg_catalog.jsonb_build_object('status','not_found');
     END IF;
-    IF p_present AND NOT EXISTS(SELECT 1 FROM auth.users WHERE id=p_member AND deleted_at IS NULL) THEN
+    IF p_present AND NOT EXISTS(SELECT 1 FROM auth.users WHERE id=p_member AND deleted_at IS NULL
+        AND (email_confirmed_at IS NOT NULL OR phone_confirmed_at IS NOT NULL)) THEN
         RETURN pg_catalog.jsonb_build_object('status','member_not_found');
     END IF;
     IF p_present THEN

@@ -45,6 +45,20 @@ def test_membership_routes_bind_the_verified_user_and_project(context, monkeypat
     assert [params["p_present"] for _, params in calls] == [True, False]
 
 
+def test_member_put_preflight_allows_documented_browser_origin(context):
+    client, project, member, _ = context
+    response = client.options(
+        f"/v1/projects/{project}/members/{member}",
+        headers={
+            "Origin": "https://docs.exegia.co",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://docs.exegia.co"
+
+
 def test_membership_pages_are_bounded_and_reject_invalid_receipts(context, monkeypatch):
     client, project, member, _ = context
     second = uuid4()

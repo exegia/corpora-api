@@ -108,6 +108,15 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 users.append((response.json()["user"]["id"], response.json()["access_token"]))
             owner, other, admin = users
             db.execute("INSERT INTO corpora_session_guard.superadmins VALUES (%s)", (admin[0],))
+            unconfirmed_email = f"{uuid4()}@example.org"
+            unconfirmed = client.post(
+                url + "/auth/v1/admin/users",
+                headers={"apikey": service, "Authorization": "Bearer " + service},
+                json={"email": unconfirmed_email, "password": str(uuid4()), "email_confirm": False},
+            )
+            assert unconfirmed.status_code == 200
+            unconfirmed_id = unconfirmed.json()["id"]
+            users.append((unconfirmed_id, ""))
             for role in ("anon", "authenticated"):
                 for privilege in ("TRUNCATE", "REFERENCES", "TRIGGER"):
                     assert not db.execute(
@@ -208,6 +217,12 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                     ).status_code
                     == 404
                 )
+                assert (
+                    api.put(
+                        f"/v1/projects/{project_id}/members/{unconfirmed_id}", headers=bearer(owner)
+                    ).status_code
+                    == 404
+                )
                 page = api.get(f"/v1/projects/{project_id}/members", headers=bearer(admin))
                 assert page.status_code == 200 and page.json()["items"][0]["user_id"] == other[0]
                 assert (
@@ -225,6 +240,12 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 assert (
                     api.post(
                         by_email, headers=bearer(owner), json={"email": "missing@example.org"}
+                    ).status_code
+                    == 404
+                )
+                assert (
+                    api.post(
+                        by_email, headers=bearer(owner), json={"email": unconfirmed_email}
                     ).status_code
                     == 404
                 )
