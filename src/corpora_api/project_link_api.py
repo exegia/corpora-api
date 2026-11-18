@@ -3,6 +3,7 @@
 from typing import Any, Literal
 from uuid import UUID
 
+from corpora_linking.models import StructuralLocator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -10,7 +11,14 @@ from starlette.concurrency import run_in_threadpool
 from corpora_api.auth import require_user
 from corpora_api.corpus_creation import CreationRPC, _session
 from corpora_api.corpus_metadata import CorpusMetadataError
-from corpora_api.project_link_models import LinkDecision, LinkRevision, LinkSave, draft_reference
+from corpora_api.project_link_models import (
+    LinkDecision,
+    LinkEndpoint,
+    LinkRevision,
+    LinkSave,
+    draft_reference,
+)
+from corpora_api.references import reference as resolve_corpus_reference
 
 router = APIRouter(prefix="/v1/projects", tags=["Project links"])
 
@@ -44,6 +52,51 @@ def _status(value: Any) -> None:
         raise HTTPException(409, "Reference version changed")
     if value == {"status": "invalid_transition"}:
         raise HTTPException(409, "Reference decision is not allowed in its current state")
+    if value == {"status": "stale_corpus"}:
+        raise HTTPException(409, "A linked corpus has changed")
+
+
+async def _resolve_reference(request: Request, project: UUID, ref: UUID, version: int) -> None:
+    value = await run_in_threadpool(
+        _call,
+        "corpora_current_project_link",
+        {
+            **_session(request.state.user_claims),
+            "p_project": str(project),
+            "p_reference": str(ref),
+        },
+    )
+    _status(value)
+    try:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"status", "revision"}
+            or value.get("status") != "ok"
+        ):
+            raise ValueError("Invalid history")
+        latest = LinkRevision.model_validate(value["revision"])
+        if latest.reference.id != ref:
+            raise ValueError("Mismatched reference")
+    except (ValueError, TypeError, KeyError, IndexError):
+        raise HTTPException(503, "Project linking is unavailable") from None
+    if latest.version != version:
+        raise HTTPException(409, "Reference version changed")
+    for endpoint in (latest.reference.source, latest.reference.target):
+        try:
+            selected = LinkEndpoint.model_validate(endpoint.model_dump(mode="json"))
+        except ValueError:
+            raise HTTPException(422, "Reference endpoint is invalid") from None
+        if selected.document_id != ".corpora/source.corpus" or not all(
+            isinstance(locator, StructuralLocator) for locator in selected.locators
+        ):
+            raise HTTPException(422, "This selection cannot yet be verified")
+        for locator in selected.locators:
+            assert isinstance(locator, StructuralLocator)
+            result = await resolve_corpus_reference(
+                request.state.user_claims, ref=locator.anchor_id
+            )
+            if type(result.get("node")) is not int or result["node"] < 1:
+                raise HTTPException(503, "Corpus reference verification failed")
 
 
 def _receipt(value: Any, project: UUID, reference: UUID, expected: int) -> LinkReceipt:
@@ -94,13 +147,15 @@ async def save_reference(
 async def decide_reference(
     project_id: UUID,
     reference_id: UUID,
-    action: Literal["reject", "reopen"],
+    action: Literal["reject", "reopen", "resolve", "approve"],
     body: LinkDecision,
     request: Request,
     response: Response,
     _user: str = Depends(require_user),
 ) -> LinkReceipt:
-    """Reject a pending reference or reopen a rejected one."""
+    """Verify, approve, reject, or reopen a reference."""
+    if action == "resolve":
+        await _resolve_reference(request, project_id, reference_id, body.expected_version)
     value = await run_in_threadpool(
         _call,
         "corpora_decide_project_link",

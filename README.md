@@ -190,6 +190,14 @@ revision history and POST to `/reject` or `/reopen` to record a decision.
 Changes require the current `expected_version`. Project members can read only
 when they also have access to every corpus represented in the requested
 history; members cannot edit or decide.
+Projects with recorded reference history cannot be deleted, preserving the
+ledger and its project identity.
+
+After applying `project_link_resolution`, owners and superadmins can POST to
+`/resolve` to verify both revision-pinned Text-Fabric selections, then `/approve`
+to record approval. Both operations reject a corpus whose current revision has
+changed. PDF and EPUB selections can be saved as drafts; their verification is
+not yet available and cannot be approved as resolved.
 
 `DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
 and `expected_revision`. Admission rejects active or uncertain provisioning/import

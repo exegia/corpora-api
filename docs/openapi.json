@@ -8753,7 +8753,7 @@
     },
     "/v1/projects/{project_id}/references/{reference_id}/{action}": {
       "post": {
-        "description": "Reject a pending reference or reopen a rejected one.",
+        "description": "Verify, approve, reject, or reopen a reference.",
         "operationId": "decide_reference_v1_projects__project_id__references__reference_id___action__post",
         "parameters": [
           {
@@ -8783,7 +8783,9 @@
             "schema": {
               "enum": [
                 "reject",
-                "reopen"
+                "reopen",
+                "resolve",
+                "approve"
               ],
               "title": "Action",
               "type": "string"
