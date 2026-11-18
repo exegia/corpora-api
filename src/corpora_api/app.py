@@ -265,7 +265,12 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     except UserAuthError:
         return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
 
-    if request.url.path == "/v1/ingest" or request.url.path.startswith("/v1/ingest/"):
+    if (
+        request.url.path == "/v1/ingest"
+        or request.url.path.startswith("/v1/ingest/")
+        or request.url.path == "/v1/ai/drafts"
+        or request.url.path.startswith("/v1/ai/drafts/")
+    ):
         try:
             active = await run_in_threadpool(ingest_session_active, credential)
         except SessionCheckUnavailable:

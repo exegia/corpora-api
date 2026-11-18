@@ -180,6 +180,7 @@ def test_private_draft_lifecycle_survives_new_store_and_detects_tampering(monkey
         raise UserAuthError("invalid")
 
     monkeypatch.setattr(app_module, "verify_user_token", verify)
+    monkeypatch.setattr(app_module, "ingest_session_active", lambda _token: True)
     with TestClient(app) as api:
         own_headers = {"Authorization": f"Bearer {owner}"}
         foreign_headers = {"Authorization": f"Bearer {foreign}"}
