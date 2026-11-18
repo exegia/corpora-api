@@ -1095,13 +1095,29 @@ async def ai_chat(
     responses={**_STORAGE_DETAIL_RESPONSES, 409: {"description": "Scope is stale"}},
 )
 async def ai_validate(
-    request: AIScopeRequest, user_id: Annotated[str, Depends(require_user)]
+    request: AIScopeRequest,
+    http_request: Request,
+    response: Response,
+    user_id: Annotated[str, Depends(require_user)],
 ) -> Any:
-    from corpora_api.ai_validation import validate_scope
+    """Validate a scope in an authorized corpus or a validated conversion."""
+    from corpora_api.ai_validation import validate_hub_scope, validate_scope
 
-    return await run_in_threadpool(
-        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope, validator
-    )
+    response.headers["Cache-Control"] = "no-store"
+    if request.scope.corpus.startswith("corpus:"):
+        result = await validate_hub_scope(http_request.state.user_claims, request.scope)
+    else:
+        result = await run_in_threadpool(
+            validate_scope,
+            corpus_storage,
+            conversion_artifact_store,
+            user_id,
+            request.scope,
+            validator,
+        )
+    if isinstance(result, JSONResponse):
+        result.headers["Cache-Control"] = "no-store"
+    return result
 
 
 _REFERENCE_RESPONSES = {

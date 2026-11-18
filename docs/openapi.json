@@ -138,6 +138,19 @@
             "title": "Corpus",
             "type": "string"
           },
+          "corpus_revision": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required current Hugging Face commit SHA when corpus is corpus:<UUID>.",
+            "title": "Corpus Revision"
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -506,6 +519,19 @@
           "corpus": {
             "title": "Corpus",
             "type": "string"
+          },
+          "corpus_revision": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required current Hugging Face commit SHA when corpus is corpus:<UUID>.",
+            "title": "Corpus Revision"
           },
           "label": {
             "title": "Label",
@@ -5161,6 +5187,7 @@
     },
     "/v1/ai/validate": {
       "post": {
+        "description": "Validate a scope in an authorized corpus or a validated conversion.",
         "operationId": "ai_validate_v1_ai_validate_post",
         "requestBody": {
           "content": {

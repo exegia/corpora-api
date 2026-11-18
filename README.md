@@ -311,6 +311,11 @@ Authenticated `/v1/ai/providers` lists the legacy provider guidance without
 accepting API keys. `/v1/ai/validate` validates a version-pinned scope against
 an accessible stored corpus or owned completed conversion, returning located
 findings and rejecting stale version or content hashes.
+For a Corpora-managed corpus, set `scope.corpus` to `corpus:<UUID>` and
+`scope.corpus_revision` to its full current Hugging Face commit SHA. The caller
+must have access to the corpus; a changed commit returns 409 before reading
+the archive. `scope.version` remains the version recorded in the corpus
+manifest, and an optional `content_hash` checks the selected text.
 For conversion jobs, the API validates the downloaded archive again before
 using it; a saved result from an earlier validation is not sufficient.
 Corpus detail, reference, and scope reads run the native loader in a separate
