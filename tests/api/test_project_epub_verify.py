@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
-from corpora_api.project_epub_verify import verify_epub_in_corpus
+from corpora_api.project_epub_verify import _xml, verify_epub_in_corpus
 
 
 def epub(extra=None):
@@ -90,6 +90,12 @@ def test_nested_epub_rejects_expansion_and_unsafe_paths():
     archive, endpoint = case(("../escape", b"content"))
     with pytest.raises(ValueError, match="Unsafe EPUB entry"):
         verify_epub_in_corpus(archive, endpoint)
+
+
+def test_epub_xml_rejects_document_types_and_external_entities():
+    data = b'<!DOCTYPE html [<!ENTITY x SYSTEM "file:///etc/passwd">]><html>&x;</html>'
+    with pytest.raises(ValueError, match="DOCTYPE"):
+        _xml(data)
 
 
 def test_worker_rejects_unverifiable_selection():
