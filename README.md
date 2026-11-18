@@ -200,8 +200,10 @@ After applying `project_link_retrieval`, a project member with access to both
 corpora can POST `{"side":"source"}` or `{"side":"target"}` to
 `/v1/projects/{project_id}/references/{reference_id}/retrieve`. The response
 identifies the reference version and endpoint and returns the selected text as
-ordered fragments. Retrieval checks the current corpus revision and reports
-unsupported or unverifiable selections instead of returning guessed text.
+ordered fragments. Text-Fabric fragments use the core reference renderer;
+EPUB and PDF fragments are checked against their exact quoted text. Retrieval
+checks the current corpus revision and reports unsupported or unverifiable
+selections instead of returning guessed text.
 
 After applying `project_link_resolution`, owners and superadmins can POST to
 `/resolve` to verify both revision-pinned selections, then `/approve` to record

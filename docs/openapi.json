@@ -8916,7 +8916,7 @@
     },
     "/v1/projects/{project_id}/references/{reference_id}/retrieve": {
       "post": {
-        "description": "Retrieve one selection after checking the project and both corpus permissions.",
+        "description": "Retrieve a selection; Text-Fabric text uses the core reference renderer.",
         "operationId": "retrieve_selection_v1_projects__project_id__references__reference_id__retrieve_post",
         "parameters": [
           {

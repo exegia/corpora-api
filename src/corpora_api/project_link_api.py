@@ -181,7 +181,7 @@ async def retrieve_selection(
     response: Response,
     _user: str = Depends(require_user),
 ) -> RetrievedSelection:
-    """Retrieve one selection after checking the project and both corpus permissions."""
+    """Retrieve a selection; Text-Fabric text uses the core reference renderer."""
     latest = await _current_reference(request, project_id, reference_id, edit=False)
     raw = latest.reference.source if body.side == "source" else latest.reference.target
     try:
