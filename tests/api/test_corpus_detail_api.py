@@ -129,6 +129,60 @@ def test_five_views_read_exact_private_archive_with_real_worker(fixture):
     assert [first["items"][0]["ref"], second["items"][0]["ref"]] == ["Mini A", "Mini B"]
 
 
+def test_ai_scope_reads_only_authorized_pinned_corpus_with_real_worker(fixture):
+    client, path, state = fixture
+    scope = {
+        "corpus": "corpus:" + path.rsplit("/", 1)[1],
+        "corpus_revision": SHA,
+        "level": "word",
+        "node_id": 3,
+        "label": "word",
+        "version": "1.0",
+    }
+    headers = {"Authorization": "Bearer valid"}
+    assert client.post("/v1/ai/validate", json={"scope": scope}).status_code == 401
+    missing = client.post(
+        "/v1/ai/validate", json={"scope": {**scope, "corpus_revision": None}}, headers=headers
+    )
+    assert missing.status_code == 422
+    stale = client.post(
+        "/v1/ai/validate", json={"scope": {**scope, "corpus_revision": "a" * 40}}, headers=headers
+    )
+    assert stale.status_code == 409 and stale.json()["current_version"] == SHA
+    assert stale.headers["cache-control"] == "no-store"
+    assert not state["requests"]
+    result = client.post("/v1/ai/validate", json={"scope": scope}, headers=headers)
+    assert result.status_code == 200, result.text
+    assert result.headers["cache-control"] == "no-store"
+    assert result.json()["corpus"] == scope["corpus"]
+    assert result.json()["checked_nodes"] == 1
+    assert state["requests"]
+    state["requests"].clear()
+    state["access"] = {"status": "not_found"}
+    assert client.post("/v1/ai/validate", json={"scope": scope}, headers=headers).status_code == 404
+    assert not state["requests"]
+    state["revoked"] = True
+    assert client.post("/v1/ai/validate", json={"scope": scope}, headers=headers).status_code == 401
+
+
+def test_ai_scope_rejects_tampered_hub_archive(fixture):
+    client, path, state = fixture
+    state["data"] = b"x" * len(state["data"])
+    scope = {
+        "corpus": "corpus:" + path.rsplit("/", 1)[1],
+        "corpus_revision": SHA,
+        "level": "word",
+        "node_id": 3,
+        "label": "word",
+        "version": "1.0",
+    }
+    result = client.post(
+        "/v1/ai/validate", json={"scope": scope}, headers={"Authorization": "Bearer valid"}
+    )
+    assert result.status_code == 503
+    assert result.json() == {"detail": "Corpus integrity verification failed"}
+
+
 @pytest.mark.parametrize("view", VIEWS)
 def test_denied_or_revoked_admission_never_contacts_hub(fixture, view):
     client, path, state = fixture
