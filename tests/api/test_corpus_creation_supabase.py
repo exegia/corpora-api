@@ -104,6 +104,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_version_history",
                 "corpus_version_save",
                 "corpus_edit_intents",
+                "corpus_save_reconciliation",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -443,8 +444,8 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     db,
                     monkeypatch,
                     archive,
-                    head_sha="f" * 40,
-                    version_count=3,
+                    head_sha="5" * 40,
+                    version_count=4,
                 )
                 assert api.get(history_path, headers=headers(admin)).status_code == 404
         finally:
@@ -866,7 +867,7 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
     uploads = []
 
     async def transfer(_row, sha, path, *, max_bytes, timeout, sink):
-        assert sha == "c" * 40 and path == ".corpora/source.corpus"
+        assert sha in ("c" * 40, "f" * 40) and path == ".corpora/source.corpus"
         assert max_bytes == len(archive)
         await sink(archive)
 
@@ -879,9 +880,44 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
             "p_claim": str(claim.claim_id),
             "p_publication": publication,
         }
-        stage_sha, final_sha = ("d" * 40, "e" * 40) if len(uploads) == 1 else ("6" * 40, "f" * 40)
+        stage_sha, final_sha = [("d" * 40, "e" * 40), ("6" * 40, "f" * 40), ("7" * 40, "5" * 40)][
+            len(uploads) - 1
+        ]
         assert rpc.call("corpora_stage_version_save", {**params, "p_stage_sha": stage_sha}) is True
+        if len(uploads) == 3:
+            raise TimeoutError("Simulated ambiguous Hub response")
         assert rpc.call("corpora_complete_version_save", {**params, "p_sha": final_sha}) is True
+
+    def reconcile_verified(target, *, slot):
+        params = {
+            "p_operation": target["operation_id"],
+            "p_claim": target["claim_id"],
+            "p_publication": target["publication_claim"],
+            "p_sha": "5" * 40,
+        }
+        rpc = creation.CreationRPC()
+        assert (
+            rpc.call(
+                "corpora_finish_save_reconciliation",
+                {
+                    **params,
+                    "p_claim": str(uuid4()),
+                },
+            )
+            is False
+        )
+        assert (
+            rpc.call(
+                "corpora_finish_save_reconciliation",
+                {
+                    **params,
+                    "p_publication": str(uuid4()),
+                },
+            )
+            is False
+        )
+        assert rpc.call("corpora_finish_save_reconciliation", params) is True
+        assert rpc.call("corpora_finish_save_reconciliation", params) is True
 
     body = {
         "operation_id": str(uuid4()),
@@ -938,10 +974,37 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
             "WHERE operation_id=%s",
             (restore_id,),
         ).fetchone() == (1,)
-    assert len(uploads) == 2
+        uncertain_id = str(uuid4())
+        uncertain_body = {
+            "operation_id": uncertain_id,
+            "expected_sequence": 3,
+            "expected_commit": "f" * 40,
+            "changes": {"description": "Recovered"},
+        }
+        uncertain = api.patch(
+            path, headers={"Authorization": "Bearer " + admin[1]}, json=uncertain_body
+        )
+        assert uncertain.status_code == 503
+        reconcile_path = f"/v1/corpora/{corpus}/edits/{uncertain_id}/reconcile"
+        assert (
+            api.post(reconcile_path, headers={"Authorization": "Bearer " + foreign[1]}).status_code
+            == 404
+        )
+        from corpora_api import corpus_import_worker
+
+        patch.setattr(corpus_import_worker, "run_reconciliation_worker", reconcile_verified)
+        recovered = api.post(reconcile_path, headers={"Authorization": "Bearer " + admin[1]})
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()["state"] == "completed" and recovered.json()["sequence"] == 4
+        assert (
+            api.post(reconcile_path, headers={"Authorization": "Bearer " + admin[1]}).json()
+            == recovered.json()
+        )
+    assert len(uploads) == 3
     assert read_archive(uploads[0], "manifest")["description"] == "Edited through the API"
     assert uploads[1] == archive
-    return uploads[1]
+    assert read_archive(uploads[2], "manifest")["description"] == "Recovered"
+    return uploads[2]
 
 
 def _exercise_access_lifecycle(

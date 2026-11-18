@@ -178,6 +178,30 @@ def run_import_worker(
         },
         default=str,
     ).encode()
+    _run_dispatched(payload, deadline, slot)
+
+
+def run_reconciliation_worker(target: dict[str, Any], *, slot: ImportSlot) -> None:
+    registry, headers = CorpusMetadataStore._config()
+    deadline = time.monotonic() + MAX_IMPORT_SECONDS
+    payload = json.dumps(
+        {
+            "mode": "reconcile",
+            "target": target,
+            "deadline": deadline,
+            "config": {
+                "SUPABASE_URL": registry.rsplit("/rest/v1/", 1)[0],
+                "SUPABASE_SERVICE_ROLE_KEY": headers["apikey"],
+                "HF_CORPUS_ORGANIZATION": os.environ["HF_CORPUS_ORGANIZATION"],
+                "HF_CORPUS_PROVISION_TOKEN": os.environ["HF_CORPUS_PROVISION_TOKEN"],
+                "CORPORA_VALIDATE_BIN": os.getenv("CORPORA_VALIDATE_BIN", "corpora-validate"),
+            },
+        }
+    ).encode()
+    _run_dispatched(payload, deadline, slot)
+
+
+def _run_dispatched(payload: bytes, deadline: float, slot: ImportSlot) -> None:
     if len(payload) > MAX_REQUEST_BYTES:
         raise ValueError("Import worker request exceeds limit")
     finished = threading.Event()
@@ -327,20 +351,29 @@ def _main() -> None:
             "CORPORA_VALIDATE_BIN",
         ):
             os.environ[key] = request["config"][key]
-        values = request["claim"]
-        for key in ("operation_id", "claim_id", "corpus_id", "actor_id", "session_id"):
-            values[key] = UUID(values[key])
-        claim = ClaimedCorpusSave(**values)
-        archive = base64.b64decode(request["archive"], validate=True)
-        if not 0 < len(archive) <= 3_000_000:
-            raise ValueError("Invalid archive")
         transport = _BoundedHubTransport(request["deadline"])
         set_client_factory(
             lambda: httpx.Client(
                 transport=transport, timeout=15, follow_redirects=True, trust_env=False
             )
         )
-        execute_import(claim, request["filename"], archive, request["deadline"])
+        if request.get("mode") == "reconcile":
+            from corpora_api.corpus_save_reconcile import (
+                SaveReconciliationTarget,
+                execute_save_reconciliation,
+            )
+
+            target = SaveReconciliationTarget.model_validate(request["target"])
+            execute_save_reconciliation(target, request["deadline"])
+        else:
+            values = request["claim"]
+            for key in ("operation_id", "claim_id", "corpus_id", "actor_id", "session_id"):
+                values[key] = UUID(values[key])
+            claim = ClaimedCorpusSave(**values)
+            archive = base64.b64decode(request["archive"], validate=True)
+            if not 0 < len(archive) <= 3_000_000:
+                raise ValueError("Invalid archive")
+            execute_import(claim, request["filename"], archive, request["deadline"])
         result = {"completed": True}
     except Exception:
         result = {"completed": False}
