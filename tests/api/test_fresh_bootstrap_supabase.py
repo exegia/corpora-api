@@ -45,7 +45,7 @@ def test_fresh_bootstrap_auth_and_private_storage():
         "Authorization": "Bearer " + anon,
         "Prefer": "return=representation",
     }
-    project_id, directory_id = str(uuid4()), str(uuid4())
+    project_id, directory_id, document_id = str(uuid4()), str(uuid4()), str(uuid4())
     users: list[tuple[str, dict[str, str]]] = []
     objects: list[tuple[str, str]] = []
     with (
@@ -71,7 +71,7 @@ def test_fresh_bootstrap_auth_and_private_storage():
         db.execute("ROLLBACK")
         assert db.execute("SELECT to_regclass('public.projects') IS NOT NULL").fetchone()[0]
         try:
-            for name in ("owner", "member"):
+            for name in ("owner", "member", "outsider"):
                 email = f"{name}-{uuid4()}@example.invalid"
                 password = str(uuid4()) + "Aa9!"
                 response = client.post(
@@ -103,7 +103,7 @@ def test_fresh_bootstrap_auth_and_private_storage():
                     ).fetchone()[0]
                     == 1
                 )
-            owner, member = users
+            owner, member, outsider = users
             initialize(workdir, UUID(owner[0]))
             initialize(workdir, UUID(owner[0]))  # Safe to repeat.
             db.execute(
@@ -132,6 +132,31 @@ def test_fresh_bootstrap_auth_and_private_storage():
             )
             assert response.status_code == 201, response.text
             assert response.json()[0]["owner_id"] == owner[0]
+            lookup = url + "/rest/v1/rpc/corpora_project_document_id"
+            assert (
+                client.post(lookup, headers=member[1], json={"p_project": project_id}).json()
+                is None
+            )
+            db.execute(
+                "INSERT INTO public.corpus_documents(id,name,source,path,owner_id) "
+                "VALUES (%s,'Temporary document','upload','temporary',%s)",
+                (document_id, member[0]),
+            )
+            db.execute(
+                "UPDATE public.projects SET corpus_document_id=%s WHERE id=%s",
+                (document_id, project_id),
+            )
+            for headers in (owner[1], member[1]):
+                response = client.post(lookup, headers=headers, json={"p_project": project_id})
+                assert response.status_code == 200, response.text
+                assert response.json() == document_id
+            assert (
+                client.post(lookup, headers=outsider[1], json={"p_project": project_id}).json()
+                is None
+            )
+            assert client.post(
+                lookup, headers=anonymous, json={"p_project": project_id}
+            ).status_code in (401, 403, 404)
             response = client.post(
                 url + "/rest/v1/licences",
                 headers=member[1],
@@ -160,11 +185,16 @@ def test_fresh_bootstrap_auth_and_private_storage():
                 == 204
             )
             assert client.post(rpc, headers=owner[1], json={}).status_code >= 400
+            assert (
+                client.post(lookup, headers=owner[1], json={"p_project": project_id}).status_code
+                >= 400
+            )
             assert client.get(ingest_url, headers=owner[1]).status_code >= 400
         finally:
             for bucket, path in objects:
                 client.delete(url + f"/storage/v1/object/{bucket}/" + path, headers=admin_headers)
             db.execute("DELETE FROM public.projects WHERE id=%s", (project_id,))
+            db.execute("DELETE FROM public.corpus_documents WHERE id=%s", (document_id,))
             if users:
                 db.execute(
                     "DELETE FROM corpora_session_guard.superadmins WHERE user_id=%s", (users[0][0],)
