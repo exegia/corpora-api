@@ -4,7 +4,6 @@ Supports element steps with optional ID assertions and character offsets. Text
 assertions, side bias, temporal/spatial offsets and cross-resource ranges reject.
 """
 
-import hashlib
 import io
 import posixpath
 import re
@@ -14,12 +13,8 @@ from pathlib import PurePosixPath
 
 from corpora_linking import Endpoint, EpubLocator, verify_text_anchor
 
-from corpora_api.corpus_archive_inventory import inventory_corpus_archive
+from corpora_api.project_asset_verify import corpus_asset, sha256_revision
 from corpora_api.project_link_models import LinkEndpoint
-
-
-def sha256_revision(data: bytes) -> str:
-    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def utf16_to_scalar(text: str, offset: int) -> int:
@@ -72,15 +67,7 @@ def verify_epub_in_corpus(archive_bytes: bytes, raw_endpoint: dict) -> dict:
         raise ValueError("EPUB asset path required")
     if len(endpoint.locators) != 1 or not isinstance(endpoint.locators[0], EpubLocator):
         raise ValueError("One exact EPUB selection required")
-    inventory = inventory_corpus_archive(archive_bytes)
-    matches = [item for item in inventory.files if item.path == endpoint.document_id]
-    if len(matches) != 1 or matches[0].size > 16_777_216:
-        raise ValueError("EPUB asset unavailable")
-    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
-        with archive.open(endpoint.document_id) as source:
-            data = source.read(matches[0].size + 1)
-    if len(data) != matches[0].size or hashlib.sha256(data).hexdigest() != matches[0].sha256:
-        raise ValueError("EPUB asset integrity mismatch")
+    data = corpus_asset(archive_bytes, endpoint.document_id)
     _check_epub(data)
     transient = endpoint.model_copy(update={"revision": sha256_revision(data)})
     retrieve_epub_cfi_selection(data, transient)

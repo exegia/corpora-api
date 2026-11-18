@@ -203,7 +203,13 @@ supported. The EPUB must be present in the corpus archive; its package, spine,
 resource, UTF-16 offsets, and quoted text are checked. EPUB verification supports
 a single-resource CFI range in XML without a DOCTYPE; unsupported selections stay
 unresolved. Both operations reject a corpus whose current revision has changed.
-PDF selections remain unresolved.
+PDF verification supports unencrypted, unrotated pages with extractable text in
+documents of at most 1,000 pages and pages of at most 10,000 words.
+Use `poppler-page-words-v1` for the text selector: it is the page's Poppler word
+text joined with single spaces, with Unicode scalar offsets. Select complete,
+contiguous words and provide one matching CropBox-relative rectangle per word.
+Coordinates must match within 0.02 points. Quads, partial words, rotated pages,
+scanned pages without text, and other unsupported selections remain unresolved.
 
 `DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
 and `expected_revision`. Admission rejects active or uncertain provisioning/import

@@ -1,9 +1,11 @@
-"""Resolve an EPUB selection from an authorized immutable corpus archive."""
+"""Resolve a document selection from an authorized immutable corpus archive."""
 
 import hashlib
+import shutil
 from typing import Any
 from uuid import UUID
 
+from corpora_linking.models import PdfLocator
 from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
 
@@ -14,7 +16,7 @@ from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.project_link_models import LinkEndpoint
 
 
-async def verify_epub(claims: Any, endpoint: LinkEndpoint) -> None:
+async def verify_document(claims: Any, endpoint: LinkEndpoint, operation: str) -> None:
     access = await run_in_threadpool(read_access, claims, UUID(endpoint.package_id or ""))
     if access.row.state != "ready" or access.head is None:
         raise HTTPException(404, "Corpus content is not available")
@@ -41,10 +43,37 @@ async def verify_epub(claims: Any, endpoint: LinkEndpoint) -> None:
         raise HTTPException(503, "Corpus integrity verification failed")
     try:
         result = await run_in_threadpool(
-            run_corpus, bytes(data), "verify_epub", raw_endpoint=endpoint.model_dump(mode="json")
+            run_corpus, bytes(data), operation, raw_endpoint=endpoint.model_dump(mode="json")
         )
     except CorpusProcessError as error:
         status = 503 if error.kind == "unavailable" else 422
-        raise HTTPException(status, "EPUB selection could not be verified") from None
+        raise HTTPException(status, "Document selection could not be verified") from None
     if result != {"verified": True}:
-        raise HTTPException(503, "EPUB verification returned an invalid result")
+        raise HTTPException(503, "Document verification returned an invalid result")
+
+
+async def verify_epub(claims: Any, endpoint: LinkEndpoint) -> None:
+    await verify_document(claims, endpoint, "verify_epub")
+
+
+async def verify_pdf(claims: Any, endpoint: LinkEndpoint) -> None:
+    if (
+        not endpoint.document_id
+        or not endpoint.document_id.lower().endswith(".pdf")
+        or len(endpoint.locators) != 1
+        or not isinstance(endpoint.locators[0], PdfLocator)
+    ):
+        raise HTTPException(422, "This PDF selection cannot yet be verified")
+    locator = endpoint.locators[0]
+    if (
+        locator.text is None
+        or locator.text.stream_id != "poppler-page-words-v1"
+        or locator.text.normalization != "preserve"
+        or locator.quads
+        or not locator.rectangles
+        or locator.page > 1000
+    ):
+        raise HTTPException(422, "This PDF selection cannot yet be verified")
+    if not shutil.which("pdfinfo") or not shutil.which("pdftotext"):
+        raise HTTPException(503, "PDF verification is unavailable")
+    await verify_document(claims, endpoint, "verify_pdf")
