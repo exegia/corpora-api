@@ -39,3 +39,12 @@ byte, refuses unknown files and out-of-order additions, and never overwrites the
 To remove only a disposable stack and its local data, run `supabase stop --workdir
 /tmp/corpora-fresh` followed by `supabase stack destroy --workdir /tmp/corpora-fresh
 --yes`. Do not use these cleanup commands on a project whose data you need.
+
+## AI draft limitation
+
+The current hosted schema does not contain the legacy AI draft registry. This
+baseline mirrors that schema and does not provision `corpora_ai_storage` or the
+`corpus-ai-drafts` bucket. Existing draft API routes that depend on that registry
+will return 503 until the active AI migration work supplies and verifies its
+persistence. Do not replay the historical legacy registry migration blindly: it
+changes existing policies and writes directly to Supabase-managed Storage tables.
