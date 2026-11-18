@@ -389,3 +389,55 @@ def test_import_records_unverified_source_claims_and_requires_valid_receipts(mon
     assert client.post(path, headers=headers, json=payload).status_code == 409
     monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "ok", "items": []})
     assert client.post(path, headers=headers, json=payload).status_code == 503
+
+
+def test_cusx_reference_retrieval_and_resolution_dispatch(monkeypatch):
+    from test_project_cusx_verify import case
+
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    _, endpoint, _ = case()
+    project, actor, ref = uuid4(), uuid4(), uuid4()
+    claims = {"sub": str(actor), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
+    body = {"reference_id": str(ref), "source": endpoint, "target": endpoint, "reason": "source"}
+    reference = draft_reference(LinkSave.model_validate(body), actor).model_dump(mode="json")
+    revision = {
+        "version": 1,
+        "actor_id": str(actor),
+        "recorded_at": "2026-01-01T00:00:00Z",
+        "reason": "source",
+        "action": "edit",
+        "reference": reference,
+    }
+
+    def rpc(_self, name, _params):
+        if name in ("corpora_current_project_link", "corpora_read_current_project_link"):
+            return {"status": "ok", "revision": revision}
+        assert name == "corpora_decide_project_link"
+        return {"status": "ok", "version": 2}
+
+    verified, retrieved = [], []
+
+    async def verify(actual, selected):
+        assert actual == claims and selected.document_id == "sources/book.cusx"
+        verified.append(selected)
+
+    async def retrieve(actual, selected, kind):
+        assert actual == claims and selected.document_id == "sources/book.cusx" and kind == "cusx"
+        retrieved.append(selected)
+        return "Selected words"
+
+    monkeypatch.setattr(links.CreationRPC, "call", rpc)
+    monkeypatch.setattr(links, "verify_cusx", verify)
+    monkeypatch.setattr(links, "retrieve_document", retrieve)
+    client = TestClient(app_module.app)
+    headers = {"Authorization": "Bearer valid"}
+    path = f"/v1/projects/{project}/references/{ref}"
+    result = client.post(path + "/retrieve", headers=headers, json={"side": "source"})
+    assert result.status_code == 200 and result.json()["fragments"] == ["Selected words"]
+    resolved = client.post(
+        path + "/resolve", headers=headers, json={"expected_version": 1, "reason": "verified"}
+    )
+    assert resolved.status_code == 200
+    assert len(retrieved) == 1 and len(verified) == 2

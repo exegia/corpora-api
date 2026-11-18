@@ -5,7 +5,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from corpora_linking import Provenance, Reference
-from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator
+from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator, TextLocator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
@@ -13,7 +13,7 @@ from starlette.concurrency import run_in_threadpool
 from corpora_api.auth import require_user
 from corpora_api.corpus_creation import CreationRPC, _session
 from corpora_api.corpus_metadata import CorpusMetadataError
-from corpora_api.project_document import retrieve_document, verify_epub, verify_pdf
+from corpora_api.project_document import retrieve_document, verify_cusx, verify_epub, verify_pdf
 from corpora_api.project_link_models import (
     LinkDecision,
     LinkEndpoint,
@@ -213,6 +213,8 @@ async def _resolve_reference(request: Request, project: UUID, ref: UUID, version
             await verify_epub(request.state.user_claims, selected)
         elif len(selected.locators) == 1 and isinstance(selected.locators[0], PdfLocator):
             await verify_pdf(request.state.user_claims, selected)
+        elif len(selected.locators) == 1 and isinstance(selected.locators[0], TextLocator):
+            await verify_cusx(request.state.user_claims, selected)
         else:
             raise HTTPException(422, "This selection cannot yet be verified")
 
@@ -450,7 +452,7 @@ async def retrieve_selection(
     response: Response,
     _user: str = Depends(require_user),
 ) -> RetrievedSelection:
-    """Retrieve a selection; Text-Fabric text uses the core reference renderer."""
+    """Retrieve a verified Text-Fabric, EPUB, PDF or C-USX selection."""
     latest = await _current_reference(request, project_id, reference_id, edit=False)
     raw = latest.reference.source if body.side == "source" else latest.reference.target
     try:
@@ -477,6 +479,8 @@ async def retrieve_selection(
         fragments.append(await retrieve_document(request.state.user_claims, selected, "epub"))
     elif len(selected.locators) == 1 and isinstance(selected.locators[0], PdfLocator):
         fragments.append(await retrieve_document(request.state.user_claims, selected, "pdf"))
+    elif len(selected.locators) == 1 and isinstance(selected.locators[0], TextLocator):
+        fragments.append(await retrieve_document(request.state.user_claims, selected, "cusx"))
     else:
         raise HTTPException(422, "This selection cannot yet be retrieved")
     response.headers["Cache-Control"] = "no-store"

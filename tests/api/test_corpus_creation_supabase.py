@@ -17,6 +17,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from test_corpus_hub_publish import real_archive
+from test_project_cusx_verify import cusx_package
 from test_project_epub_verify import epub
 from test_project_pdf_verify import case as pdf_case
 from test_project_pdf_verify import pdf
@@ -294,6 +295,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     with zipfile.ZipFile(data, "a", zipfile.ZIP_DEFLATED) as fixture:
                         fixture.writestr("sources/book.epub", epub())
                         fixture.writestr("sources/book.pdf", pdf())
+                        fixture.writestr("sources/book.cusx", cusx_package()[0])
                     archive = data.getvalue()
                 import_operation = _exercise_import_rpc(
                     api, params, owner, foreign, db, archive, monkeypatch
@@ -2004,6 +2006,72 @@ def _exercise_project_linking_permissions(
             == "approved"
         )
         assert history(member)["status"] == "ok"
+        cusx_ref = str(uuid4())
+        cusx_target = {
+            "work_id": "urn:work:test",
+            "edition_id": "urn:edition:test",
+            "package_id": corpus,
+            "revision": head_sha,
+            "document_id": "sources/book.cusx",
+            "locators": [
+                {
+                    "kind": "text",
+                    "stream_id": "cusx-itertext/v1",
+                    "start": 2,
+                    "end": 16,
+                    "exact": "Selected words",
+                }
+            ],
+        }
+        link_path = f"/v1/projects/{project}/references"
+        cusx_saved = api.post(
+            link_path,
+            headers=admin_headers,
+            json={
+                "reference_id": cusx_ref,
+                "source": endpoint,
+                "target": cusx_target,
+                "reason": "C-USX link",
+            },
+        )
+        assert cusx_saved.status_code == 200, cusx_saved.text
+        cusx_resolved = api.post(
+            link_path + f"/{cusx_ref}/resolve",
+            headers=admin_headers,
+            json={"expected_version": 1, "reason": "verified C-USX"},
+        )
+        assert cusx_resolved.status_code == 200, cusx_resolved.text
+        cusx_selected = api.post(
+            link_path + f"/{cusx_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "target"},
+        )
+        assert cusx_selected.status_code == 200, cusx_selected.text
+        assert cusx_selected.json()["fragments"] == ["Selected words"]
+        cusx_discovery = api.post(
+            f"/v1/projects/{project}/discoveries",
+            headers=admin_headers,
+            json={
+                "id": str(uuid4()),
+                "source": cusx_target,
+                "quote": "Selected words",
+                "cited_name": "Example citation",
+                "reason": "Verified C-USX evidence",
+            },
+        )
+        assert cusx_discovery.status_code == 200, cusx_discovery.text
+        assert (
+            api.post(link_path + f"/{cusx_ref}/retrieve", json={"side": "target"}).status_code
+            == 401
+        )
+        assert (
+            api.post(
+                link_path + f"/{cusx_ref}/retrieve",
+                headers=revoked_headers,
+                json={"side": "target"},
+            ).status_code
+            == 401
+        )
         epub_ref = str(uuid4())
         epub_target = {
             "work_id": "book",

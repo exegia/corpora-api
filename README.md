@@ -229,9 +229,15 @@ corpora can POST `{"side":"source"}` or `{"side":"target"}` to
 `/v1/projects/{project_id}/references/{reference_id}/retrieve`. The response
 identifies the reference version and endpoint and returns the selected text as
 ordered fragments. Text-Fabric fragments use the core reference renderer;
-EPUB and PDF fragments are checked against their exact quoted text. Retrieval
-checks the current corpus revision and reports unsupported or unverifiable
-selections instead of returning guessed text.
+EPUB and PDF fragments are checked against their exact quoted text. Existing
+C-USX 0.1 assets support exact `cusx-itertext/v1` Unicode-scalar selections:
+the package is validated and its claimed work/edition must match the selection.
+The XML SHA-256 is checked separately from the pinned corpus Git commit; this
+does not establish external catalog authority or reconcile package-local IDs to
+catalog IDs. Retrieval checks the current
+corpus revision and reports unsupported or unverifiable selections instead of
+returning guessed text. C-USX reference export remains a separate, unfinished
+package-profile task.
 
 After applying `project_link_export`, a member with access to every referenced
 corpus can POST up to 10 distinct reference UUIDs to
