@@ -242,18 +242,19 @@ async def get_import(
     )
 
 
-@router.post(
-    "/v1/corpora/{corpus_id}/imports/{operation_id}/reconcile", response_model=CorpusImportInfo
-)
-async def reconcile_import(
+async def _recover_import(
     corpus_id: UUID,
     operation_id: UUID,
     request: Request,
     response: Response,
-    _user: str = Depends(require_user),
+    *,
+    resume: bool,
 ) -> CorpusImportInfo:
-    """Verify an uncertain initial import without issuing another Hub write."""
-    from corpora_api.corpus_import_worker import ImportSlot, run_reconciliation_worker
+    from corpora_api.corpus_import_worker import (
+        ImportSlot,
+        run_import_resume_worker,
+        run_reconciliation_worker,
+    )
     from corpora_api.corpus_save_reconcile import SaveReconciliationTarget
 
     require_creation_config(creating=True)
@@ -278,7 +279,9 @@ async def reconcile_import(
                 raise CorpusMetadataError("Invalid import reconciliation target") from None
             try:
                 await run_in_threadpool(
-                    run_reconciliation_worker, target.model_dump(mode="json"), slot=slot
+                    run_import_resume_worker if resume else run_reconciliation_worker,
+                    target.model_dump(mode="json"),
+                    slot=slot,
                 )
             except Exception:
                 # Missing or changing Hub evidence is not proof of failure.
@@ -290,3 +293,31 @@ async def reconcile_import(
     response.status_code = 200 if info.state in ("completed", "failed") else 202
     response.headers["Cache-Control"] = "no-store"
     return info
+
+
+@router.post(
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/reconcile", response_model=CorpusImportInfo
+)
+async def reconcile_import(
+    corpus_id: UUID,
+    operation_id: UUID,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> CorpusImportInfo:
+    """Verify an uncertain initial import without issuing another Hub write."""
+    return await _recover_import(corpus_id, operation_id, request, response, resume=False)
+
+
+@router.post(
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/resume", response_model=CorpusImportInfo
+)
+async def resume_import(
+    corpus_id: UUID,
+    operation_id: UUID,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> CorpusImportInfo:
+    """Retry the same staged import only if its operation branch still has the original parent."""
+    return await _recover_import(corpus_id, operation_id, request, response, resume=True)

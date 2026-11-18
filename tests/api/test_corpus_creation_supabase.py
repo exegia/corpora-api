@@ -295,7 +295,9 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                         fixture.writestr("sources/book.epub", epub())
                         fixture.writestr("sources/book.pdf", pdf())
                     archive = data.getvalue()
-                import_operation = _exercise_import_rpc(params, foreign, db, archive)
+                import_operation = _exercise_import_rpc(
+                    api, params, owner, foreign, db, archive, monkeypatch
+                )
                 history_path = path + "/versions"
                 assert api.get(history_path).status_code == 401
                 assert api.get(history_path, headers=headers(foreign)).status_code == 404
@@ -865,7 +867,7 @@ def _exercise_history_paging(api, db, owner, foreign, admin):
     assert api.get(path, headers=headers(admin)).status_code == 404
 
 
-def _exercise_import_rpc(session, foreign, db, archive):
+def _exercise_import_rpc(api, session, owner, foreign, db, archive, monkeypatch):
     """Real admission/finalization SQL with synthetic, internal Hub attestations."""
     rpc = creation.CreationRPC()
     operation = str(uuid4())
@@ -946,7 +948,21 @@ def _exercise_import_rpc(session, foreign, db, archive):
     target = rpc.call("corpora_get_import_reconciliation", {**session, "p_operation": operation})
     assert target["status"] == "ready" and target["mode"] == "import"
     assert target["expected_sequence"] == 0 and target["operation_id"] == operation
-    assert rpc.call("corpora_complete_import", complete) is True
+    from corpora_api import corpus_import_worker as import_worker
+
+    resume_path = f"/v1/corpora/{session['p_corpus']}/imports/{operation}/resume"
+    assert (
+        api.post(resume_path, headers={"Authorization": "Bearer " + foreign[1]}).status_code == 404
+    )
+    with monkeypatch.context() as patch:
+
+        def finish_verified(receipt, *, slot):
+            assert receipt["operation_id"] == operation and receipt["mode"] == "import"
+            assert rpc.call("corpora_complete_import", complete) is True
+
+        patch.setattr(import_worker, "run_import_resume_worker", finish_verified)
+        resumed = api.post(resume_path, headers={"Authorization": "Bearer " + owner[1]})
+    assert resumed.status_code == 200 and resumed.json()["state"] == "completed"
     assert rpc.call("corpora_complete_import", complete) is True
     assert rpc.call("corpora_find_import_result", complete) is True
     assert rpc.call("corpora_find_import_result", {**complete, "p_sha": "f" * 40}) is False
