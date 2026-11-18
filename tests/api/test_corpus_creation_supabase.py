@@ -1330,7 +1330,9 @@ def _exercise_access_lifecycle(
     assert api.get(readers, headers=header(foreign)).status_code == 404
     assert api.get(path + "/metadata", headers=header(foreign)).status_code == 200
     allowed_reads(header(foreign))
-    _exercise_project_linking_permissions(api, db, corpus, empty_corpus, head_sha, admin, foreign)
+    _exercise_project_linking_permissions(
+        api, db, corpus, empty_corpus, head_sha, admin, foreign, owner
+    )
     assert (
         api.get(
             "/v1/refs/resolve", params={"ref": reference_id}, headers=header(foreign)
@@ -1494,7 +1496,9 @@ def _exercise_access_lifecycle(
             ).fetchone()[0] == (role == "service_role")
 
 
-def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha, admin, foreign):
+def _exercise_project_linking_permissions(
+    api, db, corpus, old_corpus, head_sha, admin, foreign, owner
+):
     """Verify both project and corpus grants using actual Auth sessions and SQL guards."""
     from psycopg.types.json import Jsonb
 
@@ -1518,6 +1522,65 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
         db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_publication.sql")).read_text())
         db.execute(next(migrations.glob("*_project_citation_discoveries.sql")).read_text())
+        db.execute(next(migrations.glob("*_managed_project_corpora.sql")).read_text())
+        for role in ("anon", "authenticated"):
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (role, "public.corpora_set_project_corpus(uuid,uuid,bigint,uuid,uuid,boolean)"),
+            ).fetchone()[0]
+            assert not db.execute(
+                "SELECT has_table_privilege(%s,%s,'SELECT')",
+                (role, "public.corpora_project_managed_corpora"),
+            ).fetchone()[0]
+        corpus_path = f"/v1/projects/{project}/corpora"
+        admin_headers = {"Authorization": "Bearer " + admin[1]}
+        member_headers = {"Authorization": "Bearer " + foreign[1]}
+        for _ in range(30):
+            choices = api.get(corpus_path + "?linked_only=false", headers=admin_headers)
+            if choices.status_code != 503:
+                break
+            time.sleep(0.1)
+        assert choices.status_code == 200, choices.text
+        assert any(item["id"] == corpus and not item["linked"] for item in choices.json()["items"])
+        assert api.get(corpus_path).status_code == 401
+        revoked_headers = {"Authorization": "Bearer " + owner[1]}
+        assert api.get(corpus_path, headers=revoked_headers).status_code == 401
+        assert api.put(corpus_path + "/" + corpus, headers=revoked_headers).status_code == 401
+        unrelated_project = str(uuid4())
+        db.execute("INSERT INTO public.projects VALUES (%s,%s)", (unrelated_project, actor["sub"]))
+        assert (
+            api.get(f"/v1/projects/{unrelated_project}/corpora", headers=member_headers).status_code
+            == 404
+        )
+        assert (
+            api.get(corpus_path + "?linked_only=false", headers=member_headers).status_code == 404
+        )
+        assert api.put(corpus_path + "/" + corpus, headers=member_headers).status_code == 404
+        linked = api.put(corpus_path + "/" + corpus, headers=admin_headers)
+        assert linked.status_code == 200 and linked.json()["linked"] is True, linked.text
+        assert api.put(corpus_path + "/" + corpus, headers=admin_headers).json() == linked.json()
+        visible = api.get(corpus_path, headers=member_headers)
+        assert visible.status_code == 200 and [x["id"] for x in visible.json()["items"]] == [corpus]
+        db.execute(
+            "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
+            (corpus, member["sub"]),
+        )
+        assert api.get(corpus_path, headers=member_headers).json()["items"] == []
+        db.execute(
+            "INSERT INTO public.corpora_corpus_readers(corpus_id,user_id,added_by) "
+            "VALUES (%s,%s,%s)",
+            (corpus, member["sub"], actor["sub"]),
+        )
+        removed = api.delete(corpus_path + "/" + corpus, headers=admin_headers)
+        assert removed.status_code == 200 and removed.json()["linked"] is False, removed.text
+        assert api.get(corpus_path, headers=member_headers).json()["items"] == []
+        # An ordinary project owner can manage associations too; this is not
+        # limited to the configured superadmin.
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (member["sub"], project))
+        ordinary_owner = api.put(corpus_path + "/" + corpus, headers=member_headers)
+        assert ordinary_owner.status_code == 200 and ordinary_owner.json()["linked"] is True
+        assert api.delete(corpus_path + "/" + corpus, headers=admin_headers).status_code == 200
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (actor["sub"], project))
         for role in ("anon", "authenticated"):
             assert not db.execute(
                 "SELECT has_function_privilege(%s,%s,'EXECUTE')",
@@ -1955,6 +2018,7 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             == 404
         )
     finally:
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_managed_corpora CASCADE")
         db.execute("DROP TABLE IF EXISTS public.corpora_project_discovery_revisions CASCADE")
         db.execute("DROP TABLE IF EXISTS public.corpora_project_discoveries CASCADE")
         db.execute("DROP TABLE IF EXISTS public.corpora_project_link_revisions CASCADE")

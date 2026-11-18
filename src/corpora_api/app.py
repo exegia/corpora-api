@@ -123,6 +123,7 @@ from corpora_api.models import (
     TFCheckReport,
     ValidationResponse,
 )
+from corpora_api.project_corpora_api import router as project_corpora_router
 from corpora_api.project_discovery_api import router as project_discovery_router
 from corpora_api.project_link_api import router as project_link_router
 from corpora_api.project_members_api import router as project_members_router
@@ -198,6 +199,7 @@ app = FastAPI(
         {"url": "http://localhost:8000", "description": "Local API"},
     ],
 )
+app.include_router(project_corpora_router)
 app.include_router(project_members_router)
 app.include_router(project_link_router)
 app.include_router(project_discovery_router)
