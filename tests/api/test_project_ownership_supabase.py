@@ -1,6 +1,8 @@
 """Project ownership and session revocation against a disposable local Supabase."""
 
+import base64
 import importlib
+import json
 import os
 import time
 from pathlib import Path
@@ -89,6 +91,50 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
             db.execute("UPDATE public.projects SET owner_id=NULL WHERE id=%s", (unassigned,))
             db.execute(migration)
             db.execute(next(migrations.glob("*_project_membership.sql")).read_text())
+            for table in ("corpora", "project_corpora", "project_references", "project_licences"):
+                project_column = (
+                    ",project_id uuid REFERENCES public.projects(id) ON DELETE CASCADE"
+                    if table != "corpora"
+                    else ""
+                )
+                extra = (
+                    ",note text"
+                    if table == "project_licences"
+                    else ",corpus_id uuid REFERENCES public.corpora(id)"
+                    if table == "project_corpora"
+                    else ""
+                )
+                db.execute(
+                    f"CREATE TABLE public.{table}(id uuid PRIMARY KEY{project_column}{extra})"
+                )
+                db.execute(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY")
+                db.execute(f"GRANT ALL ON public.{table} TO anon,authenticated,service_role")
+                if table != "project_licences":
+                    for role in ("anon", "authenticated"):
+                        db.execute(
+                            f'CREATE POLICY "{role} full access (temporary)" '
+                            f"ON public.{table} FOR ALL TO {role} USING (true) WITH CHECK (true)"
+                        )
+                else:
+                    for action, expression in (
+                        ("read", "FOR SELECT USING (true)"),
+                        ("insert", "FOR INSERT WITH CHECK (true)"),
+                        ("delete", "FOR DELETE USING (true)"),
+                    ):
+                        db.execute(
+                            f'CREATE POLICY "anon {action} plicences" '
+                            f"ON public.{table} {expression}"
+                        )
+            associations = next(migrations.glob("*_protect_project_associations.sql")).read_text()
+            db.execute(
+                "CREATE POLICY unexpected_permissive ON public.project_corpora "
+                "FOR SELECT TO anon USING (true)"
+            )
+            with pytest.raises(Exception, match="PROJECT_ASSOCIATION_POLICY_BASELINE_CHANGED"):
+                db.execute(associations)
+            db.execute("ROLLBACK")
+            db.execute("DROP POLICY unexpected_permissive ON public.project_corpora")
+            db.execute(associations)
             assert (
                 db.execute(
                     "SELECT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname='public' "
@@ -166,6 +212,109 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
             created = client.post(path, headers=headers(owner), json=item)
             assert created.status_code == 201, created.text
             assert created.json()[0]["owner_id"] == owner[0]
+            token_payload = owner[1].split(".")[1]
+            claims = json.loads(
+                base64.urlsafe_b64decode(token_payload + "=" * (-len(token_payload) % 4))
+            )
+            with psycopg.connect(dsn) as held:
+                held.execute("SET LOCAL ROLE authenticated")
+                held.execute(
+                    "SELECT set_config('request.jwt.claims',%s,true)", (json.dumps(claims),)
+                )
+                assert held.execute(
+                    "SELECT public.corpora_project_association_editable(%s)", (project_id,)
+                ).fetchone()[0]
+                db.execute("SET lock_timeout='150ms'")
+                with pytest.raises(psycopg.errors.LockNotAvailable):
+                    db.execute(
+                        "UPDATE public.projects SET owner_id=%s WHERE id=%s", (other[0], project_id)
+                    )
+                db.execute("RESET lock_timeout")
+            association_path = url + "/rest/v1/project_corpora"
+            licence_path = url + "/rest/v1/project_licences"
+            reference_path = url + "/rest/v1/project_references"
+            catalog_path = url + "/rest/v1/corpora"
+            catalog_id = str(uuid4())
+            db.execute("INSERT INTO public.corpora(id) VALUES (%s)", (catalog_id,))
+            association = {"id": str(uuid4()), "project_id": project_id, "corpus_id": catalog_id}
+            licence = {"id": str(uuid4()), "project_id": project_id}
+            assert client.post(
+                association_path, headers=headers(), json=association
+            ).status_code in (401, 403)
+            assert client.post(
+                association_path, headers=headers(other), json=association
+            ).status_code in (401, 403)
+            assert (
+                client.post(association_path, headers=headers(owner), json=association).status_code
+                == 201
+            )
+            assert client.get(association_path, headers=headers()).json() == []
+            assert client.get(association_path, headers=headers(other)).json() == []
+            embedded = path + "?id=eq." + project_id + "&select=id,project_corpora(id,corpora(id))"
+            assert client.get(embedded, headers=headers()).json()[0]["project_corpora"] == []
+            assert client.get(embedded, headers=headers(owner)).json()[0]["project_corpora"] == [
+                {"id": association["id"], "corpora": None}
+            ]
+            assert (
+                client.get(association_path, headers=headers(admin)).json()[0]["id"]
+                == association["id"]
+            )
+            assert (
+                client.delete(
+                    association_path + "?id=eq." + association["id"], headers=headers(admin)
+                ).json()[0]["id"]
+                == association["id"]
+            )
+            assert (
+                client.post(association_path, headers=headers(owner), json=association).status_code
+                == 201
+            )
+            association_item = association_path + "?id=eq." + association["id"]
+            assert client.delete(association_item, headers=headers(other)).json() == []
+            moved = client.patch(
+                association_item, headers=headers(owner), json={"project_id": unassigned}
+            )
+            assert moved.status_code in (401, 403)
+            assert client.post(licence_path, headers=headers(), json=licence).status_code in (
+                401,
+                403,
+            )
+            assert client.post(licence_path, headers=headers(other), json=licence).status_code in (
+                401,
+                403,
+            )
+            assert (
+                client.post(licence_path, headers=headers(owner), json=licence).status_code == 201
+            )
+            assert client.get(licence_path, headers=headers()).json()[0]["id"] == licence["id"]
+            assert (
+                client.delete(
+                    licence_path + "?id=eq." + licence["id"], headers=headers(other)
+                ).json()
+                == []
+            )
+            licence_item = licence_path + "?id=eq." + licence["id"]
+            assert (
+                client.patch(
+                    licence_item, headers=headers(owner), json={"note": "reviewed"}
+                ).json()[0]["note"]
+                == "reviewed"
+            )
+            assert (
+                client.delete(licence_item, headers=headers(admin)).json()[0]["id"] == licence["id"]
+            )
+            assert (
+                client.post(licence_path, headers=headers(owner), json=licence).status_code == 201
+            )
+            assert client.get(reference_path, headers=headers(owner)).status_code in (401, 403)
+            assert client.get(catalog_path, headers=headers()).json() == []
+            assert client.get(catalog_path, headers=headers(owner)).json() == []
+            assert client.post(
+                catalog_path, headers=headers(), json={"id": str(uuid4())}
+            ).status_code in (401, 403)
+            assert client.post(
+                catalog_path, headers=headers(owner), json={"id": str(uuid4())}
+            ).status_code in (401, 403)
             forged = client.post(
                 path,
                 headers=headers(other),
@@ -210,6 +359,10 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 )
                 added = api.put(member_path, headers=bearer(owner))
                 assert added.status_code == 200 and added.json()["present"] is True
+                assert client.get(association_path, headers=headers(other)).json() == []
+                assert (
+                    client.get(embedded, headers=headers(other)).json()[0]["project_corpora"] == []
+                )
                 assert api.put(member_path, headers=bearer(owner)).json() == added.json()
                 assert (
                     api.put(
@@ -271,6 +424,14 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 assert api.delete(member_path, headers=bearer(owner)).status_code == 401
             revoked = client.patch(target, headers=headers(owner), json={"name": "revoked"})
             assert revoked.status_code >= 400
+            revoked_association = client.post(
+                association_path,
+                headers=headers(owner),
+                json={"id": str(uuid4()), "project_id": project_id},
+            )
+            assert revoked_association.status_code >= 400
+            assert client.get(association_path, headers=headers(owner)).status_code >= 400
+            assert client.get(licence_path, headers=headers(owner)).status_code >= 400
             assert client.get(directory, headers=headers(owner)).status_code >= 400
             assert (
                 db.execute(
@@ -288,6 +449,11 @@ def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_po
                 == 0
             )
         finally:
+            db.execute("ROLLBACK")
+            for table in ("project_corpora", "project_references", "project_licences", "corpora"):
+                db.execute(f"DROP TABLE IF EXISTS public.{table} CASCADE")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_project_association_editable(uuid)")
+            db.execute("DROP FUNCTION IF EXISTS public.corpora_project_association_readable(uuid)")
             db.execute("DROP TABLE IF EXISTS public.corpora_project_members CASCADE")
             db.execute(
                 "DROP FUNCTION IF EXISTS "

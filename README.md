@@ -187,6 +187,16 @@ one with `DELETE /v1/corpora/{id}/readers/{user_id}`. Signed-in readers can
 discover ready shared corpora with `GET /v1/corpora/shared`; sharing does not
 grant editing or sharing rights, and revocation applies to subsequent reads.
 
+After applying `protect_project_associations`, the old `project_references`
+table is inaccessible to client roles. The legacy `corpora` catalog has no
+verified visibility or ownership mapping, so client queries return no rows;
+the managed corpus API is the replacement. Legacy project-corpus associations
+are visible and editable only to the project owner or superadmin. Project
+licence attachments remain publicly readable but only the owner or superadmin
+may change them; a named agreement is not verified personal consent. Existing
+Corpora Web project views need the managed-corpus
+integration tracked in exegia/corpora-web#125.
+
 After applying `project_linking_ledger`, project owners and superadmins can
 save a draft with `POST /v1/projects/{project_id}/references`. Each endpoint
 requires a corpus UUID, full immutable repository commit, asset path and exact
