@@ -1,0 +1,60 @@
+---
+title: Get started in two minutes
+description: Make a safe request before setting up authentication
+---
+
+## 1. Ask whether the API is running
+
+Open a terminal and paste:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  https://api.exegia.co/v1/health
+```
+
+Expected response, HTTP **200**:
+
+```json
+{"status":"ok"}
+```
+
+`GET` means “read.” A **200** status means the request succeeded. **JSON** is the structured text inside the response: here, the field `status` has the value `ok`.
+
+No account or token is needed for this request. A healthy response proves the API process can answer; it does not test every database, converter, or stored corpus.
+
+## 2. Read the basic deployment flags
+
+```bash
+curl --fail-with-body --silent --show-error \
+  https://api.exegia.co/v1/capabilities
+```
+
+A response can look like this:
+
+```json
+{"auth_required":true,"hub_writable":false}
+```
+
+`auth_required` describes the service-token gate for checks and conversions. `hub_writable` describes the older storage adapter. **It does not say whether the newer `/corpora` creation/import routes are enabled.** User-owned routes still require a user token regardless of these flags.
+
+## 3. Choose your next request
+
+| Goal | Next step |
+| --- | --- |
+| Read a public corpus | Ask its owner for its corpus UUID; try `/corpora/UUID/content` |
+| Work with your own corpus | [Get a user access token](/api/authentication#user-access-token) |
+| Check or convert text | [Use a service token](/api/authentication#service-token) |
+| Experiment without production data | [Run local tests](/api/testing#local-test-token) |
+
+```bash
+# Replace the example UUID with a real, public, ready corpus ID.
+CORPUS_ID='00000000-0000-4000-8000-000000000000'
+curl --fail-with-body --silent --show-error \
+  "https://api.exegia.co/v1/corpora/$CORPUS_ID/content?limit=20&offset=0"
+```
+
+The all-zero example is a placeholder, not a public demo corpus. A missing or private corpus returns **404**. There is no shared permanent production test token or guaranteed demo corpus.
+
+## Find the exact shape
+
+Use the [endpoint directory](/api/endpoints) to open the operation page. It shows which fields are required and the complete response shape. For a machine-readable copy, download [OpenAPI JSON](https://api.exegia.co/v1/openapi.json).

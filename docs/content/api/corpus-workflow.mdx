@@ -1,0 +1,147 @@
+---
+title: Create and read a corpus
+description: Follow one disposable corpus from creation to deletion
+---
+
+This walkthrough uses a **dedicated test user**, a small validated `.corpus` archive, and the hosted API. It changes real data. Use synthetic text and follow the [cleanup checklist](/core/qa-testing#cleanup).
+
+A corpus UUID is its stable identity. An operation UUID identifies one attempt that can be retried safely. Reuse an operation UUID only with the **same input**.
+
+## 1. Create an empty private corpus
+
+Get a [user token](/api/authentication#user-access-token), then set up IDs once for this run:
+
+```bash
+API='https://api.exegia.co/v1'
+CORPUS_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+IMPORT_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+DELETE_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+# USER_TOKEN is the dedicated user's access token, read securely earlier.
+curl --fail-with-body --silent --show-error "$API/corpora" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"id\":\"$CORPUS_ID\",\"title\":\"Disposable tutorial corpus\"}"
+```
+
+A completed creation returns **201** with `state: "repository_created"` and a `bootstrap_sha`. A same-input retry can return **200**, or **202** while pending. A created repository is still empty: it is not ready to read or publish.
+
+Save these IDs in your private run record. If a write times out, query `GET /corpora/ID` before taking another action. Do not generate a replacement corpus ID to bypass an uncertain result.
+
+## 2. Import the first archive
+
+The upload must be a valid `.corpus` archive with its shipped Context-Fabric cache, no larger than **3,000,000 bytes**. A canonical graph JSON from `/ingest` is a different artifact; renaming it to `.corpus` does not make it importable. Use a validated archive produced by the corpus tooling.
+
+For this walkthrough, download the **synthetic tutorial fixture**. It contains only “In the gap and out.”, an intentionally incomplete section hierarchy, and a shipped cache. It contains no credentials or user data.
+
+```bash
+curl --fail --location --output tiny.corpus \
+  https://docs.exegia.co/fixtures/tiny.corpus
+shasum -a 256 tiny.corpus
+```
+
+Expected SHA256: `8ff99caaf9a9e25297e7dba4ae3e431f5d5065203ed407f63a5477d0f5aefb2d` (2,350 bytes). The fixture's content view must preserve **In the gap and out.**, including “gap”.
+
+Read the current metadata first:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  "$API/corpora/$CORPUS_ID/metadata" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+For a new untouched corpus, `revision` is **1**. Use the actual returned value:
+
+```bash
+REVISION=1
+curl --fail-with-body --silent --show-error \
+  "$API/corpora/$CORPUS_ID/imports" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -F "operation_id=$IMPORT_ID" \
+  -F "expected_revision=$REVISION" \
+  -F 'file=@tiny.corpus;type=application/zip'
+```
+
+A new completed import returns **201**:
+
+```json
+{
+  "corpus_id": "00000000-0000-4000-8000-000000000001",
+  "operation_id": "00000000-0000-4000-8000-000000000002",
+  "state": "completed",
+  "sequence": 1
+}
+```
+
+These UUIDs illustrate the response; your result contains your IDs. An exact completed retry returns **200**. An existing incomplete operation returns **202**. Inspect it with `GET /corpora/ID/imports/OPERATION_ID`; do not automatically redispatch an uncertain write. If its state is uncertain, POST to `/corpora/ID/imports/OPERATION_ID/reconcile` to verify the existing candidate without issuing another write.
+
+After completion, metadata reports `state: "ready"`. Importing advances the metadata revision, so fetch metadata again before the next change.
+
+## 3. Read the corpus
+
+| View | What it means |
+| --- | --- |
+| `/manifest` | Description and structure of the corpus |
+| `/index` | Its section hierarchy |
+| `/sections` | A page of section entries |
+| `/content` | A page of text passages |
+| `/nodes/NUMBER` | One source node and its features |
+
+```bash
+curl --fail-with-body --silent --show-error \
+  "$API/corpora/$CORPUS_ID/content?limit=20&offset=0" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Content responses include `passages` and `total`; section responses include `items` and `next_offset`. Follow the response rather than assuming a page always contains the requested count. `limit` is **1–200** (default **50**) and `offset` starts at **0**. A section `ref` or `parent` is at most **512 characters**. Read the [endpoint schemas](/api/endpoints) for complete fields and optional format selection.
+
+### Edit corpus text and manage versions
+
+A signed-in corpus owner or superadmin can [list versions](/api/get_corpus_versions_v1_corpora__corpus_id__versions_get), then [edit a node](/api/edit_node_v1_corpora__corpus_id__nodes__node__patch) using the current version's sequence and commit SHA. Send a new operation UUID for each edit; repeat the same UUID and request to check or safely retry it.
+
+```json
+{
+  "operation_id": "00000000-0000-4000-8000-000000000001",
+  "expected_sequence": 1,
+  "expected_commit": "0123456789abcdef0123456789abcdef01234567",
+  "text_feature": "text",
+  "text": "Replacement paragraph text"
+}
+```
+
+The text feature depends on the corpus; inspect the node's features before editing. Replacement creates a new version and may change node IDs. The editor rejects a change if it cannot safely remap existing nested nodes, word attributes, links, or annotations; it also requires a default text format made from the selected feature.
+
+
+## 4. Make API reads public
+
+After the initial import, an otherwise untouched corpus has metadata revision **2**. Fetch the current revision if anything else changed.
+
+```bash
+REVISION=2
+curl --fail-with-body --silent --show-error -X PATCH \
+  "$API/corpora/$CORPUS_ID/visibility" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"expected_revision\":$REVISION,\"visibility\":\"public\"}"
+```
+
+The response contains `corpus_id`, the new `revision`, and `visibility: "public"`. Now try `/content` **without** an Authorization header. Public metadata and the five detail views can be read without signing in. This does not make the private Hugging Face repository public, and it does not make the owner's corpus list anonymous.
+
+To make it private again, send the same PATCH with `visibility: "private"` and the latest returned revision. A stale revision returns **409** rather than overwriting a newer change.
+
+## 5. Delete the disposable corpus
+
+Only delete the corpus created for this walkthrough. Read its latest metadata revision and use it below:
+
+```bash
+# Example: 3 after publication, if there were no other changes.
+REVISION=3
+curl --fail-with-body --silent --show-error -X DELETE \
+  "$API/corpora/$CORPUS_ID" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"operation_id\":\"$DELETE_ID\",\"expected_revision\":$REVISION}"
+```
+
+A completed deletion returns **200** with `state: "completed"`. An existing pending deletion can return **202**. Query `GET /corpora/ID/deletions/OPERATION_ID` for its receipt. Keep the original revision and operation ID for an exact retry.
+
+After completion, corpus views return **404**, even for the owner. Audit history and a tombstone remain; the UUID cannot be reused. Finish by retiring the temporary user session and following [QA cleanup](/core/qa-testing#cleanup).

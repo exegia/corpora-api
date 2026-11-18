@@ -1,0 +1,36 @@
+---
+title: How the pieces connect
+description: Follow a request from the desktop to stored text
+---
+
+Think of the API as a front desk. Your app asks for work; the API checks who is asking and calls the right service.
+
+![A desktop or web app sends HTTPS requests to the Corpora API. The API checks identities and metadata in Supabase, reads private archive bytes from Hugging Face, and runs Corpora Core to validate or read the text.](/images/api-connections.svg)
+
+| Piece | Its job |
+| --- | --- |
+| Desktop, website, or curl | Sends requests and displays results |
+| Corpora API | Checks access, limits requests, and coordinates work |
+| Supabase | Holds authentication, ownership, visibility, metadata, operation receipts, and the authoritative corpus version pointer; ingestion jobs also use private Storage |
+| Hugging Face | Stores corpus archive bytes in a private repository per corpus |
+| Corpora Core and its readers | Validate archives, load their structure, and return text or findings |
+
+## What happens when you read a corpus?
+
+1. Your app asks for a view, such as `/v1/corpora/ID/content`.
+2. The API checks current access in Supabase. Anonymous access needs a public, ready corpus.
+3. The API reads the archive at the recorded immutable Hub revision and verifies its size and hash.
+4. An isolated core reader loads the archive and produces the requested view.
+5. The API returns JSON to your app. Successful corpus detail responses use `Cache-Control: no-store`.
+
+An **immutable revision** names exact saved bytes. A **hash** is a fingerprint used to check that those bytes match the recorded version.
+
+## What does public mean?
+
+**Public means anyone can read the allowed views through the API. The Hugging Face repository remains private.** The API keeps the storage credential on the server. Readers never need that credential.
+
+Metadata revisions and content versions are different. Changing a title or visibility advances a metadata revision. Importing corpus data creates a content version. Keep the latest values returned by the API rather than guessing them.
+
+## Where do the websites fit?
+
+`docs.exegia.co` serves these guides and the interactive reference. `api.exegia.co/v1` serves the new API. Existing non-`/v1` paths remain owned by the older `corpora-py` service. The docs MCP endpoint searches documentation; the API MCP endpoint runs tools.

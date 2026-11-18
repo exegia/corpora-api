@@ -238,149 +238,25 @@ otherwise the core reader returns complete coarser sections or original slot nod
 Node IDs and annotations are preserved. Private, missing, deleted or not-yet-ready
 corpora return 404; missing nodes and sections also return 404. Unreadable archives
 return 422, oversized view results return 413, and storage/integrity/worker failures
-return 503. Errors do not expose the backing repository. Existing `/v1/storage/...`
-reads use their existing backing store. Editing and restoring versions remain
-separate work.
+return 503. Errors do not expose the backing repository. Existing
+`/v1/storage/...` reads use their existing backing store. Owners and superadmins
+can edit corpus content and restore an earlier version.
 
-The content schema records content write operations, immutable-commit
-versions and a current head, distinct from the metadata revision counter. An
-unwired adapter admits an owner or superadmin save inside a live-session
-transaction, before any Hub work. It expects a trusted hash of validated input;
-it does not perform validation or Hub writes. The migration grants the service
-role read access only, so admission needs a separately reviewed write boundary.
-An unwired database finalizer checks the exact claim and atomically records a
-trusted candidate, advances the head and sets initial readiness. The caller
-must independently verify the Hub commit, parent, input and retained ref;
-constructing an attestation does not verify it. The initial-import route above
-provides that verification for version 1; the general save, restore and
-reconciliation adapters remain unwired. Recorded commits must remain reachable
-through their retained Hub references; the schema does not verify remote bytes
-or enforce readiness in every possible write path. A first version has no prior
-logical corpus version, but must use a separately recorded, immutable Hub
-bootstrap baseline as its Git parent. This baseline is a pinned commit observed
-after confirmed private repository creation, not proof of the provider's
-original creation commit. A provisioning operation binds that
-bootstrap to one immutable claim and must complete atomically with it; an
-uncertain operation cannot be automatically reclaimed. An unwired adapter
-checks a live session and owner or server-configured superadmin before
-atomically admitting and claiming one attempt. A creation already underway may
-finish after sign-out, including starting its Hub request; a new creation request
-requires an active session. An internal dispatcher calls the bounded worker once
-after a successful admission. After a confirmed creation and a second matching
-private-repository observation, it records the observed baseline against the
-exact claim. A lost database acknowledgement is checked against the immutable
-result; a lost Hub creation response is never automatically retried. A restricted
-production privilege boundary and outcome resolution remain unresolved.
-An internal read-only reconciliation inspector can report whether the expected
-private Hub repository is currently visible, mismatched or inconclusive. Its
-observation neither proves creation provenance nor establishes worker termination;
-it never adopts, retries or finalizes the operation.
-The Hub observation uses a 15-second overall HTTP deadline, including response
-headers and a body limited to 64 KiB. Timeout or cleanup failure is inconclusive;
-the dispatcher retains the claim for reconciliation. Each observation owns its
-async HTTP client and allows up to 0.1 seconds each for response and client cleanup.
-This assumes nonblocking client construction and cooperative HTTPX cancellation;
-it does not bound the surrounding database calls or the entire dispatcher.
-An unwired finalizer can record a bootstrap from a trusted assertion, but no
-component verifies that assertion; save claims fail closed when it is missing.
-Before recording a new content version, a future worker must replace and verify the complete
-intended tree at the resulting pinned commit, check content bytes, and guard
-against branch changes. Replacing files does not erase prior Git history.
-Hub organization administrators are trusted administrators and can still change
-visibility, move references or delete repositories; reads must verify the
-identity and privacy appropriate to the operation, and availability cannot be
-guaranteed by a commit hash alone. An unwired one-shot claim
-adapter lets one trusted dispatcher claim an admitted operation; it does not
-run a worker or automatically reclaim an uncertain or stalled operation.
-Admission receipts do not themselves authorize dispatch. A lost admission or
-claim commit response must not trigger Hub work from the failed response; the
-durable state needs reconciliation. A newly authenticated session for the same
-actor can reattach to an identical operation; the originally admitted session
-remains recorded. Receipt state is a snapshot, not an execution claim. The
-finalizer checks the exact claim ID and operation state, but a database claim
-cannot cancel or fence a remote Hub request that is already running.
-An unwired archive inventory hashes every regular entry in the original ZIP,
-including metadata and caches, with bounded full-stream decompression. It is
-not corpus validation or durable staging. An unwired preparation adapter binds
-the same immutable bytes and canonical archive format to the claimed digest,
-inventory and real-loader
-report; it requires the Text-Fabric and Context-Fabric checks to pass. It accepts
-`.corpus` and `.zip` inputs; profile-only `.ctei` and `.cusx` checks are not
-treated as Text-Fabric loading. Neither adapter publishes a version. The inventory
-currently accepts stored and DEFLATE ZIP entries and rejects ZIP64 entry sizes
-and other compression methods; expanding that support remains required before
-wiring it for archives using those methods.
-An unwired Hub staging adapter creates a separate operation-specific branch,
-writes the validated input archive and reads it back by immutable commit SHA
-with a bounded stream and digest check. An unwired recorder can persist the
-trusted receipt for the exact claim; the database requires a receipt before a
-version can be finalized. The recorder does not verify Hub contents itself,
-and a saved receipt does not guarantee future privacy or availability. An
-unwired recovery read can load an executing receipt, recheck the repository and
-ref, and revalidate the bytes at its pinned commit. It does not renew a worker
-claim or authorize redispatch; the claim and head can change after the read.
-Remote
-calls lack an end-to-end deadline, and interrupted work requires reconciliation.
-A separate read-only observation can inspect a deterministic staging ref and
-verify its bytes even when no receipt was recorded. A missing ref or a matching
-observation does not establish whether the earlier worker is still running and
-does not authorize a retry, receipt insertion or publication.
-A dedicated staging state, safe dispatcher, cleanup policy and Hub parent
-verification are still required.
-An unwired one-shot publication claim now follows a staged receipt and is
-separate from the staging claim; versions must carry that publication claim.
-The claim is coordination only: the existing database role can read it, so
-staging and publishing are not isolated until a restricted dispatcher or
-separate production credentials are installed. It does not fence an existing
-remote request or authorize automatic takeover after an uncertain outcome.
-An unwired Git-object verifier checks the commit's single direct parent, exact
-tree paths and regular-file modes, and verifies each blob and resolved LFS file
-against trusted content hashes. Paths use exact case-sensitive Git names; this
-does not establish checkout compatibility on every filesystem. It requires an
-explicit decision on repository-managed files such as `.gitattributes`, uses
-Git's SHA-1 object identifiers, and supports canonical three-line LFS pointers
-only. The caller must verify every returned entry against the matching trusted
-path, size and hash. Object acquisition, Hub privacy and ref checks, aggregate download limits,
-and the publication worker still need to be implemented.
-The configured Hub organization is part of each immutable repository link.
-Changing it will make existing records fail closed. A namespace transfer needs
-a separately reviewed Hub transfer and metadata migration or a trusted
-multi-namespace transition; this component does not perform either operation.
-The Hub provisioning adapter uses the server-only
-`HF_CORPUS_PROVISION_TOKEN`, verifies the configured namespace is an actual Hub
-organization, requests a private repository, and checks its returned identity
-and privacy. The receipt includes the observed Git head, but this observation
-does not establish the initial commit or authorize recording a bootstrap: other
-writers may have changed the repository. The creation route adds durable one-shot
-admission and an independent observation before finalization. It does not adopt an existing name
-or retry an ambiguous write.
-An unwired POSIX worker wrapper applies a request deadline, bounds worker
-output, and accepts a trusted live-session lease. If the request times out,
-an acquired lease stays held until the worker stops while its database
-connection remains alive; the Hub write may still have been accepted and needs
-reconciliation. If that connection is lost, PostgreSQL releases its lock and
-the worker can still send a Hub write after logout, which is allowed for a request
-already accepted while signed in. Abrupt application-process death and the
-hosted worker environment need deployment-specific verification, and a remote write may remain in
-flight after local termination. The creation API uses the one-shot dispatcher;
-content upload and readiness transitions remain separate work. Privacy must also be checked at later sensitive operations; one successful observation does not keep
-a repository private.
+The content schema records immutable versions and a current head separately
+from the metadata revision. Imports, edits, restores, and recovery of uncertain
+writes verify the staged bytes and published Git candidate before advancing the
+head. Recorded commits must remain reachable through their retained Hub refs.
 
-An unwired corpus-file reader checks owner-bound metadata, a ready state, a
-specific Hub commit and point-in-time private visibility before streaming a
-bounded file. It uses server-only `HF_CORPUS_READ_TOKEN` and does not forward
-that token to redirected CDN hosts. It does not establish corpus readiness,
-authenticate sessions, guarantee continuous privacy or provide a total request
-deadline. Routes need a reviewed start-time session admission check and a trusted
-revision before enabling it. The hosted runtime is unverified.
+Corpus creation uses a one-shot dispatcher after live-session admission. An
+accepted creation may finish after sign-out, but a new request requires an active
+session. A lost Hub response is not automatically retried. Check the recorded
+operation and use its documented recovery path when the outcome is uncertain.
 
-An additional unwired async transfer adapter applies one deadline across the
-metadata lookup, Hub verification, file transfer and sink backpressure. It uses
-a dedicated HTTP client for each transfer and allows a short cleanup period
-after the deadline. Client setup is synchronous and must not block; its
-transport and sink must cooperate with cancellation. Partial bytes already
-delivered cannot be recalled. It does not integrate a live-session guard,
-authorize revisions, or replace the existing reader.
+The configured Hugging Face organization is part of each immutable repository
+link. Changing it requires a coordinated transfer and metadata migration. Hub
+administrators can change repository visibility or delete data, so the API checks
+privacy at sensitive operations. Its server-only read and provisioning credentials
+are never returned to API clients.
 
 Authenticated `/v1/ai/drafts` endpoints create, list, inspect and export private
 working drafts from a caller-owned completed conversion. They use the existing
@@ -478,3 +354,14 @@ This repository was created from `exegia/corpora-template`. Work on `<type>/<slu
 The release generator writes `CHANGELOG.md` with no trailing blank line so the release PR passes the pre-commit hygiene check. Run `make selftest` after changing that generator.
 
 Promotion skips branches with matching trees. The release job builds Python distributions and attaches them when it creates the GitHub Release; later tag-triggered jobs handle registry publishing.
+
+## API guides and QA cleanup
+
+The public guides live in `docs/content/`: `/api` is the onboarding hub and
+`/core/qa-testing` records the shared QA procedure. Keep examples aligned with
+`docs/openapi.json`; a local dummy service token never replaces a Supabase user
+session. Use dedicated accounts and synthetic corpora for hosted QA. Record exact
+fixture IDs before writes, delete through the product API, verify the receipt,
+retire temporary accounts/sessions, and remove only run-specific credential files.
+Keep sanitized evidence and report incomplete cleanup. Preserve production audit
+history and permanent server configuration. See [QA testing](https://docs.exegia.co/core/qa-testing).
