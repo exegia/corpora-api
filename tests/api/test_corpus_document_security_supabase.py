@@ -83,6 +83,36 @@ def test_document_and_bucket_access_are_owner_scoped():
                 "ON DELETE CASCADE,previous_value text)"
             )
             db.execute("CREATE TABLE public.licences(id text PRIMARY KEY,title text NOT NULL)")
+            db.execute(
+                "CREATE TABLE public.organizations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
+                "name text NOT NULL)"
+            )
+            db.execute("ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY")
+            db.execute("GRANT ALL ON public.organizations TO anon,authenticated,service_role")
+            db.execute(
+                'CREATE POLICY "anon read orgs" ON public.organizations FOR SELECT USING (true)'
+            )
+            db.execute(
+                'CREATE POLICY "anon insert orgs" ON public.organizations '
+                "FOR INSERT WITH CHECK (true)"
+            )
+            db.execute(
+                'CREATE POLICY "anon update orgs" ON public.organizations '
+                "FOR UPDATE USING (true) WITH CHECK (true)"
+            )
+            db.execute(
+                "CREATE POLICY organizations_insert_authenticated ON public.organizations "
+                "FOR INSERT WITH CHECK (auth.role()='authenticated')"
+            )
+            db.execute(
+                "CREATE POLICY organizations_select_authenticated ON public.organizations "
+                "FOR SELECT USING (auth.role()='authenticated')"
+            )
+            db.execute(
+                "CREATE POLICY organizations_update_authenticated ON public.organizations "
+                "FOR UPDATE USING (auth.role()='authenticated') "
+                "WITH CHECK (auth.role()='authenticated')"
+            )
             for table in ("corpus_documents", "corpus_commits", "corpus_changes", "licences"):
                 db.execute(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY")
                 db.execute(f"GRANT ALL ON public.{table} TO anon,authenticated,service_role")
@@ -180,11 +210,51 @@ def test_document_and_bucket_access_are_owner_scoped():
             db.execute("INSERT INTO public.licences VALUES ('test-catalogue','Test')")
             db.execute(next(migrations.glob("*_secure_corpus_documents.sql")).read_text())
             db.execute(next(migrations.glob("*_deny_revoked_storage_reads.sql")).read_text())
+            organization_migration = next(
+                migrations.glob("*_protect_organization_writes.sql")
+            ).read_text()
+            db.execute(
+                "CREATE POLICY test_unexpected_orgs ON public.organizations FOR SELECT USING (true)"
+            )
+            with pytest.raises(
+                psycopg.errors.RaiseException, match="ORGANIZATION_POLICY_BASELINE_CHANGED"
+            ):
+                db.execute(organization_migration)
+            db.execute("ROLLBACK")
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM pg_catalog.pg_policies WHERE schemaname='public' "
+                    "AND tablename='organizations' AND policyname='anon insert orgs'"
+                ).fetchone()[0]
+                == 1
+            )
+            db.execute("DROP POLICY test_unexpected_orgs ON public.organizations")
+            db.execute(organization_migration)
+            # Defense in depth against a later permissive policy on the table.
+            db.execute(
+                "CREATE POLICY test_broad_orgs ON public.organizations "
+                "FOR ALL USING (true) WITH CHECK (true)"
+            )
             deadline = time.monotonic() + 10
             docs = url + "/rest/v1/corpus_documents"
             while client.get(docs + "?select=owner_id", headers=headers(owner)).status_code != 200:
                 assert time.monotonic() < deadline
                 time.sleep(0.2)
+            orgs = url + "/rest/v1/organizations"
+            assert (
+                client.post(orgs, headers=headers(), json={"name": "forbidden"}).status_code >= 400
+            )
+            organization = client.post(orgs, headers=headers(owner), json={"name": "allowed"})
+            assert organization.status_code == 201, organization.text
+            organization_id = organization.json()[0]["id"]
+            assert client.get(orgs, headers=headers()).json()[0]["name"] == "allowed"
+            for user in (None, owner, other):
+                changed = client.patch(
+                    orgs + "?id=eq." + organization_id,
+                    headers=headers(user),
+                    json={"name": "forbidden"},
+                )
+                assert changed.status_code == 200 and changed.json() == []
             assert client.get(docs, headers=headers()).json() == []
             assert client.get(docs, headers=headers(owner)).json() == []
             assert client.get(docs, headers=headers(admin)).json()[0]["id"] == unowned
@@ -334,6 +404,10 @@ def test_document_and_bucket_access_are_owner_scoped():
                 404,
             )
             assert client.post(docs, headers=headers(owner), json=payload).status_code >= 400
+            assert (
+                client.post(orgs, headers=headers(owner), json={"name": "signed out"}).status_code
+                >= 400
+            )
         finally:
             db.execute("ROLLBACK")
             if bucket_created:
@@ -347,6 +421,7 @@ def test_document_and_bucket_access_are_owner_scoped():
                 "corpus_commits",
                 "corpus_documents",
                 "licences",
+                "organizations",
                 "projects",
                 "user_directory",
             ):
