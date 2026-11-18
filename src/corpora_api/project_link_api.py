@@ -6,7 +6,7 @@ from uuid import UUID
 
 from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from corpora_api.auth import require_user
@@ -53,6 +53,25 @@ class RetrievedSelection(BaseModel):
     side: Literal["source", "target"]
     endpoint: LinkEndpoint
     fragments: list[str]
+
+
+class LinkExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reference_ids: list[UUID] = Field(min_length=1, max_length=10)
+
+    @field_validator("reference_ids")
+    @classmethod
+    def distinct_references(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("Reference IDs must be distinct")
+        return value
+
+
+class LinkExport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1"] = "1"
+    project_id: UUID
+    revisions: list[LinkRevision]
 
 
 def _call(name: str, params: dict[str, Any]) -> Any:
@@ -170,6 +189,49 @@ async def save_reference(
     )
     response.headers["Cache-Control"] = "no-store"
     return _receipt(value, project_id, body.reference_id, body.expected_version or 0)
+
+
+@router.post("/{project_id}/references/export", response_model=LinkExport)
+async def export_references(
+    project_id: UUID,
+    body: LinkExportRequest,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> LinkExport:
+    """Export selected current references and their provenance, regardless of review state."""
+    value = await run_in_threadpool(
+        _call,
+        "corpora_export_project_links",
+        {
+            **_session(request.state.user_claims),
+            "p_project": str(project_id),
+            "p_references": [str(item) for item in body.reference_ids],
+        },
+    )
+    _status(value)
+    try:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"status", "revisions"}
+            or value["status"] != "ok"
+        ):
+            raise ValueError("Invalid export")
+        revisions = [LinkRevision.model_validate(row) for row in value["revisions"]]
+        actual = [row.reference.id for row in revisions]
+        if actual != sorted(set(body.reference_ids)):
+            raise ValueError("Mismatched export references")
+        result = LinkExport(project_id=project_id, revisions=revisions)
+        encoded = json.dumps(
+            result.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")
+        )
+        if len(encoded.encode("utf-8")) > 3_900_000:
+            raise ValueError("Export exceeds response limit")
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(503, "Project linking is unavailable") from None
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Disposition"] = 'attachment; filename="corpora-links.json"'
+    return result
 
 
 @router.post("/{project_id}/references/{reference_id}/retrieve", response_model=RetrievedSelection)

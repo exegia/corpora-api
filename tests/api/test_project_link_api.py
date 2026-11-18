@@ -208,3 +208,50 @@ def test_retrieval_bounds_the_encoded_response(monkeypatch):
     path = f"/v1/projects/{uuid4()}/references/{body['reference_id']}/retrieve"
     response = client.post(path, headers={"Authorization": "Bearer valid"}, json={"side": "source"})
     assert response.status_code == 413
+
+
+def test_export_preserves_current_reference_provenance_and_requires_complete_access(monkeypatch):
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    body, actor = sample()
+    project = uuid4()
+    claims = {"sub": str(actor), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
+    reference = draft_reference(LinkSave.model_validate(body), actor).model_dump(mode="json")
+    revision = {
+        "version": 2,
+        "actor_id": str(actor),
+        "recorded_at": "2026-01-01T00:00:00Z",
+        "reason": "review",
+        "action": "reject",
+        "reference": reference,
+    }
+    calls = []
+
+    def rpc(_self, name, params):
+        calls.append((name, params))
+        return {"status": "ok", "revisions": [revision]}
+
+    monkeypatch.setattr(links.CreationRPC, "call", rpc)
+    client = TestClient(app_module.app)
+    path = f"/v1/projects/{project}/references/export"
+    data = {"reference_ids": [body["reference_id"]]}
+    assert client.post(path, json=data).status_code == 401
+    headers = {"Authorization": "Bearer valid"}
+    result = client.post(path, headers=headers, json=data)
+    assert result.status_code == 200
+    assert result.json()["revisions"][0]["reference"]["provenance"]["agent_id"] == str(actor)
+    assert result.headers["content-disposition"].startswith("attachment;")
+    assert result.headers["cache-control"] == "no-store"
+    assert calls[0][0] == "corpora_export_project_links"
+    assert (
+        client.post(
+            path, headers=headers, json={"reference_ids": data["reference_ids"] * 2}
+        ).status_code
+        == 422
+    )
+    assert client.post(path, headers=headers, json={"reference_ids": []}).status_code == 422
+    monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "not_found"})
+    assert client.post(path, headers=headers, json=data).status_code == 404
+    monkeypatch.setattr(links.CreationRPC, "call", lambda *_: {"status": "ok", "revisions": []})
+    assert client.post(path, headers=headers, json=data).status_code == 503

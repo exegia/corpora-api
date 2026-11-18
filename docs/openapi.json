@@ -2827,6 +2827,55 @@
         "title": "LinkEndpoint",
         "type": "object"
       },
+      "LinkExport": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/LinkRevision"
+            },
+            "title": "Revisions",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "revisions"
+        ],
+        "title": "LinkExport",
+        "type": "object"
+      },
+      "LinkExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reference_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Reference Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reference_ids"
+        ],
+        "title": "LinkExportRequest",
+        "type": "object"
+      },
       "LinkHistory": {
         "additionalProperties": false,
         "properties": {
@@ -8880,6 +8929,68 @@
           }
         ],
         "summary": "Save Reference",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/export": {
+      "post": {
+        "description": "Export selected current references and their provenance, regardless of review state.",
+        "operationId": "export_references_v1_projects__project_id__references_export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkExport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Export References",
         "tags": [
           "Project links"
         ]
