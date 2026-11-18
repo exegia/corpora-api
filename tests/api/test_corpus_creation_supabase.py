@@ -1269,7 +1269,7 @@ def _exercise_access_lifecycle(
     assert api.get(readers, headers=header(foreign)).status_code == 404
     assert api.get(path + "/metadata", headers=header(foreign)).status_code == 200
     allowed_reads(header(foreign))
-    _exercise_project_linking_permissions(api, db, corpus, head_sha, admin, foreign)
+    _exercise_project_linking_permissions(api, db, corpus, empty_corpus, head_sha, admin, foreign)
     assert (
         api.get(
             "/v1/refs/resolve", params={"ref": reference_id}, headers=header(foreign)
@@ -1433,7 +1433,7 @@ def _exercise_access_lifecycle(
             ).fetchone()[0] == (role == "service_role")
 
 
-def _exercise_project_linking_permissions(api, db, corpus, head_sha, admin, foreign):
+def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha, admin, foreign):
     """Verify both project and corpus grants using actual Auth sessions and SQL guards."""
     from psycopg.types.json import Jsonb
 
@@ -1517,11 +1517,20 @@ def _exercise_project_linking_permissions(api, db, corpus, head_sha, admin, fore
         assert save(actor, 2) == {"status": "invalid_transition"}
         assert decide(actor, 2, "reopen") == {"status": "ok", "version": 3}
         assert [r["version"] for r in history(member)["revisions"]] == [3, 2, 1]
+        # Current resolution must not require access to a corpus that only
+        # appears in an older ledger revision.
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (member["sub"], project))
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=1",
+            (old_corpus, project, reference),
+        )
+        assert history(member) == {"status": "not_found"}
         # PostgREST reloads the newly installed RPCs asynchronously.
         for _ in range(20):
             resolved = api.post(
                 f"/v1/projects/{project}/references/{reference}/resolve",
-                headers={"Authorization": "Bearer " + admin[1]},
+                headers={"Authorization": "Bearer " + foreign[1]},
                 json={"expected_version": 3, "reason": "verified"},
             )
             if resolved.status_code != 503:
@@ -1529,9 +1538,23 @@ def _exercise_project_linking_permissions(api, db, corpus, head_sha, admin, fore
             time.sleep(0.1)
         assert resolved.status_code == 200, resolved.text
         assert resolved.json()["version"] == 4
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=1",
+            (corpus, project, reference),
+        )
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (actor["sub"], project))
         assert decide(member, 4, "approve") == {"status": "not_found"}
         assert decide(actor, 4, "approve") == {"status": "ok", "version": 5}
-        assert history(member)["revisions"][0]["reference"]["review"] == "approved"
+        assert (
+            db.execute(
+                "SELECT reference->>'review' FROM public.corpora_project_link_revisions "
+                "WHERE project_id=%s AND reference_id=%s AND version=5",
+                (project, reference),
+            ).fetchone()[0]
+            == "approved"
+        )
+        assert history(member)["status"] == "ok"
         db.execute(
             "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
             (corpus, member["sub"]),

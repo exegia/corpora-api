@@ -59,20 +59,22 @@ def _status(value: Any) -> None:
 async def _resolve_reference(request: Request, project: UUID, ref: UUID, version: int) -> None:
     value = await run_in_threadpool(
         _call,
-        "corpora_project_link_history",
+        "corpora_current_project_link",
         {
             **_session(request.state.user_claims),
             "p_project": str(project),
             "p_reference": str(ref),
-            "p_before": None,
-            "p_limit": 1,
         },
     )
     _status(value)
     try:
-        if not isinstance(value, dict) or value.get("status") != "ok":
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"status", "revision"}
+            or value.get("status") != "ok"
+        ):
             raise ValueError("Invalid history")
-        latest = LinkRevision.model_validate(value["revisions"][0])
+        latest = LinkRevision.model_validate(value["revision"])
         if latest.reference.id != ref:
             raise ValueError("Mismatched reference")
     except (ValueError, TypeError, KeyError, IndexError):

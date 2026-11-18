@@ -80,22 +80,20 @@ def test_resolve_verifies_both_passages_before_recording_decision(monkeypatch):
     )
     history = {
         "status": "ok",
-        "revisions": [
-            {
-                "version": 1,
-                "actor_id": str(actor),
-                "recorded_at": "2026-01-01T00:00:00Z",
-                "reason": "draft",
-                "action": "edit",
-                "reference": reference,
-            }
-        ],
+        "revision": {
+            "version": 1,
+            "actor_id": str(actor),
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "reason": "draft",
+            "action": "edit",
+            "reference": reference,
+        },
     }
     calls = []
 
     def rpc(_self, name, params):
         calls.append(name)
-        if name == "corpora_project_link_history":
+        if name == "corpora_current_project_link":
             return history
         assert len(resolved) == 2
         return {"status": "ok", "version": 2}
@@ -117,9 +115,9 @@ def test_resolve_verifies_both_passages_before_recording_decision(monkeypatch):
         json={"expected_version": 1, "reason": "verified"},
     )
     assert response.status_code == 200 and response.json()["version"] == 2
-    assert calls == ["corpora_project_link_history", "corpora_decide_project_link"]
+    assert calls == ["corpora_current_project_link", "corpora_decide_project_link"]
     assert len(resolved) == 2
-    history["revisions"][0]["reference"]["target"] = sample()[0]["target"]
+    history["revision"]["reference"]["target"] = sample()[0]["target"]
     resolved.clear()
     calls.clear()
     assert (
@@ -130,4 +128,4 @@ def test_resolve_verifies_both_passages_before_recording_decision(monkeypatch):
         ).status_code
         == 422
     )
-    assert calls == ["corpora_project_link_history"]
+    assert calls == ["corpora_current_project_link"]
