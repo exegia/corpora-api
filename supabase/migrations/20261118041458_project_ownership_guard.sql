@@ -5,7 +5,7 @@ LOCK TABLE public.projects, public.user_directory IN ACCESS EXCLUSIVE MODE;
 DO $$
 BEGIN
     IF (SELECT count(*) FROM pg_catalog.pg_policies
-        WHERE schemaname='public' AND tablename='projects') <> 2
+        WHERE schemaname='public' AND tablename='projects' AND permissive='PERMISSIVE') <> 2
        OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_policies WHERE schemaname='public'
            AND tablename='projects' AND policyname='anon full access (temporary)' AND cmd='ALL')
        OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_policies WHERE schemaname='public'

@@ -14,7 +14,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_project_owner_is_authenticated_and_cannot_be_forged():
+@pytest.mark.parametrize("with_restrictive_policy", [False, True])
+def test_project_owner_is_authenticated_and_cannot_be_forged(with_restrictive_policy):
     psycopg = pytest.importorskip("psycopg")
     url, dsn = os.environ["API_URL"].rstrip("/"), os.environ["DB_URL"]
     assert urlparse(url).hostname in {"localhost", "127.0.0.1", "::1"}
@@ -59,18 +60,38 @@ def test_project_owner_is_authenticated_and_cannot_be_forged():
                 'CREATE POLICY "authenticated full access (temporary)" ON public.projects '
                 "FOR ALL TO authenticated USING (true) WITH CHECK (true)"
             )
+            if with_restrictive_policy:
+                db.execute(
+                    "CREATE POLICY projects_ai_private ON public.projects AS RESTRICTIVE "
+                    "FOR ALL TO public USING (true) WITH CHECK (true)"
+                )
             db.execute(next(migrations.glob("*_restricted_session_guard.sql")).read_text())
             db.execute(
                 "CREATE TABLE corpora_session_guard.superadmins(user_id uuid PRIMARY KEY "
                 "REFERENCES auth.users(id))"
             )
             migration = next(migrations.glob("*_project_ownership_guard.sql")).read_text()
+            db.execute(
+                "CREATE POLICY unexpected_permissive ON public.projects "
+                "FOR SELECT TO anon USING (true)"
+            )
+            with pytest.raises(Exception, match="PROJECT_POLICY_BASELINE_CHANGED"):
+                db.execute(migration)
+            db.execute("ROLLBACK")
+            db.execute("DROP POLICY unexpected_permissive ON public.projects")
             db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (uuid4(), unassigned))
             with pytest.raises(Exception, match="PROJECT_EXISTING_OWNERS_REQUIRE_REVIEW"):
                 db.execute(migration)
             db.execute("ROLLBACK")
             db.execute("UPDATE public.projects SET owner_id=NULL WHERE id=%s", (unassigned,))
             db.execute(migration)
+            assert (
+                db.execute(
+                    "SELECT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname='public' "
+                    "AND tablename='projects' AND policyname='projects_ai_private')"
+                ).fetchone()[0]
+                is with_restrictive_policy
+            )
             for _ in range(3):
                 response = client.post(
                     url + "/auth/v1/signup",
