@@ -62,3 +62,72 @@ def test_reference_routes_map_denial_conflict_and_invalid_transition(monkeypatch
     for status, code in (("not_found", 404), ("conflict", 409), ("invalid_transition", 409)):
         monkeypatch.setattr(links.CreationRPC, "call", lambda *_, result=status: {"status": result})
         assert client.post(path, headers=headers, json=body).status_code == code
+
+
+def test_resolve_verifies_both_passages_before_recording_decision(monkeypatch):
+    from uuid import UUID
+
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    body, actor = sample()
+    # Both endpoints use exact Text-Fabric selections for this operation.
+    body["target"] = body["source"].copy()
+    project = uuid4()
+    claims = {"sub": str(actor), "session_id": str(uuid4()), "exp": int(time.time()) + 3600}
+    monkeypatch.setattr(app_module, "verify_user_token", lambda _: claims)
+    reference = draft_reference(LinkSave.model_validate(body), UUID(str(actor))).model_dump(
+        mode="json"
+    )
+    history = {
+        "status": "ok",
+        "revisions": [
+            {
+                "version": 1,
+                "actor_id": str(actor),
+                "recorded_at": "2026-01-01T00:00:00Z",
+                "reason": "draft",
+                "action": "edit",
+                "reference": reference,
+            }
+        ],
+    }
+    calls = []
+
+    def rpc(_self, name, params):
+        calls.append(name)
+        if name == "corpora_project_link_history":
+            return history
+        assert len(resolved) == 2
+        return {"status": "ok", "version": 2}
+
+    resolved = []
+
+    async def verify(actual_claims, *, ref):
+        assert actual_claims == claims
+        resolved.append(ref)
+        return {"node": 1}
+
+    monkeypatch.setattr(links.CreationRPC, "call", rpc)
+    monkeypatch.setattr(links, "resolve_corpus_reference", verify)
+    client = TestClient(app_module.app)
+    path = f"/v1/projects/{project}/references/{body['reference_id']}/resolve"
+    response = client.post(
+        path,
+        headers={"Authorization": "Bearer valid"},
+        json={"expected_version": 1, "reason": "verified"},
+    )
+    assert response.status_code == 200 and response.json()["version"] == 2
+    assert calls == ["corpora_project_link_history", "corpora_decide_project_link"]
+    assert len(resolved) == 2
+    history["revisions"][0]["reference"]["target"] = sample()[0]["target"]
+    resolved.clear()
+    calls.clear()
+    assert (
+        client.post(
+            path,
+            headers={"Authorization": "Bearer valid"},
+            json={"expected_version": 1, "reason": "verified"},
+        ).status_code
+        == 422
+    )
+    assert calls == ["corpora_project_link_history"]
