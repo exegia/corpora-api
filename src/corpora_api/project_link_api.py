@@ -3,7 +3,7 @@
 from typing import Any, Literal
 from uuid import UUID
 
-from corpora_linking.models import StructuralLocator
+from corpora_linking.models import EpubLocator, StructuralLocator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from corpora_api.auth import require_user
 from corpora_api.corpus_creation import CreationRPC, _session
 from corpora_api.corpus_metadata import CorpusMetadataError
+from corpora_api.project_epub import verify_epub
 from corpora_api.project_link_models import (
     LinkDecision,
     LinkEndpoint,
@@ -86,17 +87,20 @@ async def _resolve_reference(request: Request, project: UUID, ref: UUID, version
             selected = LinkEndpoint.model_validate(endpoint.model_dump(mode="json"))
         except ValueError:
             raise HTTPException(422, "Reference endpoint is invalid") from None
-        if selected.document_id != ".corpora/source.corpus" or not all(
+        if selected.document_id == ".corpora/source.corpus" and all(
             isinstance(locator, StructuralLocator) for locator in selected.locators
         ):
+            for locator in selected.locators:
+                assert isinstance(locator, StructuralLocator)
+                result = await resolve_corpus_reference(
+                    request.state.user_claims, ref=locator.anchor_id
+                )
+                if type(result.get("node")) is not int or result["node"] < 1:
+                    raise HTTPException(503, "Corpus reference verification failed")
+        elif len(selected.locators) == 1 and isinstance(selected.locators[0], EpubLocator):
+            await verify_epub(request.state.user_claims, selected)
+        else:
             raise HTTPException(422, "This selection cannot yet be verified")
-        for locator in selected.locators:
-            assert isinstance(locator, StructuralLocator)
-            result = await resolve_corpus_reference(
-                request.state.user_claims, ref=locator.anchor_id
-            )
-            if type(result.get("node")) is not int or result["node"] < 1:
-                raise HTTPException(503, "Corpus reference verification failed")
 
 
 def _receipt(value: Any, project: UUID, reference: UUID, expected: int) -> LinkReceipt:

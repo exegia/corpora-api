@@ -197,10 +197,13 @@ Projects with recorded reference history cannot be deleted, preserving the
 ledger and its project identity.
 
 After applying `project_link_resolution`, owners and superadmins can POST to
-`/resolve` to verify both revision-pinned Text-Fabric selections, then `/approve`
-to record approval. Both operations reject a corpus whose current revision has
-changed. PDF and EPUB selections can be saved as drafts; their verification is
-not yet available and cannot be approved as resolved.
+`/resolve` to verify both revision-pinned selections, then `/approve` to record
+approval. Text-Fabric passages and EPUB CFI ranges with exact text evidence are
+supported. The EPUB must be present in the corpus archive; its package, spine,
+resource, UTF-16 offsets, and quoted text are checked. EPUB verification supports
+a single-resource CFI range in XML without a DOCTYPE; unsupported selections stay
+unresolved. Both operations reject a corpus whose current revision has changed.
+PDF selections remain unresolved.
 
 `DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
 and `expected_revision`. Admission rejects active or uncertain provisioning/import

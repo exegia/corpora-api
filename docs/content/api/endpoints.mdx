@@ -7,7 +7,7 @@ All paths below start with `https://api.exegia.co`. Click an operation to see it
 
 ## Availability
 
-The `/corpora` routes support the corpus lifecycle, node and manifest edits, version restore, and direct read-only sharing. Project linking supports draft references and Text-Fabric verification; PDF and EPUB selections remain unresolved until their verification is implemented. AI routes have separate configuration and ongoing migration work.
+The `/corpora` routes support the corpus lifecycle, node and manifest edits, version restore, and direct read-only sharing. Project linking verifies Text-Fabric passages and a bounded subset of EPUB CFI ranges with exact text evidence. Unsupported EPUB and PDF selections remain unresolved. AI routes have separate configuration and ongoing migration work.
 
 The capability flags are limited: `hub_writable` refers to legacy storage, not the newer corpus lifecycle. For a protected action, check its documented requirements and actual response.
 

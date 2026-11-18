@@ -2,10 +2,12 @@
 
 import hashlib
 import importlib
+import io
 import json
 import os
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -15,6 +17,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from test_corpus_hub_publish import real_archive
+from test_project_epub_verify import epub
 
 from corpora_api import corpus_creation as creation
 from corpora_api.auth import verify_user_token
@@ -285,6 +288,10 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     "p_corpus": corpus,
                 }
                 archive = real_archive(tmp_path)
+                with io.BytesIO(archive) as data:
+                    with zipfile.ZipFile(data, "a", zipfile.ZIP_DEFLATED) as fixture:
+                        fixture.writestr("sources/book.epub", epub())
+                    archive = data.getvalue()
                 import_operation = _exercise_import_rpc(params, foreign, db, archive)
                 history_path = path + "/versions"
                 assert api.get(history_path).status_code == 401
@@ -1590,6 +1597,54 @@ def _exercise_project_linking_permissions(api, db, corpus, old_corpus, head_sha,
             == "approved"
         )
         assert history(member)["status"] == "ok"
+        epub_ref = str(uuid4())
+        epub_target = {
+            "work_id": "book",
+            "edition_id": "edition",
+            "package_id": corpus,
+            "revision": head_sha,
+            "document_id": "sources/book.epub",
+            "locators": [
+                {
+                    "kind": "epub",
+                    "asset_id": "sources/book.epub",
+                    "href": "first.xhtml",
+                    "cfi": "epubcfi(/4/2!/2/2/2,/1:0,/1:4)",
+                    "text": {
+                        "kind": "text",
+                        "stream_id": "epub-cfi-dom",
+                        "start": 6,
+                        "end": 10,
+                        "exact": "John",
+                    },
+                }
+            ],
+        }
+        link_path = f"/v1/projects/{project}/references"
+        admin_headers = {"Authorization": "Bearer " + admin[1]}
+        saved = api.post(
+            link_path,
+            headers=admin_headers,
+            json={
+                "reference_id": epub_ref,
+                "source": endpoint,
+                "target": epub_target,
+                "reason": "EPUB link",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        verified = api.post(
+            link_path + f"/{epub_ref}/resolve",
+            headers=admin_headers,
+            json={"expected_version": 1, "reason": "verified EPUB"},
+        )
+        assert verified.status_code == 200, verified.text
+        approved = api.post(
+            link_path + f"/{epub_ref}/approve",
+            headers=admin_headers,
+            json={"expected_version": 2, "reason": "approved"},
+        )
+        assert approved.status_code == 200, approved.text
         db.execute(
             "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
             (corpus, member["sub"]),
