@@ -37,9 +37,9 @@ class CorpusReaderGrant(BaseModel):
     present: StrictBool
 
 
-def _call(name: str, params: dict[str, Any]) -> Any:
+def _call(name: str, params: dict[str, Any], max_response_bytes: int = 131072) -> Any:
     try:
-        return CreationRPC(max_response_bytes=131072).call(name, params)
+        return CreationRPC(max_response_bytes=max_response_bytes).call(name, params)
     except CorpusMetadataError:
         raise HTTPException(503, "Corpus sharing is unavailable") from None
 
@@ -99,6 +99,7 @@ async def shared_corpora(
             "p_after": str(after) if after else None,
             "p_limit": limit,
         },
+        524288,
     )
     try:
         if (

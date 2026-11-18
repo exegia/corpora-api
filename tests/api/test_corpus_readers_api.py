@@ -1,4 +1,5 @@
 import importlib
+import json
 import time
 from uuid import uuid4
 
@@ -60,3 +61,36 @@ def test_reader_and_shared_pages_reject_invalid_order(context, monkeypatch):
     result["readers"] = list(reversed(records))
     assert client.get(path, headers=headers, params={"limit": 1}).status_code == 503
     assert client.get("/v1/corpora/shared").status_code == 401
+
+
+def test_shared_page_accepts_large_valid_summaries(context, monkeypatch):
+    client, _, _, _ = context
+    ids = sorted((uuid4() for _ in range(100)), key=lambda value: value.int)
+    rows = [
+        {
+            "id": str(corpus),
+            "owner_id": str(uuid4()),
+            "title": "字" * 512,
+            "language": None,
+            "state": "ready",
+            "revision": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        for corpus in ids
+    ]
+    result = {"status": "list", "rows": rows}
+    size = len(json.dumps(result, ensure_ascii=False).encode())
+    assert size > 131072
+
+    def rpc(self, name, params):
+        assert name == "corpora_list_shared_corpora" and params["p_limit"] == 100
+        if size > self.max_response_bytes:
+            raise readers.CorpusMetadataError("response too large")
+        return result
+
+    monkeypatch.setattr(readers.CreationRPC, "call", rpc)
+    response = client.get(
+        "/v1/corpora/shared", headers={"Authorization": "Bearer valid"}, params={"limit": 100}
+    )
+    assert response.status_code == 200 and len(response.json()["items"]) == 100
