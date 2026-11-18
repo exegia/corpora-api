@@ -348,7 +348,10 @@ privacy at sensitive operations. Its server-only read and provisioning credentia
 are never returned to API clients.
 
 Authenticated `/v1/ai/drafts` endpoints create, list, inspect and export private
-working drafts from a caller-owned completed conversion. They use the existing
+working drafts from a caller-owned completed conversion. Each new request also
+checks that its Supabase session remains active using `SUPABASE_INGEST_API_KEY`;
+an unavailable session check fails closed. A request admitted before sign-out may
+finish afterwards. These routes currently require the
 `corpora_ai_storage` Supabase RPC and private `corpus-ai-drafts` bucket from
 the legacy `corpora-py` draft migrations. Archives are staged under immutable
 owner/document/revision keys and checked against their SHA-256 digest before
@@ -357,6 +360,8 @@ no caller-supplied storage path is accepted.
 The source-pinned legacy database setup is in `supabase/migrations/`; apply it
 only after reviewing it against the target database and verifying its existing
 tables and policies. The API does not apply migrations automatically.
+The current hosted project does not contain this registry, so the draft lifecycle
+is unavailable until its replacement is implemented and verified.
 
 
 Authenticated `/v1/ai/providers` lists the legacy provider guidance without

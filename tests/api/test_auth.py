@@ -117,6 +117,40 @@ def test_ingestion_rejects_inactive_or_uncheckable_sessions(
     assert response.status_code == (503 if unavailable else 401)
 
 
+@pytest.mark.parametrize("unavailable", [False, True])
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/v1/ai/drafts"),
+        ("GET", "/v1/ai/drafts"),
+        ("GET", "/v1/ai/drafts/00000000-0000-0000-0000-000000000000"),
+        ("GET", "/v1/ai/drafts/00000000-0000-0000-0000-000000000000/archive"),
+    ],
+)
+def test_drafts_reject_inactive_or_uncheckable_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+    signing_key: rsa.RSAPrivateKey,
+    unavailable: bool,
+    method: str,
+    path: str,
+) -> None:
+    import importlib
+
+    app_module = importlib.import_module("corpora_api.app")
+
+    def check(_token: str) -> bool:
+        if unavailable:
+            raise auth.SessionCheckUnavailable()
+        return False
+
+    monkeypatch.setattr(app_module, "ingest_session_active", check)
+    with TestClient(app) as client:
+        response = client.request(
+            method, path, headers={"Authorization": f"Bearer {user_token(signing_key)}"}
+        )
+    assert response.status_code == (503 if unavailable else 401)
+
+
 @pytest.mark.parametrize(
     ("status", "value", "expected"),
     [(200, True, True), (200, False, False), (200, {"active": True}, None), (503, {}, None)],
