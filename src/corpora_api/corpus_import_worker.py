@@ -20,7 +20,7 @@ from huggingface_hub import HfApi, set_client_factory
 
 from corpora_api.corpus_archive_prepare import prepare_corpus_archive
 from corpora_api.corpus_creation import CreationRPC
-from corpora_api.corpus_hub_publish import CorpusHubPublisher
+from corpora_api.corpus_hub_publish import SOURCE_PATH, CorpusHubPublisher
 from corpora_api.corpus_hub_stage import CorpusHubStager
 from corpora_api.corpus_metadata import CorpusMetadataStore
 from corpora_api.corpus_publication_claim import CorpusPublicationClaim
@@ -208,18 +208,62 @@ def execute_import(
     claim: ClaimedCorpusSave, filename: str, archive: bytes, deadline: float
 ) -> None:
     """Trusted worker path: staging readback, durable claim, verified publication, completion."""
-    if claim.expected_sequence != 0 or claim.expected_parent_sha is not None:
-        raise ValueError("Only initial corpus import is enabled")
+    subsequent = claim.expected_sequence > 0
+    if claim.expected_sequence < 0 or (claim.expected_sequence == 0) != (
+        claim.expected_parent_sha is None
+    ):
+        raise ValueError("Invalid corpus version parent")
+    if subsequent and claim.expected_parent_sha != claim.hub_parent_sha:
+        raise ValueError("Corpus version parent does not match Hub base")
     validator = ValidationBridge()
     rpc = CreationRPC()
     token = os.environ["HF_CORPUS_PROVISION_TOKEN"]
     api = HfApi(endpoint="https://huggingface.co", token=token)
     with httpx.Client(timeout=15, trust_env=False) as client:
-        staged = CorpusHubStager(api, client, token).stage(claim, filename, archive, validator)
+        stager = CorpusHubStager(api, client, token)
+        publisher = CorpusHubPublisher(api, client, token)
+        previous = None
+        if subsequent:
+            base = rpc.call(
+                "corpora_version_save_base",
+                {
+                    "p_operation": str(claim.operation_id),
+                    "p_claim": str(claim.claim_id),
+                },
+            )
+            if (
+                not isinstance(base, dict)
+                or base.get("sequence") != claim.expected_sequence
+                or base.get("commit_sha") != claim.expected_parent_sha
+                or not isinstance(base.get("retained_ref"), str)
+            ):
+                raise ValueError("Corpus version base changed")
+            publisher._check_private_ref(
+                claim.repo_id, claim.repo_type, base["retained_ref"], claim.hub_parent_sha
+            )
+            previous_bytes = stager._read_verified_bytes(
+                claim.repo_id,
+                claim.repo_type,
+                claim.hub_parent_sha,
+                SOURCE_PATH,
+                base["archive_size"],
+                base["archive_sha256"],
+            )
+            publisher._check_private_ref(
+                claim.repo_id, claim.repo_type, base["retained_ref"], claim.hub_parent_sha
+            )
+            previous = prepare_corpus_archive(
+                "base.corpus",
+                previous_bytes,
+                base["archive_sha256"],
+                validator,
+                expected_format="corpus",
+            )
+        staged = stager.stage(claim, filename, archive, validator)
         publication = uuid4()
         if (
             rpc.call(
-                "corpora_stage_import",
+                "corpora_stage_version_save" if subsequent else "corpora_stage_import",
                 {
                     "p_operation": str(claim.operation_id),
                     "p_claim": str(claim.claim_id),
@@ -233,8 +277,11 @@ def execute_import(
         prepared = prepare_corpus_archive(
             filename, archive, claim.input_sha256, validator, expected_format="corpus"
         )
-        candidate = CorpusHubPublisher(api, client, token).publish(
-            CorpusPublicationClaim(staged, publication), prepared, deadline=deadline
+        candidate = publisher.publish(
+            CorpusPublicationClaim(staged, publication),
+            prepared,
+            deadline=deadline,
+            **({"previous": previous} if subsequent else {}),
         )
         params = {
             "p_operation": str(claim.operation_id),
@@ -243,12 +290,26 @@ def execute_import(
             "p_sha": candidate.commit_sha,
         }
         try:
-            if rpc.call("corpora_complete_import", params) is not True:
+            if (
+                rpc.call(
+                    "corpora_complete_version_save" if subsequent else "corpora_complete_import",
+                    params,
+                )
+                is not True
+            ):
                 raise ValueError("Import completion was rejected")
         except Exception:
             # Observe the exact outcome after a lost commit acknowledgement.
             # No network upload or publication claim is repeated.
-            if rpc.call("corpora_find_import_result", params) is not True:
+            if (
+                rpc.call(
+                    "corpora_find_version_save_result"
+                    if subsequent
+                    else "corpora_find_import_result",
+                    params,
+                )
+                is not True
+            ):
                 raise
 
 

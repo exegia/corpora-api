@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import httpx
-from huggingface_hub import CommitOperationAdd, HfApi
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 
 from corpora_api.corpus_archive_prepare import PreparedCorpusArchive
 from corpora_api.corpus_git_acquire import download_commit_pack
@@ -110,7 +110,12 @@ class CorpusHubPublisher:
         self.api, self.client, self.token = api, client, token
 
     def publish(
-        self, claim: CorpusPublicationClaim, prepared: PreparedCorpusArchive, *, deadline: float
+        self,
+        claim: CorpusPublicationClaim,
+        prepared: PreparedCorpusArchive,
+        *,
+        deadline: float,
+        previous: PreparedCorpusArchive | None = None,
     ) -> TrustedCandidateAttestation:
         stage = claim.stage
         if (
@@ -125,6 +130,8 @@ class CorpusHubPublisher:
         ):
             raise CorpusStageError("Invalid corpus publication claim")
         files = publication_files(prepared)
+        previous_files = publication_files(previous) if previous is not None else {}
+        removed = sorted(previous_files.keys() - files.keys())
         ref = "corpora-op-" + str(stage.operation_id)
         try:
             baseline = self.api.repo_info(
@@ -152,7 +159,8 @@ class CorpusHubPublisher:
                 [
                     CommitOperationAdd(path_in_repo=path, path_or_fileobj=data)
                     for path, data in sorted(files.items())
-                ],
+                ]
+                + [CommitOperationDelete(path_in_repo=path) for path in removed],
                 commit_message="Store validated Corpora content",
                 repo_type=stage.repo_type,
                 revision=ref,
@@ -193,7 +201,7 @@ class CorpusHubPublisher:
                 corpus_id=stage.corpus_id,
                 repo_id=stage.repo_id,
                 repo_type=stage.repo_type,
-                parent_sha=None,
+                parent_sha=stage.requested_base_sha if previous is not None else None,
                 hub_parent_sha=stage.requested_base_sha,
                 commit_sha=sha,
                 input_sha256=stage.archive_sha256,
