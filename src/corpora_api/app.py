@@ -122,6 +122,7 @@ from corpora_api.models import (
     TFCheckReport,
     ValidationResponse,
 )
+from corpora_api.project_members_api import router as project_members_router
 from corpora_api.references import reference
 from corpora_api.storage import (
     CorpusStorage,
@@ -169,6 +170,7 @@ def user_auth_path(path: str) -> bool:
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
         or path.startswith("/v1/ingest/")
+        or path.startswith("/v1/projects/")
         or path == "/v1/corpora"
         or path.startswith("/v1/corpora/")
     )
@@ -193,6 +195,7 @@ app = FastAPI(
         {"url": "http://localhost:8000", "description": "Local API"},
     ],
 )
+app.include_router(project_members_router)
 app.include_router(corpus_metadata_router)
 app.include_router(corpus_import_router)
 app.include_router(corpus_edit_router)
