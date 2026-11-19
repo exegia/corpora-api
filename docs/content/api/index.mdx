@@ -1,0 +1,37 @@
+---
+title: API guide
+description: Start here to understand and use the Corpora API
+---
+
+The **API** is a way for your app to ask Corpora to do work. Your app sends a request, such as “read this corpus,” and receives a response containing data or an error.
+
+**New here? [Send your first request in two minutes.](/api/getting-started)**
+
+## What can I do?
+
+| Job | What you get | Access |
+| --- | --- | --- |
+| Check service health | A small JSON status | No token |
+| Check or convert a document | Findings, or a downloadable conversion ZIP | Service token on the hosted API |
+| Validate or ingest a document | Validation results, or an owned canonical graph | Signed-in user |
+| Create a corpus and import its first archive | A private corpus with a stable ID | Signed-in owner or server-authorized superadmin |
+| Read a corpus | Manifest, index, sections, text, and nodes | Public ready corpus: no token. Private: owner or superadmin |
+| Change visibility or delete a corpus | Updated access or a durable deletion receipt | Owner or superadmin |
+
+The current corpus lifecycle and reading milestone shipped in **API v0.8.0** with the core reader fix from **Core v0.6.3**. Editing corpus content and restoring versions are the next milestone. Some older storage, reference, and AI endpoints also appear in the schema; their presence does not prove that their backing services are configured. See [feature availability](/api/endpoints#availability).
+
+## Learn in this order
+
+1. [Get started](/api/getting-started): make a request and read the result.
+2. [Authentication](/api/authentication): choose the right token.
+3. [Corpus walkthrough](/api/corpus-workflow): create, import, read, publish, and delete.
+4. [How it connects](/api/architecture): understand the API, core, Supabase, and Hugging Face.
+5. [Testing and errors](/api/testing): try local examples and diagnose failed requests.
+
+## Look up one operation
+
+The [endpoint directory](/api/endpoints) links to every generated operation page. Each page contains the request fields, response schema, status codes, and an interactive request playground.
+
+The playground sends **real requests** to the chosen server. Creation, import, visibility changes, and deletion change real data. Use your own disposable corpus when testing.
+
+For tools used by AI clients, read the [MCP guide](/mcp-tools).

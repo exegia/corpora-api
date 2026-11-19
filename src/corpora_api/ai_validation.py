@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from corpora_api.conversion_artifacts import ConversionArtifactNotFound
+from corpora_api.corpus_access_api import read_access
+from corpora_api.corpus_hub_read import CorpusHubReadError
 from corpora_api.corpus_process import (
     SAFE_SCOPE_ERRORS,
     CorpusProcessError,
@@ -51,8 +55,60 @@ def validate_scope(
             raise HTTPException(404, "Corpus not found") from error
         except StorageError as error:
             raise HTTPException(503, "Corpus storage is unavailable") from error
+    return validate_archive(data, request)
+
+
+async def validate_hub_scope(claims: Any, request: AINodeScope) -> dict[str, Any] | JSONResponse:
+    """Validate an authorized current corpus from its verified private archive."""
+    from corpora_api import corpus_detail_api
+
     try:
-        return run_corpus(data, "scope", scope=request.model_dump())
+        raw_id = request.corpus.removeprefix("corpus:")
+        corpus_id = UUID(raw_id)
+        if raw_id != str(corpus_id):
+            raise ValueError("Noncanonical corpus ID")
+    except ValueError as error:
+        raise HTTPException(422, "Expected corpus:<UUID>") from error
+    if request.corpus_revision is None:
+        raise HTTPException(422, "A full corpus_revision is required")
+    access = await run_in_threadpool(read_access, claims, corpus_id)
+    if access.row.state != "ready" or access.head is None:
+        raise HTTPException(404, "Corpus not found")
+    head = access.head
+    if request.corpus_revision != head.commit_sha:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "stale",
+                "reason": "Corpus revision has changed",
+                "retryable": False,
+                "current_version": head.commit_sha,
+            },
+        )
+    data = bytearray()
+
+    async def collect(chunk: bytes) -> None:
+        data.extend(chunk)
+
+    try:
+        await corpus_detail_api.hub_reader.transfer_authorized(
+            access.row,
+            head.commit_sha,
+            ".corpora/source.corpus",
+            max_bytes=head.archive_size,
+            timeout=20,
+            sink=collect,
+        )
+    except CorpusHubReadError:
+        raise HTTPException(503, "Corpus storage is unavailable") from None
+    if len(data) != head.archive_size or hashlib.sha256(data).hexdigest() != head.archive_sha256:
+        raise HTTPException(503, "Corpus integrity verification failed")
+    return await run_in_threadpool(validate_archive, bytes(data), request)
+
+
+def validate_archive(data: bytes, request: AINodeScope) -> dict[str, Any] | JSONResponse:
+    try:
+        return run_corpus(data, "scope", scope=request.model_dump(exclude={"corpus_revision"}))
     except CorpusProcessError as error:
         if error.kind == "unknown_scope_node":
             nodes = [request.node_id]

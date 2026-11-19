@@ -20,7 +20,7 @@ from huggingface_hub import HfApi, set_client_factory
 
 from corpora_api.corpus_archive_prepare import prepare_corpus_archive
 from corpora_api.corpus_creation import CreationRPC
-from corpora_api.corpus_hub_publish import CorpusHubPublisher
+from corpora_api.corpus_hub_publish import SOURCE_PATH, CorpusHubPublisher
 from corpora_api.corpus_hub_stage import CorpusHubStager
 from corpora_api.corpus_metadata import CorpusMetadataStore
 from corpora_api.corpus_publication_claim import CorpusPublicationClaim
@@ -178,6 +178,38 @@ def run_import_worker(
         },
         default=str,
     ).encode()
+    _run_dispatched(payload, deadline, slot)
+
+
+def run_reconciliation_worker(target: dict[str, Any], *, slot: ImportSlot) -> None:
+    _run_reconciliation(target, slot=slot, mode="reconcile")
+
+
+def run_import_resume_worker(target: dict[str, Any], *, slot: ImportSlot) -> None:
+    _run_reconciliation(target, slot=slot, mode="resume_import")
+
+
+def _run_reconciliation(target: dict[str, Any], *, slot: ImportSlot, mode: str) -> None:
+    registry, headers = CorpusMetadataStore._config()
+    deadline = time.monotonic() + MAX_IMPORT_SECONDS
+    payload = json.dumps(
+        {
+            "mode": mode,
+            "target": target,
+            "deadline": deadline,
+            "config": {
+                "SUPABASE_URL": registry.rsplit("/rest/v1/", 1)[0],
+                "SUPABASE_SERVICE_ROLE_KEY": headers["apikey"],
+                "HF_CORPUS_ORGANIZATION": os.environ["HF_CORPUS_ORGANIZATION"],
+                "HF_CORPUS_PROVISION_TOKEN": os.environ["HF_CORPUS_PROVISION_TOKEN"],
+                "CORPORA_VALIDATE_BIN": os.getenv("CORPORA_VALIDATE_BIN", "corpora-validate"),
+            },
+        }
+    ).encode()
+    _run_dispatched(payload, deadline, slot)
+
+
+def _run_dispatched(payload: bytes, deadline: float, slot: ImportSlot) -> None:
     if len(payload) > MAX_REQUEST_BYTES:
         raise ValueError("Import worker request exceeds limit")
     finished = threading.Event()
@@ -208,18 +240,62 @@ def execute_import(
     claim: ClaimedCorpusSave, filename: str, archive: bytes, deadline: float
 ) -> None:
     """Trusted worker path: staging readback, durable claim, verified publication, completion."""
-    if claim.expected_sequence != 0 or claim.expected_parent_sha is not None:
-        raise ValueError("Only initial corpus import is enabled")
+    subsequent = claim.expected_sequence > 0
+    if claim.expected_sequence < 0 or (claim.expected_sequence == 0) != (
+        claim.expected_parent_sha is None
+    ):
+        raise ValueError("Invalid corpus version parent")
+    if subsequent and claim.expected_parent_sha != claim.hub_parent_sha:
+        raise ValueError("Corpus version parent does not match Hub base")
     validator = ValidationBridge()
     rpc = CreationRPC()
     token = os.environ["HF_CORPUS_PROVISION_TOKEN"]
     api = HfApi(endpoint="https://huggingface.co", token=token)
     with httpx.Client(timeout=15, trust_env=False) as client:
-        staged = CorpusHubStager(api, client, token).stage(claim, filename, archive, validator)
+        stager = CorpusHubStager(api, client, token)
+        publisher = CorpusHubPublisher(api, client, token)
+        previous = None
+        if subsequent:
+            base = rpc.call(
+                "corpora_version_save_base",
+                {
+                    "p_operation": str(claim.operation_id),
+                    "p_claim": str(claim.claim_id),
+                },
+            )
+            if (
+                not isinstance(base, dict)
+                or base.get("sequence") != claim.expected_sequence
+                or base.get("commit_sha") != claim.expected_parent_sha
+                or not isinstance(base.get("retained_ref"), str)
+            ):
+                raise ValueError("Corpus version base changed")
+            publisher._check_private_ref(
+                claim.repo_id, claim.repo_type, base["retained_ref"], claim.hub_parent_sha
+            )
+            previous_bytes = stager._read_verified_bytes(
+                claim.repo_id,
+                claim.repo_type,
+                claim.hub_parent_sha,
+                SOURCE_PATH,
+                base["archive_size"],
+                base["archive_sha256"],
+            )
+            publisher._check_private_ref(
+                claim.repo_id, claim.repo_type, base["retained_ref"], claim.hub_parent_sha
+            )
+            previous = prepare_corpus_archive(
+                "base.corpus",
+                previous_bytes,
+                base["archive_sha256"],
+                validator,
+                expected_format="corpus",
+            )
+        staged = stager.stage(claim, filename, archive, validator)
         publication = uuid4()
         if (
             rpc.call(
-                "corpora_stage_import",
+                "corpora_stage_version_save" if subsequent else "corpora_stage_import",
                 {
                     "p_operation": str(claim.operation_id),
                     "p_claim": str(claim.claim_id),
@@ -233,8 +309,11 @@ def execute_import(
         prepared = prepare_corpus_archive(
             filename, archive, claim.input_sha256, validator, expected_format="corpus"
         )
-        candidate = CorpusHubPublisher(api, client, token).publish(
-            CorpusPublicationClaim(staged, publication), prepared, deadline=deadline
+        candidate = publisher.publish(
+            CorpusPublicationClaim(staged, publication),
+            prepared,
+            deadline=deadline,
+            **({"previous": previous} if subsequent else {}),
         )
         params = {
             "p_operation": str(claim.operation_id),
@@ -243,12 +322,26 @@ def execute_import(
             "p_sha": candidate.commit_sha,
         }
         try:
-            if rpc.call("corpora_complete_import", params) is not True:
+            if (
+                rpc.call(
+                    "corpora_complete_version_save" if subsequent else "corpora_complete_import",
+                    params,
+                )
+                is not True
+            ):
                 raise ValueError("Import completion was rejected")
         except Exception:
             # Observe the exact outcome after a lost commit acknowledgement.
             # No network upload or publication claim is repeated.
-            if rpc.call("corpora_find_import_result", params) is not True:
+            if (
+                rpc.call(
+                    "corpora_find_version_save_result"
+                    if subsequent
+                    else "corpora_find_import_result",
+                    params,
+                )
+                is not True
+            ):
                 raise
 
 
@@ -266,20 +359,33 @@ def _main() -> None:
             "CORPORA_VALIDATE_BIN",
         ):
             os.environ[key] = request["config"][key]
-        values = request["claim"]
-        for key in ("operation_id", "claim_id", "corpus_id", "actor_id", "session_id"):
-            values[key] = UUID(values[key])
-        claim = ClaimedCorpusSave(**values)
-        archive = base64.b64decode(request["archive"], validate=True)
-        if not 0 < len(archive) <= 3_000_000:
-            raise ValueError("Invalid archive")
         transport = _BoundedHubTransport(request["deadline"])
         set_client_factory(
             lambda: httpx.Client(
                 transport=transport, timeout=15, follow_redirects=True, trust_env=False
             )
         )
-        execute_import(claim, request["filename"], archive, request["deadline"])
+        if request.get("mode") in ("reconcile", "resume_import"):
+            from corpora_api.corpus_save_reconcile import (
+                SaveReconciliationTarget,
+                execute_save_reconciliation,
+                resume_initial_import,
+            )
+
+            target = SaveReconciliationTarget.model_validate(request["target"])
+            if request["mode"] == "resume_import":
+                resume_initial_import(target, request["deadline"])
+            else:
+                execute_save_reconciliation(target, request["deadline"])
+        else:
+            values = request["claim"]
+            for key in ("operation_id", "claim_id", "corpus_id", "actor_id", "session_id"):
+                values[key] = UUID(values[key])
+            claim = ClaimedCorpusSave(**values)
+            archive = base64.b64decode(request["archive"], validate=True)
+            if not 0 < len(archive) <= 3_000_000:
+                raise ValueError("Invalid archive")
+            execute_import(claim, request["filename"], archive, request["deadline"])
         result = {"completed": True}
     except Exception:
         result = {"completed": False}

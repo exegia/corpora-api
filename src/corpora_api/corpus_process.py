@@ -10,17 +10,22 @@ import sys
 from dataclasses import asdict
 from typing import Any
 
+from corpora_api.project_document_errors import DocumentVerificationUnavailable
+
 # Leave room under the 4 MB hosted response limit for route-level metadata.
 MAX_CORPUS_WORKER_RESPONSE_BYTES = 3_900_000
+MAX_CORPUS_EDIT_WORKER_RESPONSE_BYTES = 4_100_000
 
 
-def _bounded_response(value: dict[str, Any]) -> str:
+def _bounded_response(value: dict[str, Any], max_bytes: int | None = None) -> str:
     """Encode before writing so oversized output never crosses the worker pipe."""
+    if max_bytes is None:
+        max_bytes = MAX_CORPUS_WORKER_RESPONSE_BYTES
     chunks: list[str] = []
     size = 0
     for chunk in json.JSONEncoder(default=str, ensure_ascii=False).iterencode(value):
         size += len(chunk.encode("utf-8"))
-        if size > MAX_CORPUS_WORKER_RESPONSE_BYTES:
+        if size > max_bytes:
             return json.dumps({"error": "too_large", "message": "Corpus result exceeds limit"})
         chunks.append(chunk)
     return "".join(chunks)
@@ -105,19 +110,67 @@ def run_corpus(data: bytes, operation: str, **kwargs: Any) -> dict[str, Any]:
 
 
 def _main() -> None:
-    from corpus_validate import ArchiveReadNotFound, ArchiveTooLarge, read_archive, tfref
+    from corpus_validate import (
+        ArchiveReadNotFound,
+        ArchiveTooLarge,
+        edit_archive,
+        read_archive,
+        tfref,
+    )
     from corpus_validate.ai_archive import StaleScope, validate_archive_scope
     from corpus_validate.ai_types import NodeScope, ScopeLevel, UnitRange
     from corpus_validate.reference import reference_archive
 
+    max_response = MAX_CORPUS_WORKER_RESPONSE_BYTES
     try:
         request = json.load(sys.stdin)
         data = base64.b64decode(request["data"], validate=True)
         operation, args = request["operation"], request["args"]
-        if operation == "view":
+        if operation == "edit":
+            edited = edit_archive(data, **args)
+            value = {"archive": base64.b64encode(edited).decode("ascii")}
+            max_response = MAX_CORPUS_EDIT_WORKER_RESPONSE_BYTES
+        elif operation == "view":
             value = read_archive(data, **args)
         elif operation == "reference":
             value = reference_archive(data, **args)
+        elif operation == "verify_epub":
+            from corpora_api.project_epub_verify import verify_epub_in_corpus
+
+            value = verify_epub_in_corpus(data, **args)
+        elif operation == "verify_pdf":
+            from corpora_api.project_pdf_verify import verify_pdf_in_corpus
+
+            value = verify_pdf_in_corpus(data, **args)
+        elif operation == "verify_cusx":
+            from corpora_api.project_cusx_verify import verify_cusx_in_corpus
+
+            value = verify_cusx_in_corpus(data, **args)
+        elif operation in ("map_browser", "verify_html", "retrieve_html"):
+            from corpora_api.project_html_verify import (
+                map_browser_in_corpus,
+                retrieve_html_in_corpus,
+                verify_html_in_corpus,
+            )
+
+            handler = {
+                "map_browser": map_browser_in_corpus,
+                "verify_html": verify_html_in_corpus,
+                "retrieve_html": retrieve_html_in_corpus,
+            }[operation]
+            value = handler(data, **args)
+        elif operation == "retrieve_epub":
+            from corpora_api.project_epub_verify import retrieve_epub_in_corpus
+
+            value = retrieve_epub_in_corpus(data, **args)
+        elif operation == "retrieve_pdf":
+            from corpora_api.project_pdf_verify import retrieve_pdf_in_corpus
+
+            value = retrieve_pdf_in_corpus(data, **args)
+        elif operation == "retrieve_cusx":
+            from corpora_api.project_cusx_verify import retrieve_cusx_in_corpus
+
+            value = retrieve_cusx_in_corpus(data, **args)
         elif operation == "scope":
             raw = args["scope"]
             raw["level"] = ScopeLevel(raw["level"])
@@ -147,6 +200,8 @@ def _main() -> None:
         else:
             raise ValueError("Unsupported corpus operation")
         response = {"result": value}
+    except DocumentVerificationUnavailable:
+        response = {"error": "unavailable", "message": "Document verification is unavailable"}
     except UnknownScopeNode as error:
         response = {"error": "unknown_scope_node", "attributes": {"node": error.node}}
     except InvalidScopeSelection as error:
@@ -178,7 +233,7 @@ def _main() -> None:
         response = {"error": "too_large", "message": str(error)}
     except Exception:
         response = {"error": "invalid", "message": "Corpus archive or selection is invalid"}
-    print(_bounded_response(response))
+    print(_bounded_response(response, max_response))
 
 
 if __name__ == "__main__":

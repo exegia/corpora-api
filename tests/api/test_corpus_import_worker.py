@@ -184,11 +184,78 @@ def test_lost_completion_ack_only_observes_exact_result(claim, pipeline, monkeyp
 
 
 def test_noninitial_claim_never_uploads(claim, pipeline):
-    with pytest.raises(ValueError, match="Only initial"):
+    with pytest.raises(ValueError, match="Invalid corpus version parent"):
         worker.execute_import(
             replace(claim, expected_sequence=1), "tiny.corpus", b"archive", time.monotonic() + 1
         )
     assert not pipeline
+
+
+def test_subsequent_save_pins_and_validates_base_before_publication(claim, monkeypatch):
+    claim = replace(claim, expected_sequence=1, expected_parent_sha="a" * 40)
+    events = []
+    base = {
+        "sequence": 1,
+        "commit_sha": "a" * 40,
+        "retained_ref": "corpora-op-base",
+        "archive_size": 4,
+        "archive_sha256": "e" * 64,
+    }
+
+    def rpc(_self, name, params):
+        events.append(name)
+        if name == "corpora_version_save_base":
+            return base
+        return True
+
+    class Stager:
+        def __init__(self, *_):
+            pass
+
+        def _read_verified_bytes(self, *args):
+            events.append("read-pinned-base")
+            assert args[2] == "a" * 40 and args[4:] == (4, "e" * 64)
+            return b"base"
+
+        def stage(self, *_):
+            events.append("stage")
+            return SimpleNamespace(stage_sha="c" * 40)
+
+    class Publisher:
+        def __init__(self, *_):
+            pass
+
+        def _check_private_ref(self, _repo, _kind, ref, sha):
+            assert (ref, sha) == ("corpora-op-base", "a" * 40)
+            events.append("verify-ref")
+
+        def publish(self, *args, **kwargs):
+            assert kwargs["previous"] == "validated-base"
+            events.append("publish")
+            return SimpleNamespace(commit_sha="d" * 40)
+
+    def prepare(filename, *_args, **_kwargs):
+        events.append("validate-" + filename)
+        return "validated-base" if filename == "base.corpus" else "validated-new"
+
+    monkeypatch.setattr(worker.CreationRPC, "call", rpc)
+    monkeypatch.setattr(worker, "CorpusHubStager", Stager)
+    monkeypatch.setattr(worker, "CorpusHubPublisher", Publisher)
+    monkeypatch.setattr(worker, "CorpusPublicationClaim", lambda *_: object())
+    monkeypatch.setattr(worker, "prepare_corpus_archive", prepare)
+    worker.execute_import(claim, "new.corpus", b"new", time.monotonic() + 1)
+    assert events == [
+        "corpora_version_save_base",
+        "verify-ref",
+        "read-pinned-base",
+        "verify-ref",
+        "validate-base.corpus",
+        "stage",
+        "corpora_stage_version_save",
+        "validate-new.corpus",
+        "publish",
+        "corpora_complete_version_save",
+    ]
 
 
 def test_hub_control_response_per_request_and_aggregate_bounds():

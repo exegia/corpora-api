@@ -1,0 +1,70 @@
+---
+title: Browser selections
+description: Map a browser HTML range to its exact stored source locations.
+---
+
+`POST /v1/projects/{project_id}/browser-selection` maps one selection in an
+unchanged UTF-8 `.html` or `.htm` asset inside a managed corpus. The caller needs a
+live user session, project membership and current access to the corpus.
+
+Use the [capture helper](/examples/browser-selection.js) with the source HTML
+document. Select text with text-node endpoints, then submit:
+
+```js
+import { captureSelection } from '/examples/browser-selection.js';
+
+const body = {
+  original: {
+    work_id: 'my-work',
+    edition_id: 'my-edition',
+    package_id: corpusId,     // canonical corpus UUID
+    revision: commitSha,     // full 40-character corpus Git revision
+    document_id: 'sources/book.html',
+    locators: [],
+  },
+  ...captureSelection(sourceDocument),
+};
+const response = await fetch(`${apiBase}/v1/projects/${projectId}/browser-selection`, {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+if (!response.ok) throw new Error(`Selection could not be mapped (${response.status}).`);
+const { endpoint, text } = await response.json();
+```
+
+Keep the returned `endpoint` unchanged when saving a reference as its `source` or
+`target`. It retains the corpus UUID, revision, asset path, native DOM paths,
+Unicode-scalar offsets, exact text and surrounding context. Normal reference
+resolve, approve, publish, retrieve and export operations accept this range.
+Mapping itself does not save or publish anything. Publication remains visible only
+within the project and never grants corpus access.
+
+The server loads the authorized, digest-verified archive and checks **every captured
+reading text node**, in order, against the `beautifulsoup-html.parser/v1` source
+tree. Paths count all children from the document root, including comments and
+whitespace. `head`, `script`, `style`, `template` and `noscript` subtrees are excluded.
+`br` and block boundaries contribute LF to the extraction stream. The returned
+text is that source stream, which may differ from visual browser whitespace.
+Browser UTF-16 offsets are converted to Unicode scalars; an offset inside a
+surrogate pair is rejected. Parser and Python versions are retained in the locator.
+
+| Result | Meaning |
+| --- | --- |
+| `200` | Exact mapping; response is `no-store`. |
+| `401` | Missing, invalid, expired or signed-out session. |
+| `404` | Project or corpus unavailable to this caller. |
+| `409` | The captured corpus revision is no longer current. Reload and recapture. |
+| `422` | Invalid capture, changed/repaired DOM paths, excluded endpoints, empty/reversed range or unsupported asset. Recapture from the source document; the server never guesses a replacement. |
+| `503` | Storage, integrity, authorization service or worker unavailable. |
+
+The capture is limited to 350,000 encoded JSON bytes, 10,000 text nodes and path
+depth 128. The HTML asset is limited to 350,000 bytes and selected text to 32,768
+UTF-8 bytes. In addition, each mapped endpoint, including source identity, paths,
+quote, context and JSON escaping, must fit in **8,192 encoded JSON bytes**. This
+leaves room for two mapped endpoints and the maximum allowed metadata within the
+reference-save request's 32 KiB budget. Select a smaller range when that bound is
+exceeded. Render source HTML in an isolated reader; do not execute untrusted
+source scripts. Reader wrappers, dynamic DOM changes and browser tree repairs
+that differ from the pinned parser are deliberately rejected. This operation does
+not map arbitrary webpages, rendered Text-Fabric views, PDF layers or EPUB CFIs.

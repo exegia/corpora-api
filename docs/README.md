@@ -30,3 +30,13 @@ AI chat uses Vercel's deployment OIDC token for AI Gateway authentication, or
 `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set in the Vercel project. The request guard
 caps body size, message count, and requests per hour. `/llms.txt` and
 `/llms-full.txt` are generated automatically.
+
+## Content map
+
+- `content/api/index.mdx`: beginner API overview.
+- `content/api/`: quickstart, authentication, corpus lifecycle, architecture, testing, endpoint directory.
+- `content/core/`: core introduction and shared QA cleanup instructions.
+
+The API repository owns these public pages. Core repository contributor markdown
+is linked explicitly; it is not automatically mirrored onto this website.
+The endpoint directory links to the generated operation pages under `/api`.

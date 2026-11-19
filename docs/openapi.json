@@ -138,6 +138,19 @@
             "title": "Corpus",
             "type": "string"
           },
+          "corpus_revision": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required current Hugging Face commit SHA when corpus is corpus:<UUID>.",
+            "title": "Corpus Revision"
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -507,6 +520,19 @@
             "title": "Corpus",
             "type": "string"
           },
+          "corpus_revision": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required current Hugging Face commit SHA when corpus is corpus:<UUID>.",
+            "title": "Corpus Revision"
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -809,6 +835,154 @@
         "title": "Body_validate_corpus_upload_v1_validate_post",
         "type": "object"
       },
+      "BrowserSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          },
+          "text": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint",
+          "text"
+        ],
+        "title": "BrowserSelection",
+        "type": "object"
+      },
+      "BrowserSelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "captured_nodes": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "items": {
+                    "minimum": 0.0,
+                    "type": "integer"
+                  },
+                  "maxItems": 128,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                {
+                  "maxLength": 350000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 10000,
+            "minItems": 1,
+            "title": "Captured Nodes",
+            "type": "array"
+          },
+          "end_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "title": "End Path",
+            "type": "array"
+          },
+          "end_utf16": {
+            "maximum": 350000.0,
+            "minimum": 0.0,
+            "title": "End Utf16",
+            "type": "integer"
+          },
+          "original": {
+            "$ref": "#/components/schemas/PinnedAsset"
+          },
+          "start_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "title": "Start Path",
+            "type": "array"
+          },
+          "start_utf16": {
+            "maximum": 350000.0,
+            "minimum": 0.0,
+            "title": "Start Utf16",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "original",
+          "captured_nodes",
+          "start_path",
+          "start_utf16",
+          "end_path",
+          "end_utf16"
+        ],
+        "title": "BrowserSelectionRequest",
+        "type": "object"
+      },
+      "CitationLocator": {
+        "additionalProperties": false,
+        "description": "An unresolved address request, never proof of an exact passage.",
+        "properties": {
+          "kind": {
+            "const": "citation",
+            "default": "citation",
+            "title": "Kind",
+            "type": "string"
+          },
+          "profile": {
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          },
+          "reading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reading"
+          },
+          "scheme_id": {
+            "minLength": 1,
+            "title": "Scheme Id",
+            "type": "string"
+          },
+          "scheme_version": {
+            "minLength": 1,
+            "title": "Scheme Version",
+            "type": "string"
+          },
+          "value": {
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "profile",
+          "scheme_id",
+          "scheme_version"
+        ],
+        "title": "CitationLocator",
+        "type": "object"
+      },
       "CorpusContentResponse": {
         "properties": {
           "format": {
@@ -966,6 +1140,51 @@
           "state"
         ],
         "title": "CorpusDeletion",
+        "type": "object"
+      },
+      "CorpusEditInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "state": {
+            "enum": [
+              "admitted",
+              "executing",
+              "uncertain",
+              "completed",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "operation_id",
+          "state"
+        ],
+        "title": "CorpusEditInfo",
         "type": "object"
       },
       "CorpusImportInfo": {
@@ -1418,6 +1637,89 @@
         "title": "CorpusPassage",
         "type": "object"
       },
+      "CorpusReader": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "created_at"
+        ],
+        "title": "CorpusReader",
+        "type": "object"
+      },
+      "CorpusReaderGrant": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "present": {
+            "title": "Present",
+            "type": "boolean"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "user_id",
+          "present"
+        ],
+        "title": "CorpusReaderGrant",
+        "type": "object"
+      },
+      "CorpusReadersPage": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CorpusReader"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_after": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "items",
+          "next_after"
+        ],
+        "title": "CorpusReadersPage",
+        "type": "object"
+      },
       "CorpusSectionPageResponse": {
         "properties": {
           "items": {
@@ -1549,6 +1851,107 @@
           "updated_at"
         ],
         "title": "CorpusSummary",
+        "type": "object"
+      },
+      "CorpusVersionInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "commit_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Commit Sha",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "parent_sha": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Sha"
+          },
+          "sequence": {
+            "exclusiveMinimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "commit_sha",
+          "parent_sha",
+          "operation_id",
+          "actor_id",
+          "created_at"
+        ],
+        "title": "CorpusVersionInfo",
+        "type": "object"
+      },
+      "CorpusVersionPage": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "current_sequence": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Sequence"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/CorpusVersionInfo"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "corpus_id",
+          "current_sequence",
+          "versions",
+          "next_before"
+        ],
+        "title": "CorpusVersionPage",
         "type": "object"
       },
       "CorpusVisibility": {
@@ -1716,6 +2119,201 @@
         "title": "DiagnosticReport",
         "type": "object"
       },
+      "DiscoveryEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "cited_name": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Cited Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "quote": {
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Quote",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "accepted",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "quote",
+          "cited_name"
+        ],
+        "title": "DiscoveryEvidence",
+        "type": "object"
+      },
+      "DiscoveryHistory": {
+        "properties": {
+          "discovery_id": {
+            "format": "uuid",
+            "title": "Discovery Id",
+            "type": "string"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryRevision"
+            },
+            "title": "Revisions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "discovery_id",
+          "revisions",
+          "next_before"
+        ],
+        "title": "DiscoveryHistory",
+        "type": "object"
+      },
+      "DiscoveryReceipt": {
+        "properties": {
+          "discovery_id": {
+            "format": "uuid",
+            "title": "Discovery Id",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "discovery_id",
+          "version"
+        ],
+        "title": "DiscoveryReceipt",
+        "type": "object"
+      },
+      "DiscoveryRegistration": {
+        "additionalProperties": false,
+        "properties": {
+          "cited_name": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Cited Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "quote": {
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Quote",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "quote",
+          "cited_name",
+          "reason"
+        ],
+        "title": "DiscoveryRegistration",
+        "type": "object"
+      },
+      "DiscoveryRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "register",
+              "accept",
+              "reject"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/DiscoveryEvidence"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "actor_id",
+          "recorded_at",
+          "reason",
+          "action",
+          "evidence"
+        ],
+        "title": "DiscoveryRevision",
+        "type": "object"
+      },
       "DraftCreateRequest": {
         "properties": {
           "job_id": {
@@ -1805,6 +2403,187 @@
         "title": "DraftListResponse",
         "type": "object"
       },
+      "Endpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "edition_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edition Id"
+          },
+          "locators": {
+            "default": [],
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "citation": "#/components/schemas/CitationLocator",
+                  "epub": "#/components/schemas/EpubLocator",
+                  "epub-resource": "#/components/schemas/EpubResourceLocator",
+                  "html-range": "#/components/schemas/HtmlRangeLocator",
+                  "html-text": "#/components/schemas/HtmlTextLocator",
+                  "pdf": "#/components/schemas/PdfLocator",
+                  "structural": "#/components/schemas/StructuralLocator",
+                  "text": "#/components/schemas/TextLocator"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/PdfLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubResourceLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlTextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlRangeLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/StructuralLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/CitationLocator"
+                }
+              ]
+            },
+            "title": "Locators",
+            "type": "array"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "work_id": {
+            "minLength": 1,
+            "title": "Work Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "title": "Endpoint",
+        "type": "object"
+      },
+      "EpubLocator": {
+        "additionalProperties": false,
+        "description": "Native resource path and opaque CFI; this core does not parse EPUB CFI.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "cfi": {
+            "minLength": 1,
+            "title": "Cfi",
+            "type": "string"
+          },
+          "href": {
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "kind": {
+            "const": "epub",
+            "default": "epub",
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "asset_id",
+          "href",
+          "cfi"
+        ],
+        "title": "EpubLocator",
+        "type": "object"
+      },
+      "EpubResourceLocator": {
+        "additionalProperties": false,
+        "description": "An EPUB resource only, without invented fragment or CFI precision.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "href": {
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "kind": {
+            "const": "epub-resource",
+            "default": "epub-resource",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "href"
+        ],
+        "title": "EpubResourceLocator",
+        "type": "object"
+      },
       "ErrorResponse": {
         "properties": {
           "detail": {
@@ -1829,6 +2608,124 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HtmlRangeLocator": {
+        "additionalProperties": false,
+        "description": "Range spanning pinned parsed HTML text nodes; Unicode scalar node offsets.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "end_offset": {
+            "minimum": 0.0,
+            "title": "End Offset",
+            "type": "integer"
+          },
+          "end_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "End Path",
+            "type": "array"
+          },
+          "kind": {
+            "const": "html-range",
+            "default": "html-range",
+            "title": "Kind",
+            "type": "string"
+          },
+          "parser": {
+            "const": "beautifulsoup-html.parser/v1",
+            "default": "beautifulsoup-html.parser/v1",
+            "title": "Parser",
+            "type": "string"
+          },
+          "parser_version": {
+            "minLength": 1,
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "start_offset": {
+            "minimum": 0.0,
+            "title": "Start Offset",
+            "type": "integer"
+          },
+          "start_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "Start Path",
+            "type": "array"
+          },
+          "text": {
+            "$ref": "#/components/schemas/TextLocator"
+          }
+        },
+        "required": [
+          "asset_id",
+          "parser_version",
+          "start_path",
+          "start_offset",
+          "end_path",
+          "end_offset",
+          "text"
+        ],
+        "title": "HtmlRangeLocator",
+        "type": "object"
+      },
+      "HtmlTextLocator": {
+        "additionalProperties": false,
+        "description": "Unicode selection in one text node of a pinned, explicitly parsed DOM.",
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "html-text",
+            "default": "html-text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "node_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "Node Path",
+            "type": "array"
+          },
+          "parser": {
+            "const": "beautifulsoup-html.parser/v1",
+            "default": "beautifulsoup-html.parser/v1",
+            "title": "Parser",
+            "type": "string"
+          },
+          "parser_version": {
+            "minLength": 1,
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "text": {
+            "$ref": "#/components/schemas/TextLocator"
+          }
+        },
+        "required": [
+          "asset_id",
+          "parser_version",
+          "node_path",
+          "text"
+        ],
+        "title": "HtmlTextLocator",
         "type": "object"
       },
       "IngestCreated": {
@@ -2115,6 +3012,1168 @@
         "title": "LanguageRequest",
         "type": "object"
       },
+      "LinkDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "reason"
+        ],
+        "title": "LinkDecision",
+        "type": "object"
+      },
+      "LinkEndpoint": {
+        "additionalProperties": false,
+        "description": "A complete selection within a revision-pinned asset.",
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "edition_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edition Id"
+          },
+          "locators": {
+            "default": [],
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "citation": "#/components/schemas/CitationLocator",
+                  "epub": "#/components/schemas/EpubLocator",
+                  "epub-resource": "#/components/schemas/EpubResourceLocator",
+                  "html-range": "#/components/schemas/HtmlRangeLocator",
+                  "html-text": "#/components/schemas/HtmlTextLocator",
+                  "pdf": "#/components/schemas/PdfLocator",
+                  "structural": "#/components/schemas/StructuralLocator",
+                  "text": "#/components/schemas/TextLocator"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/PdfLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubResourceLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlTextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlRangeLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/StructuralLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/CitationLocator"
+                }
+              ]
+            },
+            "title": "Locators",
+            "type": "array"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "work_id": {
+            "minLength": 1,
+            "title": "Work Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "title": "LinkEndpoint",
+        "type": "object"
+      },
+      "LinkExport": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/LinkRevision"
+            },
+            "title": "Revisions",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "revisions"
+        ],
+        "title": "LinkExport",
+        "type": "object"
+      },
+      "LinkExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reference_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Reference Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reference_ids"
+        ],
+        "title": "LinkExportRequest",
+        "type": "object"
+      },
+      "LinkHistory": {
+        "additionalProperties": false,
+        "properties": {
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/LinkRevision"
+            },
+            "title": "Revisions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "reference_id",
+          "revisions",
+          "next_before"
+        ],
+        "title": "LinkHistory",
+        "type": "object"
+      },
+      "LinkImportApply": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LinkImportApplyItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_project_id": {
+            "description": "Unverified source-project claim from the file",
+            "format": "uuid",
+            "title": "Source Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_project_id",
+          "items"
+        ],
+        "title": "LinkImportApply",
+        "type": "object"
+      },
+      "LinkImportApplyItem": {
+        "additionalProperties": false,
+        "properties": {
+          "outcome": {
+            "enum": [
+              "imported",
+              "unchanged"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reference_id",
+          "outcome",
+          "version"
+        ],
+        "title": "LinkImportApplyItem",
+        "type": "object"
+      },
+      "LinkImportApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "export": {
+            "$ref": "#/components/schemas/LinkImportPreviewRequest"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "export",
+          "reason"
+        ],
+        "title": "LinkImportApplyRequest",
+        "type": "object"
+      },
+      "LinkImportPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LinkImportPreviewItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_project_id": {
+            "description": "Unverified source-project claim from the file",
+            "format": "uuid",
+            "title": "Source Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_project_id",
+          "items"
+        ],
+        "title": "LinkImportPreview",
+        "type": "object"
+      },
+      "LinkImportPreviewItem": {
+        "additionalProperties": false,
+        "properties": {
+          "current_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "outcome": {
+            "enum": [
+              "new",
+              "unchanged",
+              "conflict"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id",
+          "outcome",
+          "current_version"
+        ],
+        "title": "LinkImportPreviewItem",
+        "type": "object"
+      },
+      "LinkImportPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/LinkRevision"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Revisions",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "revisions"
+        ],
+        "title": "LinkImportPreviewRequest",
+        "type": "object"
+      },
+      "LinkReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "reference_id",
+          "version"
+        ],
+        "title": "LinkReceipt",
+        "type": "object"
+      },
+      "LinkRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "edit",
+              "resolve",
+              "approve",
+              "reject",
+              "reopen",
+              "publish",
+              "withdraw"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/Reference"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "actor_id",
+          "recorded_at",
+          "reason",
+          "action",
+          "reference"
+        ],
+        "title": "LinkRevision",
+        "type": "object"
+      },
+      "LinkSave": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 9.223372036854776e+18,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "relationship": {
+            "default": "core:cites",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Relationship",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          },
+          "target": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          }
+        },
+        "required": [
+          "reference_id",
+          "source",
+          "target",
+          "reason"
+        ],
+        "title": "LinkSave",
+        "type": "object"
+      },
+      "ManifestEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "additionalProperties": true,
+            "minProperties": 1,
+            "title": "Changes",
+            "type": "object"
+          },
+          "expected_commit": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Expected Commit",
+            "type": "string"
+          },
+          "expected_sequence": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Sequence",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_sequence",
+          "expected_commit",
+          "changes"
+        ],
+        "title": "ManifestEdit",
+        "type": "object"
+      },
+      "NodeEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Expected Commit",
+            "type": "string"
+          },
+          "expected_sequence": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Sequence",
+            "type": "integer"
+          },
+          "features": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "minProperties": 1,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Features"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "text_feature": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Feature"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_sequence",
+          "expected_commit"
+        ],
+        "title": "NodeEdit",
+        "type": "object"
+      },
+      "PdfLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "coordinates": {
+            "const": "unrotated-cropbox-top-left-points",
+            "default": "unrotated-cropbox-top-left-points",
+            "title": "Coordinates",
+            "type": "string"
+          },
+          "kind": {
+            "const": "pdf",
+            "default": "pdf",
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "minimum": 1.0,
+            "title": "Page",
+            "type": "integer"
+          },
+          "quads": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PdfQuad"
+            },
+            "title": "Quads",
+            "type": "array"
+          },
+          "rectangles": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PdfRectangle"
+            },
+            "title": "Rectangles",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "asset_id",
+          "page"
+        ],
+        "title": "PdfLocator",
+        "type": "object"
+      },
+      "PdfPoint": {
+        "additionalProperties": false,
+        "properties": {
+          "x": {
+            "minimum": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "PdfPoint",
+        "type": "object"
+      },
+      "PdfQuad": {
+        "additionalProperties": false,
+        "description": "Clockwise polygon in unrotated CropBox-relative top-left points.",
+        "properties": {
+          "points": {
+            "maxItems": 4,
+            "minItems": 4,
+            "prefixItems": [
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              },
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              },
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              },
+              {
+                "$ref": "#/components/schemas/PdfPoint"
+              }
+            ],
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "title": "PdfQuad",
+        "type": "object"
+      },
+      "PdfRectangle": {
+        "additionalProperties": false,
+        "properties": {
+          "x0": {
+            "minimum": 0.0,
+            "title": "X0",
+            "type": "number"
+          },
+          "x1": {
+            "exclusiveMinimum": 0.0,
+            "title": "X1",
+            "type": "number"
+          },
+          "y0": {
+            "minimum": 0.0,
+            "title": "Y0",
+            "type": "number"
+          },
+          "y1": {
+            "exclusiveMinimum": 0.0,
+            "title": "Y1",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "PdfRectangle",
+        "type": "object"
+      },
+      "PinnedAsset": {
+        "additionalProperties": false,
+        "description": "A selected asset in a particular immutable corpus repository revision.",
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "edition_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edition Id"
+          },
+          "locators": {
+            "default": [],
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "citation": "#/components/schemas/CitationLocator",
+                  "epub": "#/components/schemas/EpubLocator",
+                  "epub-resource": "#/components/schemas/EpubResourceLocator",
+                  "html-range": "#/components/schemas/HtmlRangeLocator",
+                  "html-text": "#/components/schemas/HtmlTextLocator",
+                  "pdf": "#/components/schemas/PdfLocator",
+                  "structural": "#/components/schemas/StructuralLocator",
+                  "text": "#/components/schemas/TextLocator"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/PdfLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubResourceLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlTextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlRangeLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/StructuralLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/CitationLocator"
+                }
+              ]
+            },
+            "title": "Locators",
+            "type": "array"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "work_id": {
+            "minLength": 1,
+            "title": "Work Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "title": "PinnedAsset",
+        "type": "object"
+      },
+      "ProjectCorpus": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "linked": {
+            "title": "Linked",
+            "type": "boolean"
+          },
+          "owner_id": {
+            "format": "uuid",
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "provisioning",
+              "ready",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner_id",
+          "title",
+          "language",
+          "state",
+          "revision",
+          "created_at",
+          "updated_at",
+          "linked"
+        ],
+        "title": "ProjectCorpus",
+        "type": "object"
+      },
+      "ProjectCorpusPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectCorpus"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ProjectCorpusPage",
+        "type": "object"
+      },
+      "ProjectCorpusReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "corpus_id": {
+            "format": "uuid",
+            "title": "Corpus Id",
+            "type": "string"
+          },
+          "linked": {
+            "title": "Linked",
+            "type": "boolean"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "corpus_id",
+          "linked"
+        ],
+        "title": "ProjectCorpusReceipt",
+        "type": "object"
+      },
+      "ProjectMember": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "created_at"
+        ],
+        "title": "ProjectMember",
+        "type": "object"
+      },
+      "ProjectMemberEmail": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "ProjectMemberEmail",
+        "type": "object"
+      },
+      "ProjectMembersPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectMember"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_after": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "items",
+          "next_after"
+        ],
+        "title": "ProjectMembersPage",
+        "type": "object"
+      },
+      "ProjectMembership": {
+        "additionalProperties": false,
+        "properties": {
+          "present": {
+            "title": "Present",
+            "type": "boolean"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "user_id",
+          "present"
+        ],
+        "title": "ProjectMembership",
+        "type": "object"
+      },
+      "Provenance": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "method": {
+            "minLength": 1,
+            "title": "Method",
+            "type": "string"
+          },
+          "origin": {
+            "enum": [
+              "automatic",
+              "manual"
+            ],
+            "title": "Origin",
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "agent_id",
+          "method"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
       "PurposeField": {
         "additionalProperties": true,
         "properties": {
@@ -2298,9 +4357,79 @@
         "title": "PurposeRequest",
         "type": "object"
       },
+      "Reference": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "publication": {
+            "default": "draft",
+            "enum": [
+              "draft",
+              "published",
+              "withdrawn"
+            ],
+            "title": "Publication",
+            "type": "string"
+          },
+          "relationship": {
+            "default": "core:cites",
+            "minLength": 1,
+            "title": "Relationship",
+            "type": "string"
+          },
+          "resolution": {
+            "default": "unresolved",
+            "enum": [
+              "resolved",
+              "ambiguous",
+              "unresolved",
+              "unavailable"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          },
+          "review": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ],
+            "title": "Review",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "0.1.0",
+            "default": "0.1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Endpoint"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Endpoint"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "provenance"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
       "ReferenceCreate": {
         "properties": {
           "corpus": {
+            "description": "UUID of the stored corpus",
             "title": "Corpus",
             "type": "string"
           },
@@ -2340,9 +4469,104 @@
         "title": "ReferenceCreate",
         "type": "object"
       },
+      "RestoreEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Expected Commit",
+            "type": "string"
+          },
+          "expected_sequence": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Sequence",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_sequence",
+          "expected_commit"
+        ],
+        "title": "RestoreEdit",
+        "type": "object"
+      },
+      "RetrievedSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          },
+          "fragments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fragments",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reference_id": {
+            "format": "uuid",
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "source",
+              "target"
+            ],
+            "title": "Side",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "reference_id",
+          "version",
+          "side",
+          "endpoint",
+          "fragments"
+        ],
+        "title": "RetrievedSelection",
+        "type": "object"
+      },
+      "SelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "side": {
+            "enum": [
+              "source",
+              "target"
+            ],
+            "title": "Side",
+            "type": "string"
+          }
+        },
+        "required": [
+          "side"
+        ],
+        "title": "SelectionRequest",
+        "type": "object"
+      },
       "ShortcodeCreate": {
         "properties": {
           "corpus": {
+            "description": "UUID of the stored corpus",
             "title": "Corpus",
             "type": "string"
           },
@@ -2664,6 +4888,27 @@
         "title": "StoredCorpusResponse",
         "type": "object"
       },
+      "StructuralLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor_id": {
+            "minLength": 1,
+            "title": "Anchor Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "structural",
+            "default": "structural",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "anchor_id"
+        ],
+        "title": "StructuralLocator",
+        "type": "object"
+      },
       "StructureRequest": {
         "examples": [
           {
@@ -2860,6 +5105,71 @@
           "after"
         ],
         "title": "TextEdit",
+        "type": "object"
+      },
+      "TextLocator": {
+        "additionalProperties": false,
+        "description": "Zero-based half-open scalar offsets in a named, immutable text stream.",
+        "properties": {
+          "end": {
+            "exclusiveMinimum": 0.0,
+            "title": "End",
+            "type": "integer"
+          },
+          "exact": {
+            "minLength": 1,
+            "title": "Exact",
+            "type": "string"
+          },
+          "kind": {
+            "const": "text",
+            "default": "text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "normalization": {
+            "default": "preserve",
+            "enum": [
+              "preserve",
+              "NFC"
+            ],
+            "title": "Normalization",
+            "type": "string"
+          },
+          "offset_unit": {
+            "const": "unicode-scalar",
+            "default": "unicode-scalar",
+            "title": "Offset Unit",
+            "type": "string"
+          },
+          "prefix": {
+            "default": "",
+            "title": "Prefix",
+            "type": "string"
+          },
+          "start": {
+            "minimum": 0.0,
+            "title": "Start",
+            "type": "integer"
+          },
+          "stream_id": {
+            "minLength": 1,
+            "title": "Stream Id",
+            "type": "string"
+          },
+          "suffix": {
+            "default": "",
+            "title": "Suffix",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stream_id",
+          "start",
+          "end",
+          "exact"
+        ],
+        "title": "TextLocator",
         "type": "object"
       },
       "ValidationError": {
@@ -3588,6 +5898,7 @@
     },
     "/v1/ai/validate": {
       "post": {
+        "description": "Validate a scope in an authorized corpus or a validated conversion.",
         "operationId": "ai_validate_v1_ai_validate_post",
         "requestBody": {
           "content": {
@@ -4597,6 +6908,77 @@
         ]
       }
     },
+    "/v1/corpora/shared": {
+      "get": {
+        "description": "List ready corpora shared directly with the signed-in user.",
+        "operationId": "shared_corpora_v1_corpora_shared_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusMetadataPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Shared Corpora",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}": {
       "delete": {
         "description": "Hide the corpus and delete its private repository once; retain the audit receipt.",
@@ -4931,6 +7313,192 @@
         ]
       }
     },
+    "/v1/corpora/{corpus_id}/discard-uncertain-creation": {
+      "post": {
+        "description": "Superadmin: discard an uncertain creation only when its private repository is empty.",
+        "operationId": "discard_creation_v1_corpora__corpus_id__discard_uncertain_creation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusDeletion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Discard Creation",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/edits/{operation_id}": {
+      "get": {
+        "description": "Inspect an edit without redispatching its worker.",
+        "operationId": "get_edit_v1_corpora__corpus_id__edits__operation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Get Edit",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/edits/{operation_id}/reconcile": {
+      "post": {
+        "description": "Resolve an uncertain save, without sending another Hub write.\n\nAn unstaged save can be marked failed and retried with a new operation ID.\nA staged save remains uncertain unless its published result can be verified.",
+        "operationId": "reconcile_edit_v1_corpora__corpus_id__edits__operation_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Reconcile Edit",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
     "/v1/corpora/{corpus_id}/imports": {
       "post": {
         "description": "Store the initial validated .corpus; use one operation UUID for identical retries.",
@@ -4966,10 +7534,42 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Existing completed import"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Initial import completed"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Existing import is not yet completed"
           },
           "401": {
             "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "description": "Corpus is missing or not accessible"
+          },
+          "409": {
+            "description": "Revision, operation identity, or input conflicts"
+          },
+          "413": {
+            "description": "Archive exceeds 3000000 bytes"
+          },
+          "415": {
+            "description": "Expected a .corpus archive with shipped cache"
           },
           "422": {
             "content": {
@@ -4980,6 +7580,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable or uncertain; inspect import status"
           }
         },
         "security": [
@@ -5050,6 +7653,130 @@
           }
         ],
         "summary": "Get Import",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/reconcile": {
+      "post": {
+        "description": "Verify an uncertain initial import without issuing another Hub write.",
+        "operationId": "reconcile_import_v1_corpora__corpus_id__imports__operation_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Reconcile Import",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/resume": {
+      "post": {
+        "description": "Retry the same staged import only if its operation branch still has the original parent.",
+        "operationId": "resume_import_v1_corpora__corpus_id__imports__operation_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusImportInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Resume Import",
         "tags": [
           "Corpora"
         ]
@@ -5218,6 +7945,66 @@
           {}
         ],
         "summary": "Get Manifest",
+        "tags": [
+          "Corpora"
+        ]
+      },
+      "patch": {
+        "description": "Create a new version with changed manifest fields.",
+        "operationId": "edit_manifest_v1_corpora__corpus_id__manifest_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManifestEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Edit Manifest",
         "tags": [
           "Corpora"
         ]
@@ -5426,6 +8213,338 @@
         "tags": [
           "Corpora"
         ]
+      },
+      "patch": {
+        "description": "Create a new version with changed Text-Fabric node features.",
+        "operationId": "edit_node_v1_corpora__corpus_id__nodes__node__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "title": "Node",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Edit Node",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/readers": {
+      "get": {
+        "description": "List direct readers; owner or superadmin only.",
+        "operationId": "list_corpus_readers_v1_corpora__corpus_id__readers_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusReadersPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "List Corpus Readers",
+        "tags": [
+          "Corpora"
+        ]
+      },
+      "post": {
+        "description": "Share with a confirmed account by email; no invitation is sent.",
+        "operationId": "add_corpus_reader_by_email_v1_corpora__corpus_id__readers_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectMemberEmail"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusReaderGrant"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Add Corpus Reader By Email",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/readers/{user_id}": {
+      "delete": {
+        "description": "Revoke read-only access; owner or superadmin only.",
+        "operationId": "remove_corpus_reader_v1_corpora__corpus_id__readers__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusReaderGrant"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Remove Corpus Reader",
+        "tags": [
+          "Corpora"
+        ]
+      },
+      "put": {
+        "description": "Share read-only access with a confirmed Auth user; owner or superadmin only.",
+        "operationId": "add_corpus_reader_v1_corpora__corpus_id__readers__user_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusReaderGrant"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Add Corpus Reader",
+        "tags": [
+          "Corpora"
+        ]
       }
     },
     "/v1/corpora/{corpus_id}/sections": {
@@ -5546,6 +8665,179 @@
           {}
         ],
         "summary": "Get Sections",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/versions": {
+      "get": {
+        "description": "List immutable versions for a live owner or superadmin session.",
+        "operationId": "get_corpus_versions_v1_corpora__corpus_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusVersionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Get Corpus Versions",
+        "tags": [
+          "Corpora"
+        ]
+      }
+    },
+    "/v1/corpora/{corpus_id}/versions/{sequence}/restore": {
+      "post": {
+        "description": "Restore a previous snapshot as a new version with the current head as parent.",
+        "operationId": "restore_version_v1_corpora__corpus_id__versions__sequence__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sequence",
+            "required": true,
+            "schema": {
+              "title": "Sequence",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorpusEditInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Restore Version",
         "tags": [
           "Corpora"
         ]
@@ -6057,8 +9349,1285 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/browser-selection": {
+      "post": {
+        "description": "Map an unchanged browser HTML capture to an exact, revision-pinned range.",
+        "operationId": "map_browser_selection_v1_projects__project_id__browser_selection_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserSelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserSelection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Map Browser Selection",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/corpora": {
+      "get": {
+        "description": "List accessible linked corpora; project managers can list available choices.",
+        "operationId": "list_project_corpora_v1_projects__project_id__corpora_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "linked_only",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Linked Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCorpusPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "List Project Corpora",
+        "tags": [
+          "Project corpora"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/corpora/{corpus_id}": {
+      "delete": {
+        "description": "Idempotently unlink a corpus as the project owner or superadmin.",
+        "operationId": "unlink_project_corpus_v1_projects__project_id__corpora__corpus_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCorpusReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Unlink Project Corpus",
+        "tags": [
+          "Project corpora"
+        ]
+      },
+      "put": {
+        "description": "Link an accessible ready corpus as the project owner or superadmin.",
+        "operationId": "link_project_corpus_v1_projects__project_id__corpora__corpus_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectCorpusReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Link Project Corpus",
+        "tags": [
+          "Project corpora"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/discoveries": {
+      "post": {
+        "description": "Record verified citation evidence without inventing a target corpus.",
+        "operationId": "register_discovery_v1_projects__project_id__discoveries_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoveryRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Register Discovery",
+        "tags": [
+          "Project discoveries"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/discoveries/{discovery_id}": {
+      "get": {
+        "description": "Read the history with project and source-corpus access.",
+        "operationId": "discovery_history_v1_projects__project_id__discoveries__discovery_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discovery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Discovery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 10,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Discovery History",
+        "tags": [
+          "Project discoveries"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/discoveries/{discovery_id}/{action}": {
+      "post": {
+        "description": "Record an owner or superadmin review decision.",
+        "operationId": "decide_discovery_v1_projects__project_id__discoveries__discovery_id___action__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discovery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Discovery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "enum": [
+                "accept",
+                "reject"
+              ],
+              "title": "Action",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Decide Discovery",
+        "tags": [
+          "Project discoveries"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/members": {
+      "get": {
+        "description": "List project members; owner or superadmin only.",
+        "operationId": "list_project_members_v1_projects__project_id__members_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMembersPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "List Project Members",
+        "tags": [
+          "Projects"
+        ]
+      },
+      "post": {
+        "description": "Add a confirmed account by email; no invitation or email is sent.",
+        "operationId": "add_project_member_by_email_v1_projects__project_id__members_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectMemberEmail"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMembership"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Add Project Member By Email",
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/members/{user_id}": {
+      "delete": {
+        "description": "Remove a project member; owner or superadmin only.",
+        "operationId": "remove_project_member_v1_projects__project_id__members__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMembership"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Remove Project Member",
+        "tags": [
+          "Projects"
+        ]
+      },
+      "put": {
+        "description": "Add an existing account as a read-only member; owner or superadmin only.\n\n`user_id` is the member's Supabase Auth user UUID, not a directory profile ID.",
+        "operationId": "add_project_member_v1_projects__project_id__members__user_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMembership"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Add Project Member",
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references": {
+      "post": {
+        "description": "Save a draft linking reference; project owner or superadmin only.",
+        "operationId": "save_reference_v1_projects__project_id__references_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Save Reference",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/export": {
+      "post": {
+        "description": "Export selected current references and their provenance, regardless of review state.",
+        "operationId": "export_references_v1_projects__project_id__references_export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkExport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Export References",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/import": {
+      "post": {
+        "description": "Atomically import new references after rechecking access and conflicts.\n\nIdentical references are left unchanged; a conflict prevents all writes.\nImported references start as unresolved drafts with pending review. Source\nauthorship and history are retained as explicitly unverified evidence.",
+        "operationId": "import_references_v1_projects__project_id__references_import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkImportApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkImportApply"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Import References",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/import-preview": {
+      "post": {
+        "description": "Preview a JSON reference import without changing the destination project.\n\nUnchanged compares endpoints and relationship, not source review history.\nA plan is advisory: apply must repeat authorization and conflict checks.\nInaccessible projects or corpora return 404 for the entire plan.",
+        "operationId": "preview_reference_import_v1_projects__project_id__references_import_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkImportPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkImportPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Preview Reference Import",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/{reference_id}/history": {
+      "get": {
+        "description": "Read revisions if the caller may access the project and each linked corpus.",
+        "operationId": "reference_history_v1_projects__project_id__references__reference_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 10,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Reference History",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/{reference_id}/retrieve": {
+      "post": {
+        "description": "Retrieve a verified Text-Fabric, EPUB, PDF, C-USX or HTML selection.",
+        "operationId": "retrieve_selection_v1_projects__project_id__references__reference_id__retrieve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievedSelection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Retrieve Selection",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/references/{reference_id}/{action}": {
+      "post": {
+        "description": "Record a review or project-only publication decision.",
+        "operationId": "decide_reference_v1_projects__project_id__references__reference_id___action__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reference Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "enum": [
+                "reject",
+                "reopen",
+                "resolve",
+                "approve",
+                "publish",
+                "withdraw"
+              ],
+              "title": "Action",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Decide Reference",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
     "/v1/refs": {
       "post": {
+        "description": "Create a corpus reference pinned to its current stored revision.",
         "operationId": "create_reference_v1_refs_post",
         "requestBody": {
           "content": {
@@ -6163,6 +10732,7 @@
     },
     "/v1/refs/resolve": {
       "get": {
+        "description": "Resolve a UUID-and-revision reference against the current corpus snapshot.\n\nThe revision is the stored 40-character commit ID. A previous revision returns 409.",
         "operationId": "resolve_reference_v1_refs_resolve_get",
         "parameters": [
           {
@@ -6300,6 +10870,7 @@
     },
     "/v1/refs/shortcode": {
       "get": {
+        "description": "Render a UUID-and-revision reference as a shortcode.",
         "operationId": "get_reference_shortcode_v1_refs_shortcode_get",
         "parameters": [
           {
@@ -6435,6 +11006,7 @@
         ]
       },
       "post": {
+        "description": "Create a shortcode that identifies the corpus and stored revision.",
         "operationId": "create_reference_shortcode_v1_refs_shortcode_post",
         "requestBody": {
           "content": {

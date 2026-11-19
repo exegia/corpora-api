@@ -1,16 +1,19 @@
 [project]
 name = "corpora-api"
-version = "0.8.0"
+version = "0.9.0"
 description = "HTTP and MCP interfaces to corpora-core checks and converters"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+  "beautifulsoup4==4.14.3",
   "corpora-corpus-validate",
+  "corpora-linking==0.1.0",
   "corpora-schema-types",
   "fastapi>=0.115,<1",
   "fastmcp>=4,<5",
   "httpx>=0.28,<1",
   "huggingface-hub>=1.0,<2",
+  "lxml>=6.1.3,<7",
   "pyjwt[crypto]>=2.10,<3",
   "python-multipart>=0.0.20,<1",
   "uvicorn[standard]>=0.34,<1",
@@ -40,5 +43,5 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.uv.sources]
-corpora-corpus-validate = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "packages/corpus-validate", rev = "1fe0bd794af94395723bcaaea141a4810ec7973f" }
-corpora-schema-types = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "generated/python", rev = "1fe0bd794af94395723bcaaea141a4810ec7973f" }
+corpora-corpus-validate = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "packages/corpus-validate", rev = "fbecd324389fbcd36b8434844cea3c5cf2ef8724" }
+corpora-schema-types = { git = "https://github.com/exegia/corpora-core.git", subdirectory = "generated/python", rev = "fbecd324389fbcd36b8434844cea3c5cf2ef8724" }
