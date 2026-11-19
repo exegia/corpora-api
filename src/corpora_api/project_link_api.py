@@ -5,15 +5,29 @@ from typing import Any, Literal
 from uuid import UUID
 
 from corpora_linking import Provenance, Reference
-from corpora_linking.models import EpubLocator, PdfLocator, StructuralLocator, TextLocator
+from corpora_linking.models import (
+    EpubLocator,
+    HtmlRangeLocator,
+    PdfLocator,
+    StructuralLocator,
+    TextLocator,
+)
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from corpora_api.auth import require_user
+from corpora_api.browser_selection_models import BrowserSelection, BrowserSelectionRequest
 from corpora_api.corpus_creation import CreationRPC, _session
 from corpora_api.corpus_metadata import CorpusMetadataError
-from corpora_api.project_document import retrieve_document, verify_cusx, verify_epub, verify_pdf
+from corpora_api.project_document import (
+    _document,
+    retrieve_document,
+    verify_cusx,
+    verify_epub,
+    verify_html,
+    verify_pdf,
+)
 from corpora_api.project_link_models import (
     LinkDecision,
     LinkEndpoint,
@@ -215,6 +229,8 @@ async def _resolve_reference(request: Request, project: UUID, ref: UUID, version
             await verify_pdf(request.state.user_claims, selected)
         elif len(selected.locators) == 1 and isinstance(selected.locators[0], TextLocator):
             await verify_cusx(request.state.user_claims, selected)
+        elif len(selected.locators) == 1 and isinstance(selected.locators[0], HtmlRangeLocator):
+            await verify_html(request.state.user_claims, selected)
         else:
             raise HTTPException(422, "This selection cannot yet be verified")
 
@@ -234,6 +250,45 @@ def _receipt(value: Any, project: UUID, reference: UUID, expected: int) -> LinkR
         return receipt
     except (ValueError, TypeError):
         raise HTTPException(503, "Project linking is unavailable") from None
+
+
+@router.post("/{project_id}/browser-selection", response_model=BrowserSelection)
+async def map_browser_selection(
+    project_id: UUID,
+    body: BrowserSelectionRequest,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> BrowserSelection:
+    """Map an unchanged browser HTML capture to an exact, revision-pinned range."""
+    admitted = await run_in_threadpool(
+        _call,
+        "corpora_admit_browser_selection",
+        {
+            **_session(request.state.user_claims),
+            "p_project": str(project_id),
+            "p_corpus": body.original.package_id,
+        },
+    )
+    _status(admitted)
+    if admitted != {"status": "ok"}:
+        raise HTTPException(503, "Project linking is unavailable")
+    value = await _document(
+        request.state.user_claims,
+        body.original,
+        "map_browser",
+        raw_capture=body.model_dump(mode="json"),
+    )
+    try:
+        result = BrowserSelection.model_validate(value)
+        if result.endpoint.model_dump(exclude={"locators"}) != body.original.model_dump(
+            exclude={"locators"}
+        ):
+            raise ValueError("Browser mapping changed source identity")
+    except ValueError:
+        raise HTTPException(503, "Browser mapping returned an invalid result") from None
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @router.post("/{project_id}/references", response_model=LinkReceipt)
@@ -452,7 +507,7 @@ async def retrieve_selection(
     response: Response,
     _user: str = Depends(require_user),
 ) -> RetrievedSelection:
-    """Retrieve a verified Text-Fabric, EPUB, PDF or C-USX selection."""
+    """Retrieve a verified Text-Fabric, EPUB, PDF, C-USX or HTML selection."""
     latest = await _current_reference(request, project_id, reference_id, edit=False)
     raw = latest.reference.source if body.side == "source" else latest.reference.target
     try:
@@ -481,6 +536,8 @@ async def retrieve_selection(
         fragments.append(await retrieve_document(request.state.user_claims, selected, "pdf"))
     elif len(selected.locators) == 1 and isinstance(selected.locators[0], TextLocator):
         fragments.append(await retrieve_document(request.state.user_claims, selected, "cusx"))
+    elif len(selected.locators) == 1 and isinstance(selected.locators[0], HtmlRangeLocator):
+        fragments.append(await retrieve_document(request.state.user_claims, selected, "html"))
     else:
         raise HTTPException(422, "This selection cannot yet be retrieved")
     response.headers["Cache-Control"] = "no-store"
