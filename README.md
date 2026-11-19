@@ -150,9 +150,16 @@ There are two local worker slots and a 120-second worker deadline. Lost admissio
 acknowledgements, capacity exhaustion, and uncertain worker outcomes return 503;
 check the operation status using the same UUID. Git branch creation and commit
 publication are not automatically redispatched. The SDK may retry content-addressed
-LFS transfers. An uncertain operation blocks a new import and needs reconciliation;
-there is no automatic recovery or replacement import. Editing existing content
-and restoring versions are separate work.
+LFS transfers. An uncertain operation blocks a new import. After applying
+`uncertain_import_recovery`, the owner or superadmin can POST to
+`/v1/corpora/{id}/imports/{operation_id}/reconcile`: an unstaged operation can
+be safely marked failed, while a staged operation completes only after its
+published candidate is verified. Unavailable or ambiguous evidence leaves the
+operation uncertain; reconciliation never redispatches a Hub write. If the
+operation branch exists but still points to its original parent, the owner or
+superadmin can explicitly POST to `/v1/corpora/{id}/imports/{operation_id}/resume`.
+The retry uses the same staged bytes and a Git parent check, so a changed branch
+cannot be overwritten. Completion still requires full read-back verification.
 
 `GET /v1/corpora/{id}/versions` lists immutable content versions for the owner
 or configured superadmin with a live session. Results are newest first; `limit`
@@ -167,10 +174,128 @@ Hub commit. It changes API access only: the backing Hugging Face repository stay
 private. A real change advances the metadata revision; a stale revision returns
 409. `GET /v1/corpora/{id}/metadata` and `/visibility` permit anonymous reads of a
 public ready corpus. Private, missing and deleted corpora return 404 to anonymous
-or foreign readers. A supplied invalid or revoked token returns 401 even for a
+or unshared readers. A supplied invalid or revoked token returns 401 even for a
 public corpus. Owner listing, writes and operation receipts still require a live
 session. These responses use `Cache-Control: no-store`; making a corpus private
 again takes effect on subsequent reads. A read already admitted may finish.
+
+After applying `corpus_reader_sharing`, an owner or superadmin can grant a
+confirmed account read-only access with `POST /v1/corpora/{id}/readers` using
+its email, or `PUT /v1/corpora/{id}/readers/{user_id}` using its Auth UUID.
+No email is sent. List grants with `GET /v1/corpora/{id}/readers` and revoke
+one with `DELETE /v1/corpora/{id}/readers/{user_id}`. Signed-in readers can
+discover ready shared corpora with `GET /v1/corpora/shared`; sharing does not
+grant editing or sharing rights, and revocation applies to subsequent reads.
+
+After applying `protect_project_associations`, the old `project_references`
+table is inaccessible to client roles. The legacy `corpora` catalog has no
+verified visibility or ownership mapping, so client queries return no rows;
+the managed corpus API is the replacement. Legacy project-corpus associations
+are visible and editable only to the project owner or superadmin. Project
+licence attachments remain publicly readable but only the owner or superadmin
+may change them; a named agreement is not verified personal consent. Existing
+Corpora Web project views need the managed-corpus
+integration tracked in exegia/corpora-web#125.
+
+After applying `secure_corpus_documents`, signed-in users own new legacy
+document records and private-bucket uploads; superadmins can manage them.
+Existing document records remain unassigned until a superadmin verifies and
+claims them. After applying `restrict_legacy_bucket_reads`, direct client downloads
+and new signed URLs are denied; owners may upload and remove their own objects,
+and trusted service access remains available. Previously issued signed URLs
+require separate revocation. Historical anonymous access means old object integrity
+must be checked independently. The public licence catalogue remains readable;
+only superadmins may change it.
+
+After applying `protect_organization_writes`, organization names remain publicly
+readable. Creating an organization requires a live signed-in session; direct
+client updates are disabled because the current web app has no update flow.
+
+After applying `project_linking_ledger`, project owners and superadmins can
+save a draft with `POST /v1/projects/{project_id}/references`. Each endpoint
+requires a corpus UUID, full immutable repository commit, asset path and exact
+selection; short corpus references are rejected. Drafts remain unresolved: a
+saved selection is not proof that the referenced asset or passage was resolved.
+Use `GET /v1/projects/{project_id}/references/{reference_id}/history` for
+revision history and POST to `/reject` or `/reopen` to record a decision.
+Changes require the current `expected_version`. Project members can read only
+when they also have access to every corpus represented in the requested
+history; members cannot edit or decide.
+Projects with recorded reference history cannot be deleted, preserving the
+ledger and its project identity.
+
+After applying `project_link_retrieval`, a project member with access to both
+corpora can POST `{"side":"source"}` or `{"side":"target"}` to
+`/v1/projects/{project_id}/references/{reference_id}/retrieve`. The response
+identifies the reference version and endpoint and returns the selected text as
+ordered fragments. Text-Fabric fragments use the core reference renderer;
+EPUB and PDF fragments are checked against their exact quoted text. Existing
+C-USX 0.1 assets support exact `cusx-itertext/v1` Unicode-scalar selections:
+the package is validated and its claimed work/edition must match the selection.
+The XML SHA-256 is checked separately from the pinned corpus Git commit; this
+does not establish external catalog authority or reconcile package-local IDs to
+catalog IDs. Retrieval checks the current
+corpus revision and reports unsupported or unverifiable selections instead of
+returning guessed text. C-USX reference export remains a separate, unfinished
+package-profile task.
+
+After applying `project_link_export`, a member with access to every referenced
+corpus can POST up to 10 distinct reference UUIDs to
+`/v1/projects/{project_id}/references/export`. The JSON download contains each
+current reference revision, including its provenance and review state, ordered
+by reference UUID. Export does not change publication or review state; a missing
+or inaccessible reference causes the entire request to fail.
+
+After applying `project_link_import_preview`, a project owner or superadmin can
+POST an existing export JSON document to
+`/v1/projects/{project_id}/references/import-preview`. It returns `new`,
+`unchanged`, or `conflict` for each reference, and the current destination
+version when one exists. Unchanged compares the endpoints and relationship,
+not imported review history. Both incoming and existing referenced corpora must
+be accessible; inaccessible data causes a 404 for the whole request. The source
+project ID and provenance are claims from the file, not verified authorship.
+The preview makes no changes and is advisory: apply rechecks access and conflicts.
+
+After applying `project_link_import`, POST an object containing that export as
+`export` and a nonblank `reason` to
+`/v1/projects/{project_id}/references/import`. New links are imported together
+as unresolved drafts with pending review; matching links are reported unchanged.
+A conflicting link prevents the whole batch from being written. New links record
+the signed-in importer and retain source authorship, review state and provenance
+as explicitly unverified evidence in the reference. Unchanged links retain their
+existing provenance. A retry does not create duplicate revisions.
+
+After applying `project_link_publication`, a project owner or superadmin can
+POST to `/v1/projects/{project_id}/references/{reference_id}/publish` to mark an
+approved, resolved reference published within that project. Its corpus revisions
+must still be current. POST to `/withdraw` to remove that published status; an
+approved, current reference can be published again. Every decision requires the
+current `expected_version` and a reason, and is retained in history. Publication
+does not grant project membership, corpus access, or public visibility.
+
+Project owners and superadmins can register citation discoveries with an exact
+source selection, matching quote, and cited name at
+`POST /v1/projects/{project_id}/discoveries`. This records source evidence;
+it does not identify a target corpus or create a reference. The same caller can
+retry the same discovery ID and evidence safely. Authorized project members
+can read its history; owners and superadmins can accept or reject it with the
+current version and a reason. Reading or reviewing requires current access to
+the source corpus, and accepting requires its revision still to be current.
+
+After applying `project_link_resolution`, owners and superadmins can POST to
+`/resolve` to verify both revision-pinned selections, then `/approve` to record
+approval. Text-Fabric passages and EPUB CFI ranges with exact text evidence are
+supported. The EPUB must be present in the corpus archive; its package, spine,
+resource, UTF-16 offsets, and quoted text are checked. EPUB verification supports
+a single-resource CFI range in XML without a DOCTYPE; unsupported selections stay
+unresolved. Both operations reject a corpus whose current revision has changed.
+PDF verification supports unencrypted, unrotated pages with extractable text in
+documents of at most 1,000 pages and pages of at most 10,000 words.
+Use `poppler-page-words-v1` for the text selector: it is the page's Poppler word
+text joined with single spaces, with Unicode scalar offsets. Select complete,
+contiguous words and provide one matching CropBox-relative rectangle per word.
+Coordinates must match within 0.02 points. Quads, partial words, rotated pages,
+scanned pages without text, and other unsupported selections remain unresolved.
 
 `DELETE /v1/corpora/{id}` accepts a JSON body with `operation_id` (a client UUID)
 and `expected_revision`. Admission rejects active or uncertain provisioning/import
@@ -208,152 +333,31 @@ otherwise the core reader returns complete coarser sections or original slot nod
 Node IDs and annotations are preserved. Private, missing, deleted or not-yet-ready
 corpora return 404; missing nodes and sections also return 404. Unreadable archives
 return 422, oversized view results return 413, and storage/integrity/worker failures
-return 503. Errors do not expose the backing repository. Existing `/v1/storage/...`
-reads use their existing backing store. Editing and restoring versions remain
-separate work.
+return 503. Errors do not expose the backing repository. Existing
+`/v1/storage/...` reads use their existing backing store. Owners and superadmins
+can edit corpus content and restore an earlier version.
 
-The content schema records content write operations, immutable-commit
-versions and a current head, distinct from the metadata revision counter. An
-unwired adapter admits an owner or superadmin save inside a live-session
-transaction, before any Hub work. It expects a trusted hash of validated input;
-it does not perform validation or Hub writes. The migration grants the service
-role read access only, so admission needs a separately reviewed write boundary.
-An unwired database finalizer checks the exact claim and atomically records a
-trusted candidate, advances the head and sets initial readiness. The caller
-must independently verify the Hub commit, parent, input and retained ref;
-constructing an attestation does not verify it. The initial-import route above
-provides that verification for version 1; the general save, restore and
-reconciliation adapters remain unwired. Recorded commits must remain reachable
-through their retained Hub references; the schema does not verify remote bytes
-or enforce readiness in every possible write path. A first version has no prior
-logical corpus version, but must use a separately recorded, immutable Hub
-bootstrap baseline as its Git parent. This baseline is a pinned commit observed
-after confirmed private repository creation, not proof of the provider's
-original creation commit. A provisioning operation binds that
-bootstrap to one immutable claim and must complete atomically with it; an
-uncertain operation cannot be automatically reclaimed. An unwired adapter
-checks a live session and owner or server-configured superadmin before
-atomically admitting and claiming one attempt. A creation already underway may
-finish after sign-out, including starting its Hub request; a new creation request
-requires an active session. An internal dispatcher calls the bounded worker once
-after a successful admission. After a confirmed creation and a second matching
-private-repository observation, it records the observed baseline against the
-exact claim. A lost database acknowledgement is checked against the immutable
-result; a lost Hub creation response is never automatically retried. A restricted
-production privilege boundary and outcome resolution remain unresolved.
-An internal read-only reconciliation inspector can report whether the expected
-private Hub repository is currently visible, mismatched or inconclusive. Its
-observation neither proves creation provenance nor establishes worker termination;
-it never adopts, retries or finalizes the operation.
-The Hub observation uses a 15-second overall HTTP deadline, including response
-headers and a body limited to 64 KiB. Timeout or cleanup failure is inconclusive;
-the dispatcher retains the claim for reconciliation. Each observation owns its
-async HTTP client and allows up to 0.1 seconds each for response and client cleanup.
-This assumes nonblocking client construction and cooperative HTTPX cancellation;
-it does not bound the surrounding database calls or the entire dispatcher.
-An unwired finalizer can record a bootstrap from a trusted assertion, but no
-component verifies that assertion; save claims fail closed when it is missing.
-Before recording a new content version, a future worker must replace and verify the complete
-intended tree at the resulting pinned commit, check content bytes, and guard
-against branch changes. Replacing files does not erase prior Git history.
-Hub organization administrators are trusted administrators and can still change
-visibility, move references or delete repositories; reads must verify the
-identity and privacy appropriate to the operation, and availability cannot be
-guaranteed by a commit hash alone. An unwired one-shot claim
-adapter lets one trusted dispatcher claim an admitted operation; it does not
-run a worker or automatically reclaim an uncertain or stalled operation.
-Admission receipts do not themselves authorize dispatch. A lost admission or
-claim commit response must not trigger Hub work from the failed response; the
-durable state needs reconciliation. A newly authenticated session for the same
-actor can reattach to an identical operation; the originally admitted session
-remains recorded. Receipt state is a snapshot, not an execution claim. The
-finalizer checks the exact claim ID and operation state, but a database claim
-cannot cancel or fence a remote Hub request that is already running.
-An unwired archive inventory hashes every regular entry in the original ZIP,
-including metadata and caches, with bounded full-stream decompression. It is
-not corpus validation or durable staging. An unwired preparation adapter binds
-the same immutable bytes and canonical archive format to the claimed digest,
-inventory and real-loader
-report; it requires the Text-Fabric and Context-Fabric checks to pass. It accepts
-`.corpus` and `.zip` inputs; profile-only `.ctei` and `.cusx` checks are not
-treated as Text-Fabric loading. Neither adapter publishes a version. The inventory
-currently accepts stored and DEFLATE ZIP entries and rejects ZIP64 entry sizes
-and other compression methods; expanding that support remains required before
-wiring it for archives using those methods.
-An unwired Hub staging adapter creates a separate operation-specific branch,
-writes the validated input archive and reads it back by immutable commit SHA
-with a bounded stream and digest check. An unwired recorder can persist the
-trusted receipt for the exact claim; the database requires a receipt before a
-version can be finalized. The recorder does not verify Hub contents itself,
-and a saved receipt does not guarantee future privacy or availability. An
-unwired recovery read can load an executing receipt, recheck the repository and
-ref, and revalidate the bytes at its pinned commit. It does not renew a worker
-claim or authorize redispatch; the claim and head can change after the read.
-Remote
-calls lack an end-to-end deadline, and interrupted work requires reconciliation.
-A separate read-only observation can inspect a deterministic staging ref and
-verify its bytes even when no receipt was recorded. A missing ref or a matching
-observation does not establish whether the earlier worker is still running and
-does not authorize a retry, receipt insertion or publication.
-A dedicated staging state, safe dispatcher, cleanup policy and Hub parent
-verification are still required.
-An unwired one-shot publication claim now follows a staged receipt and is
-separate from the staging claim; versions must carry that publication claim.
-The claim is coordination only: the existing database role can read it, so
-staging and publishing are not isolated until a restricted dispatcher or
-separate production credentials are installed. It does not fence an existing
-remote request or authorize automatic takeover after an uncertain outcome.
-An unwired Git-object verifier checks the commit's single direct parent, exact
-tree paths and regular-file modes, and verifies each blob and resolved LFS file
-against trusted content hashes. Paths use exact case-sensitive Git names; this
-does not establish checkout compatibility on every filesystem. It requires an
-explicit decision on repository-managed files such as `.gitattributes`, uses
-Git's SHA-1 object identifiers, and supports canonical three-line LFS pointers
-only. The caller must verify every returned entry against the matching trusted
-path, size and hash. Object acquisition, Hub privacy and ref checks, aggregate download limits,
-and the publication worker still need to be implemented.
-The configured Hub organization is part of each immutable repository link.
-Changing it will make existing records fail closed. A namespace transfer needs
-a separately reviewed Hub transfer and metadata migration or a trusted
-multi-namespace transition; this component does not perform either operation.
-The Hub provisioning adapter uses the server-only
-`HF_CORPUS_PROVISION_TOKEN`, verifies the configured namespace is an actual Hub
-organization, requests a private repository, and checks its returned identity
-and privacy. The receipt includes the observed Git head, but this observation
-does not establish the initial commit or authorize recording a bootstrap: other
-writers may have changed the repository. The creation route adds durable one-shot
-admission and an independent observation before finalization. It does not adopt an existing name
-or retry an ambiguous write.
-An unwired POSIX worker wrapper applies a request deadline, bounds worker
-output, and accepts a trusted live-session lease. If the request times out,
-an acquired lease stays held until the worker stops while its database
-connection remains alive; the Hub write may still have been accepted and needs
-reconciliation. If that connection is lost, PostgreSQL releases its lock and
-the worker can still send a Hub write after logout, which is allowed for a request
-already accepted while signed in. Abrupt application-process death and the
-hosted worker environment need deployment-specific verification, and a remote write may remain in
-flight after local termination. The creation API uses the one-shot dispatcher;
-content upload and readiness transitions remain separate work. Privacy must also be checked at later sensitive operations; one successful observation does not keep
-a repository private.
+The content schema records immutable versions and a current head separately
+from the metadata revision. Imports, edits, restores, and recovery of uncertain
+writes verify the staged bytes and published Git candidate before advancing the
+head. Recorded commits must remain reachable through their retained Hub refs.
 
-An unwired corpus-file reader checks owner-bound metadata, a ready state, a
-specific Hub commit and point-in-time private visibility before streaming a
-bounded file. It uses server-only `HF_CORPUS_READ_TOKEN` and does not forward
-that token to redirected CDN hosts. It does not establish corpus readiness,
-authenticate sessions, guarantee continuous privacy or provide a total request
-deadline. Routes need a reviewed start-time session admission check and a trusted
-revision before enabling it. The hosted runtime is unverified.
+Corpus creation uses a one-shot dispatcher after live-session admission. An
+accepted creation may finish after sign-out, but a new request requires an active
+session. A lost Hub response is not automatically retried. Check the recorded
+operation and use its documented recovery path when the outcome is uncertain.
 
-An additional unwired async transfer adapter applies one deadline across the
-metadata lookup, Hub verification, file transfer and sink backpressure. It uses
-a dedicated HTTP client for each transfer and allows a short cleanup period
-after the deadline. Client setup is synchronous and must not block; its
-transport and sink must cooperate with cancellation. Partial bytes already
-delivered cannot be recalled. It does not integrate a live-session guard,
-authorize revisions, or replace the existing reader.
+The configured Hugging Face organization is part of each immutable repository
+link. Changing it requires a coordinated transfer and metadata migration. Hub
+administrators can change repository visibility or delete data, so the API checks
+privacy at sensitive operations. Its server-only read and provisioning credentials
+are never returned to API clients.
 
 Authenticated `/v1/ai/drafts` endpoints create, list, inspect and export private
-working drafts from a caller-owned completed conversion. They use the existing
+working drafts from a caller-owned completed conversion. Each new request also
+checks that its Supabase session remains active using `SUPABASE_INGEST_API_KEY`;
+an unavailable session check fails closed. A request admitted before sign-out may
+finish afterwards. These routes currently require the
 `corpora_ai_storage` Supabase RPC and private `corpus-ai-drafts` bucket from
 the legacy `corpora-py` draft migrations. Archives are staged under immutable
 owner/document/revision keys and checked against their SHA-256 digest before
@@ -362,12 +366,19 @@ no caller-supplied storage path is accepted.
 The source-pinned legacy database setup is in `supabase/migrations/`; apply it
 only after reviewing it against the target database and verifying its existing
 tables and policies. The API does not apply migrations automatically.
+The current hosted project does not contain this registry, so the draft lifecycle
+is unavailable until its replacement is implemented and verified.
 
 
 Authenticated `/v1/ai/providers` lists the legacy provider guidance without
 accepting API keys. `/v1/ai/validate` validates a version-pinned scope against
 an accessible stored corpus or owned completed conversion, returning located
 findings and rejecting stale version or content hashes.
+For a Corpora-managed corpus, set `scope.corpus` to `corpus:<UUID>` and
+`scope.corpus_revision` to its full current Hugging Face commit SHA. The caller
+must have access to the corpus; a changed commit returns 409 before reading
+the archive. `scope.version` remains the version recorded in the corpus
+manifest, and an optional `content_hash` checks the selected text.
 For conversion jobs, the API validates the downloaded archive again before
 using it; a saved result from an earlier validation is not sufficient.
 Corpus detail, reference, and scope reads run the native loader in a separate
@@ -448,3 +459,16 @@ This repository was created from `exegia/corpora-template`. Work on `<type>/<slu
 The release generator writes `CHANGELOG.md` with no trailing blank line so the release PR passes the pre-commit hygiene check. Run `make selftest` after changing that generator.
 
 Promotion skips branches with matching trees. The release job builds Python distributions and attaches them when it creates the GitHub Release; later tag-triggered jobs handle registry publishing.
+
+## API guides and QA cleanup
+
+The public guides live in `docs/content/`: `/api` is the onboarding hub and
+`/core/qa-testing` records the shared QA procedure. Keep examples aligned with
+`docs/openapi.json`; a local dummy service token never replaces a Supabase user
+session. Use dedicated accounts and synthetic corpora for hosted QA. Record exact
+fixture IDs before writes, delete through the product API, verify the receipt,
+retire temporary accounts/sessions, and remove only run-specific credential files.
+Keep sanitized evidence and report incomplete cleanup. Preserve production audit
+history and permanent server configuration. See [QA testing](https://docs.exegia.co/core/qa-testing).
+
+For a new disposable Supabase development database, see the [fresh bootstrap guide](supabase/bootstrap/README.md).

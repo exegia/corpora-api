@@ -182,11 +182,19 @@ def run_import_worker(
 
 
 def run_reconciliation_worker(target: dict[str, Any], *, slot: ImportSlot) -> None:
+    _run_reconciliation(target, slot=slot, mode="reconcile")
+
+
+def run_import_resume_worker(target: dict[str, Any], *, slot: ImportSlot) -> None:
+    _run_reconciliation(target, slot=slot, mode="resume_import")
+
+
+def _run_reconciliation(target: dict[str, Any], *, slot: ImportSlot, mode: str) -> None:
     registry, headers = CorpusMetadataStore._config()
     deadline = time.monotonic() + MAX_IMPORT_SECONDS
     payload = json.dumps(
         {
-            "mode": "reconcile",
+            "mode": mode,
             "target": target,
             "deadline": deadline,
             "config": {
@@ -357,14 +365,18 @@ def _main() -> None:
                 transport=transport, timeout=15, follow_redirects=True, trust_env=False
             )
         )
-        if request.get("mode") == "reconcile":
+        if request.get("mode") in ("reconcile", "resume_import"):
             from corpora_api.corpus_save_reconcile import (
                 SaveReconciliationTarget,
                 execute_save_reconciliation,
+                resume_initial_import,
             )
 
             target = SaveReconciliationTarget.model_validate(request["target"])
-            execute_save_reconciliation(target, request["deadline"])
+            if request["mode"] == "resume_import":
+                resume_initial_import(target, request["deadline"])
+            else:
+                execute_save_reconciliation(target, request["deadline"])
         else:
             values = request["claim"]
             for key in ("operation_id", "claim_id", "corpus_id", "actor_id", "session_id"):

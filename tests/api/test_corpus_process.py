@@ -6,10 +6,23 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from corpora_api import ai_validation, corpus_process
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
 from corpora_api.models import AINodeScope
+
+
+def test_revision_pin_is_not_silently_ignored_for_an_archive_scope():
+    with pytest.raises(ValidationError, match="corpus_revision applies only"):
+        AINodeScope(
+            corpus="old-archive",
+            corpus_revision="a" * 40,
+            level="word",
+            node_id=1,
+            label="word",
+            version="1.0",
+        )
 
 
 def test_worker_output_limit_counts_encoded_bytes_and_returns_no_partial_json(monkeypatch):

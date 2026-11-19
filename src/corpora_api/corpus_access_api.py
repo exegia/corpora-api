@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 from urllib.parse import quote
@@ -121,6 +122,7 @@ class PrivateHubLifecycle:
         self.transport_factory, self.timeout = transport_factory, timeout
 
     async def _request(self, client: httpx.AsyncClient, method: str, url: str, **kwargs):
+        include_headers = kwargs.pop("include_headers", False)
         response = None
         try:
             response = await client.send(
@@ -133,13 +135,22 @@ class PrivateHubLifecycle:
                 body.extend(chunk)
                 if len(body) > 65536:
                     raise ValueError("Hub response exceeds bound")
+            if include_headers:
+                return response.status_code, bytes(body), response.headers
             return response.status_code, bytes(body)
         finally:
             if response is not None:
                 await CorpusProvisionHubObserver._close(response)
 
     async def operate(
-        self, corpus: UUID, repo: str, kind: str, *, sha: str | None = None, delete=False
+        self,
+        corpus: UUID,
+        repo: str,
+        kind: str,
+        *,
+        sha: str | None = None,
+        delete=False,
+        empty_only=False,
     ):
         token, organization = (
             os.getenv("HF_CORPUS_PROVISION_TOKEN", ""),
@@ -153,7 +164,7 @@ class PrivateHubLifecycle:
         ):
             raise CorpusMetadataError("Private corpus storage is unavailable")
         url = "https://huggingface.co/api/datasets/" + quote(repo, safe="/")
-        if sha is not None:
+        if sha is not None and not empty_only:
             url += "/revision/" + quote(sha, safe="")
         client = httpx.AsyncClient(
             transport=self.transport_factory() if self.transport_factory else None,
@@ -173,6 +184,31 @@ class PrivateHubLifecycle:
                     or (sha is not None and value.get("sha") != sha)
                 ):
                     raise ValueError("Repository identity or privacy changed")
+                if empty_only:
+                    observed_sha = value.get("sha")
+                    if not isinstance(observed_sha, str) or not re.fullmatch(
+                        r"[0-9a-f]{40}", observed_sha
+                    ):
+                        raise ValueError("Invalid repository revision")
+                    if sha is not None and observed_sha != sha:
+                        raise ValueError("Repository revision changed")
+                    status, body, headers = await self._request(
+                        client,
+                        "GET",
+                        url + "/tree/" + observed_sha + "?recursive=true&limit=2",
+                        include_headers=True,
+                    )
+                    tree = json.loads(body)
+                    if (
+                        status != 200
+                        or headers.get("link")
+                        or not isinstance(tree, list)
+                        or len(tree) != 1
+                        or not isinstance(tree[0], dict)
+                        or tree[0].get("path") != ".gitattributes"
+                        or tree[0].get("type") != "file"
+                    ):
+                        raise ValueError("Repository is not empty")
                 if delete:
                     status, _ = await self._request(
                         client,
@@ -189,6 +225,8 @@ class PrivateHubLifecycle:
                     status, _ = await self._request(client, "GET", url)
                     if status != 404:
                         raise ValueError("Deletion was not verified")
+                if empty_only:
+                    return observed_sha
         except Exception:
             raise CorpusMetadataError("Private corpus storage outcome is unconfirmed") from None
         finally:
@@ -293,6 +331,99 @@ async def delete_corpus(
             pass
         raise HTTPException(503, "Deletion outcome is uncertain; check deletion status") from None
     return CorpusDeletion(corpus_id=corpus, operation_id=request.operation_id, state="completed")
+
+
+async def discard_uncertain_creation(
+    claims: Mapping[str, Any], corpus: UUID, request: DeletionRequest
+) -> CorpusDeletion:
+    require_creation_config(creating=True)
+    rpc = CreationRPC()
+    params = {
+        **_session(claims),
+        "p_corpus": str(corpus),
+        "p_operation": str(request.operation_id),
+        "p_revision": request.expected_revision,
+    }
+    prior = await run_in_threadpool(rpc.call, "corpora_uncertain_discard_status", params)
+    if prior != {"status": "absent"}:
+        return _deletion(prior, corpus, request.operation_id)
+    target = await run_in_threadpool(
+        rpc.call,
+        "corpora_uncertain_discard_target",
+        {k: v for k, v in params.items() if k != "p_operation"},
+    )
+    _status(target)
+    if (
+        not isinstance(target, dict)
+        or set(target) != {"status", "corpus_id", "repo_id", "repo_type"}
+        or target.get("status") != "ok"
+        or target.get("corpus_id") != str(corpus)
+    ):
+        raise CorpusMetadataError("Uncertain creation target is invalid")
+    hub = PrivateHubLifecycle()
+    sha = await hub.operate(corpus, target["repo_id"], target["repo_type"], empty_only=True)
+    claim = await run_in_threadpool(
+        rpc.call, "corpora_begin_uncertain_discard", {**params, "p_observed_sha": sha}
+    )
+    if not isinstance(claim, dict) or claim.get("status") != "claimed":
+        return _deletion(claim, corpus, request.operation_id)
+    try:
+        if (
+            set(claim)
+            != {
+                "status",
+                "corpus_id",
+                "operation_id",
+                "claim_id",
+                "repo_id",
+                "repo_type",
+                "observed_sha",
+            }
+            or claim["corpus_id"] != str(corpus)
+            or claim["operation_id"] != str(request.operation_id)
+            or claim["repo_id"] != target["repo_id"]
+            or claim["repo_type"] != target["repo_type"]
+            or claim["observed_sha"] != sha
+        ):
+            raise ValueError("Mismatched claim")
+        claim_id = UUID(claim["claim_id"])
+    except (ValueError, KeyError, TypeError):
+        raise CorpusMetadataError("Uncertain creation deletion admission is invalid") from None
+    finish = {
+        "p_operation": str(request.operation_id),
+        "p_claim": str(claim_id),
+        "p_completed": True,
+    }
+    try:
+        await hub.operate(
+            corpus, target["repo_id"], target["repo_type"], sha=sha, delete=True, empty_only=True
+        )
+        if await run_in_threadpool(rpc.call, "corpora_finish_corpus_deletion", finish) is not True:
+            raise CorpusMetadataError("Deletion completion was rejected")
+    except Exception:
+        try:
+            await run_in_threadpool(
+                rpc.call, "corpora_finish_corpus_deletion", {**finish, "p_completed": False}
+            )
+        except Exception:
+            pass
+        raise HTTPException(503, "Deletion outcome is uncertain; check deletion status") from None
+    return CorpusDeletion(corpus_id=corpus, operation_id=request.operation_id, state="completed")
+
+
+@router.post("/v1/corpora/{corpus_id}/discard-uncertain-creation", response_model=CorpusDeletion)
+async def discard_creation(
+    corpus_id: UUID,
+    deletion: DeletionRequest,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> CorpusDeletion:
+    """Superadmin: discard an uncertain creation only when its private repository is empty."""
+    response.headers["Cache-Control"] = "no-store"
+    result = await discard_uncertain_creation(request.state.user_claims, corpus_id, deletion)
+    response.status_code = 200 if result.state == "completed" else 202
+    return result
 
 
 @router.get("/v1/corpora/{corpus_id}/visibility", response_model=CorpusVisibility)

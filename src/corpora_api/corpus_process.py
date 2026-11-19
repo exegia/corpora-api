@@ -10,6 +10,8 @@ import sys
 from dataclasses import asdict
 from typing import Any
 
+from corpora_api.project_document_errors import DocumentVerificationUnavailable
+
 # Leave room under the 4 MB hosted response limit for route-level metadata.
 MAX_CORPUS_WORKER_RESPONSE_BYTES = 3_900_000
 MAX_CORPUS_EDIT_WORKER_RESPONSE_BYTES = 4_100_000
@@ -132,6 +134,30 @@ def _main() -> None:
             value = read_archive(data, **args)
         elif operation == "reference":
             value = reference_archive(data, **args)
+        elif operation == "verify_epub":
+            from corpora_api.project_epub_verify import verify_epub_in_corpus
+
+            value = verify_epub_in_corpus(data, **args)
+        elif operation == "verify_pdf":
+            from corpora_api.project_pdf_verify import verify_pdf_in_corpus
+
+            value = verify_pdf_in_corpus(data, **args)
+        elif operation == "verify_cusx":
+            from corpora_api.project_cusx_verify import verify_cusx_in_corpus
+
+            value = verify_cusx_in_corpus(data, **args)
+        elif operation == "retrieve_epub":
+            from corpora_api.project_epub_verify import retrieve_epub_in_corpus
+
+            value = retrieve_epub_in_corpus(data, **args)
+        elif operation == "retrieve_pdf":
+            from corpora_api.project_pdf_verify import retrieve_pdf_in_corpus
+
+            value = retrieve_pdf_in_corpus(data, **args)
+        elif operation == "retrieve_cusx":
+            from corpora_api.project_cusx_verify import retrieve_cusx_in_corpus
+
+            value = retrieve_cusx_in_corpus(data, **args)
         elif operation == "scope":
             raw = args["scope"]
             raw["level"] = ScopeLevel(raw["level"])
@@ -161,6 +187,8 @@ def _main() -> None:
         else:
             raise ValueError("Unsupported corpus operation")
         response = {"result": value}
+    except DocumentVerificationUnavailable:
+        response = {"error": "unavailable", "message": "Document verification is unavailable"}
     except UnknownScopeNode as error:
         response = {"error": "unknown_scope_node", "attributes": {"node": error.node}}
     except InvalidScopeSelection as error:

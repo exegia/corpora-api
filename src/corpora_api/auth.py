@@ -26,7 +26,10 @@ class SessionCheckUnavailable(Exception):
 
 
 def ingest_session_active(token: str) -> bool:
-    """Check the verified user's live session without a service credential."""
+    """Check a verified user's live session without a service credential.
+
+    The session RPC was introduced for ingestion and also guards draft requests.
+    """
     project_ref = os.getenv("PROJECT_REF")
     url = os.getenv("SUPABASE_URL") or (f"https://{project_ref}.supabase.co" if project_ref else "")
     key = os.getenv("SUPABASE_INGEST_API_KEY", "")

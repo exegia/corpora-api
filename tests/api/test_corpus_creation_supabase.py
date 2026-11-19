@@ -2,10 +2,12 @@
 
 import hashlib
 import importlib
+import io
 import json
 import os
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -15,6 +17,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from test_corpus_hub_publish import real_archive
+from test_project_cusx_verify import cusx_package
+from test_project_epub_verify import epub
+from test_project_pdf_verify import case as pdf_case
+from test_project_pdf_verify import pdf
 
 from corpora_api import corpus_creation as creation
 from corpora_api.auth import verify_user_token
@@ -105,6 +111,10 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 "corpus_version_save",
                 "corpus_edit_intents",
                 "corpus_save_reconciliation",
+                "uncertain_creation_discard",
+                "unstaged_save_recovery",
+                "corpus_reader_sharing",
+                "uncertain_import_recovery",
             ):
                 db.execute(next(migrations.glob("*_" + suffix + ".sql")).read_text())
             for _ in range(3):
@@ -281,7 +291,15 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                     "p_corpus": corpus,
                 }
                 archive = real_archive(tmp_path)
-                import_operation = _exercise_import_rpc(params, foreign, db, archive)
+                with io.BytesIO(archive) as data:
+                    with zipfile.ZipFile(data, "a", zipfile.ZIP_DEFLATED) as fixture:
+                        fixture.writestr("sources/book.epub", epub())
+                        fixture.writestr("sources/book.pdf", pdf())
+                        fixture.writestr("sources/book.cusx", cusx_package()[0])
+                    archive = data.getvalue()
+                import_operation = _exercise_import_rpc(
+                    api, params, owner, foreign, db, archive, monkeypatch
+                )
                 history_path = path + "/versions"
                 assert api.get(history_path).status_code == 401
                 assert api.get(history_path, headers=headers(foreign)).status_code == 404
@@ -383,6 +401,81 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                 )
                 assert second_page["next_cursor"] is None
 
+                # Only a superadmin can discard an old, uncertain creation, exactly once.
+                provision_id = db.execute(
+                    "SELECT id FROM public.corpora_corpus_provision_ops WHERE corpus_id=%s",
+                    (lost_id,),
+                ).fetchone()[0]
+                db.execute(
+                    "UPDATE public.corpora_corpus_provision_ops SET state='uncertain' WHERE id=%s",
+                    (provision_id,),
+                )
+                rpc = creation.CreationRPC()
+                target = {**creation._session(admin[0]), "p_corpus": lost_id, "p_revision": 1}
+                assert rpc.call("corpora_uncertain_discard_target", target) == {
+                    "status": "conflict"
+                }
+                assert rpc.call(
+                    "corpora_uncertain_discard_target", {**target, **creation._session(foreign[0])}
+                ) == {"status": "not_found"}
+                # Simulate elapsed time only in this disposable local test database.
+                with db.transaction():
+                    db.execute(
+                        "ALTER TABLE public.corpora_corpus_provision_ops "
+                        "DISABLE TRIGGER corpora_corpus_validate_provision"
+                    )
+                    db.execute(
+                        "UPDATE public.corpora_corpus_provision_ops "
+                        "SET claimed_at=clock_timestamp()-interval '61 seconds' WHERE id=%s",
+                        (provision_id,),
+                    )
+                    db.execute(
+                        "ALTER TABLE public.corpora_corpus_provision_ops "
+                        "ENABLE TRIGGER corpora_corpus_validate_provision"
+                    )
+                assert rpc.call("corpora_uncertain_discard_target", target)["status"] == "ok"
+                discard = {**target, "p_operation": str(uuid4()), "p_observed_sha": "a" * 40}
+                assert rpc.call(
+                    "corpora_begin_uncertain_discard", {**discard, **creation._session(foreign[0])}
+                ) == {"status": "not_found"}
+                claimed = rpc.call("corpora_begin_uncertain_discard", discard)
+                assert claimed["status"] == "claimed"
+                assert rpc.call("corpora_begin_uncertain_discard", discard)["state"] == "executing"
+                assert (
+                    rpc.call(
+                        "corpora_finish_corpus_deletion",
+                        {
+                            "p_operation": discard["p_operation"],
+                            "p_claim": claimed["claim_id"],
+                            "p_completed": True,
+                        },
+                    )
+                    is True
+                )
+                assert (
+                    rpc.call(
+                        "corpora_uncertain_discard_status",
+                        {k: v for k, v in discard.items() if k != "p_observed_sha"},
+                    )["state"]
+                    == "completed"
+                )
+                for role in ("anon", "authenticated", "service_role"):
+                    assert not db.execute(
+                        "SELECT has_table_privilege("
+                        "%s,'public.corpora_corpus_uncertain_discards','INSERT')",
+                        (role,),
+                    ).fetchone()[0]
+                for (signature,) in db.execute(
+                    "SELECT oid::regprocedure::text FROM pg_proc "
+                    "WHERE pronamespace='public'::regnamespace AND proname IN "
+                    "('corpora_uncertain_discard_target','corpora_uncertain_discard_status',"
+                    "'corpora_begin_uncertain_discard')"
+                ).fetchall():
+                    for role in ("anon", "authenticated", "service_role"):
+                        assert db.execute(
+                            "SELECT has_function_privilege(%s,%s,'EXECUTE')", (role, signature)
+                        ).fetchone()[0] == (role == "service_role")
+
                 # Accepted work may start/finish after logout; new attempts may not.
                 entered.clear()
                 release.clear()
@@ -453,6 +546,8 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
             # Empty local registry was asserted above; remove only its fixture schema.
             db.execute("DROP SCHEMA IF EXISTS corpora_session_guard CASCADE")
             for table in (
+                "readers",
+                "uncertain_discards",
                 "version_intents",
                 "version_saves",
                 "deletions",
@@ -774,7 +869,7 @@ def _exercise_history_paging(api, db, owner, foreign, admin):
     assert api.get(path, headers=headers(admin)).status_code == 404
 
 
-def _exercise_import_rpc(session, foreign, db, archive):
+def _exercise_import_rpc(api, session, owner, foreign, db, archive, monkeypatch):
     """Real admission/finalization SQL with synthetic, internal Hub attestations."""
     rpc = creation.CreationRPC()
     operation = str(uuid4())
@@ -787,6 +882,33 @@ def _exercise_import_rpc(session, foreign, db, archive):
     }
     denied = {**params, **creation._session(foreign[0])}
     assert rpc.call("corpora_begin_import", denied) == {"status": "not_found"}
+    unstaged = {**params, "p_operation": str(uuid4())}
+    first = rpc.call("corpora_begin_import", unstaged)
+    assert first["status"] == "claimed"
+    assert (
+        rpc.call(
+            "corpora_mark_import_uncertain",
+            {"p_operation": unstaged["p_operation"], "p_claim": first["claim_id"]},
+        )
+        is True
+    )
+    identity = {**session, "p_operation": unstaged["p_operation"]}
+    assert rpc.call(
+        "corpora_get_import_reconciliation", {**identity, **creation._session(foreign[0])}
+    ) == {"status": "not_found"}
+    assert rpc.call("corpora_get_import_reconciliation", identity)["state"] == "failed"
+    assert (
+        rpc.call(
+            "corpora_stage_import",
+            {
+                "p_operation": unstaged["p_operation"],
+                "p_claim": first["claim_id"],
+                "p_stage_sha": "b" * 40,
+                "p_publication": str(uuid4()),
+            },
+        )
+        is False
+    )
     barrier = threading.Barrier(2)
 
     def begin(_):
@@ -821,7 +943,28 @@ def _exercise_import_rpc(session, foreign, db, archive):
     assert rpc.call("corpora_stage_import", stage) is True
     assert rpc.call("corpora_stage_import", stage) is False  # one publication dispatch
     assert rpc.call("corpora_complete_import", {**complete, "p_publication": str(uuid4())}) is False
-    assert rpc.call("corpora_complete_import", complete) is True
+    assert (
+        rpc.call("corpora_mark_import_uncertain", {"p_operation": operation, "p_claim": claim})
+        is True
+    )
+    target = rpc.call("corpora_get_import_reconciliation", {**session, "p_operation": operation})
+    assert target["status"] == "ready" and target["mode"] == "import"
+    assert target["expected_sequence"] == 0 and target["operation_id"] == operation
+    from corpora_api import corpus_import_worker as import_worker
+
+    resume_path = f"/v1/corpora/{session['p_corpus']}/imports/{operation}/resume"
+    assert (
+        api.post(resume_path, headers={"Authorization": "Bearer " + foreign[1]}).status_code == 404
+    )
+    with monkeypatch.context() as patch:
+
+        def finish_verified(receipt, *, slot):
+            assert receipt["operation_id"] == operation and receipt["mode"] == "import"
+            assert rpc.call("corpora_complete_import", complete) is True
+
+        patch.setattr(import_worker, "run_import_resume_worker", finish_verified)
+        resumed = api.post(resume_path, headers={"Authorization": "Bearer " + owner[1]})
+    assert resumed.status_code == 200 and resumed.json()["state"] == "completed"
     assert rpc.call("corpora_complete_import", complete) is True
     assert rpc.call("corpora_find_import_result", complete) is True
     assert rpc.call("corpora_find_import_result", {**complete, "p_sha": "f" * 40}) is False
@@ -839,8 +982,8 @@ def _exercise_import_rpc(session, foreign, db, archive):
         "SELECT m.state,m.revision,h.sequence,o.state FROM public.corpora_corpus_metadata m "
         "JOIN public.corpora_corpus_heads h ON h.corpus_id=m.id "
         "JOIN public.corpora_corpus_write_ops o ON o.corpus_id=m.id "
-        "WHERE m.id=%s",
-        (session["p_corpus"],),
+        "WHERE m.id=%s AND o.id=%s",
+        (session["p_corpus"], operation),
     ).fetchone() == ("ready", 6, 1, "completed")
     for table in (
         "imports",
@@ -932,6 +1075,45 @@ def _exercise_real_edit_route(api, corpus, admin, foreign, monkeypatch, archive,
     path = f"/v1/corpora/{corpus}/manifest"
     with monkeypatch.context() as patch:
         patch.setattr(edit_api.hub_reader, "transfer_authorized", transfer)
+
+        def lose_before_staging(*args, **kwargs):
+            raise TimeoutError("Simulated timeout before the staging receipt")
+
+        patch.setattr(edit_api, "run_import_worker", lose_before_staging)
+        lost_id = str(uuid4())
+        lost = api.patch(
+            path,
+            headers={"Authorization": "Bearer " + admin[1]},
+            json={**body, "operation_id": lost_id},
+        )
+        assert lost.status_code == 503
+        lost_claim = db.execute(
+            "SELECT worker_claim FROM public.corpora_corpus_write_ops WHERE id=%s", (lost_id,)
+        ).fetchone()[0]
+        reconcile_path = f"/v1/corpora/{corpus}/edits/{lost_id}/reconcile"
+        assert (
+            api.post(reconcile_path, headers={"Authorization": "Bearer " + foreign[1]}).status_code
+            == 404
+        )
+        recovered = api.post(reconcile_path, headers={"Authorization": "Bearer " + admin[1]})
+        assert recovered.status_code == 200 and recovered.json()["state"] == "failed"
+        assert (
+            api.post(reconcile_path, headers={"Authorization": "Bearer " + admin[1]}).json()
+            == recovered.json()
+        )
+        assert (
+            creation.CreationRPC().call(
+                "corpora_stage_version_save",
+                {
+                    "p_operation": lost_id,
+                    "p_claim": str(lost_claim),
+                    "p_stage_sha": "b" * 40,
+                    "p_publication": str(uuid4()),
+                },
+            )
+            is False
+        )
+
         patch.setattr(edit_api, "run_import_worker", publish)
         assert (
             api.patch(
@@ -1118,9 +1300,69 @@ def _exercise_access_lifecycle(
     denied_reads({}, 404)
     denied_reads(header(foreign), 404)
     allowed_reads(header(admin))
+    ref_body = {"corpus": corpus, "node": 1}
+    assert api.post("/v1/refs", json=ref_body, headers=header(foreign)).status_code == 404
+    assert api.post("/v1/refs", json=ref_body, headers=header(owner)).status_code == 401
+    reference = api.post("/v1/refs", json=ref_body, headers=header(admin))
+    assert reference.status_code == 200, reference.text
+    reference_id = reference.json()["ref"]
+    resolved = api.get("/v1/refs/resolve", params={"ref": reference_id}, headers=header(admin))
+    assert resolved.status_code == 200 and resolved.json()["node"] == 1
     assert api.get(path + "/metadata").status_code == 404
     assert api.get(path + "/visibility").status_code == 404
     assert api.get(path + "/metadata", headers=header(foreign)).status_code == 404
+    readers = path + "/readers"
+    foreign_id = foreign[0]["sub"]
+    foreign_email = db.execute(
+        "SELECT email FROM auth.users WHERE id=%s", (foreign_id,)
+    ).fetchone()[0]
+    assert api.get("/v1/corpora/shared").status_code == 401
+    assert (
+        api.post(readers, headers=header(foreign), json={"email": foreign_email}).status_code == 404
+    )
+    assert api.put(readers + "/" + str(uuid4()), headers=header(admin)).status_code == 404
+    grant = api.post(readers, headers=header(admin), json={"email": foreign_email.upper()})
+    assert grant.status_code == 200 and grant.json()["user_id"] == foreign_id
+    assert api.put(readers + "/" + foreign_id, headers=header(admin)).json()["present"] is True
+    listed_readers = api.get(readers, headers=header(admin))
+    assert (
+        listed_readers.status_code == 200
+        and listed_readers.json()["items"][0]["user_id"] == foreign_id
+    )
+    assert api.get(readers, headers=header(foreign)).status_code == 404
+    assert api.get(path + "/metadata", headers=header(foreign)).status_code == 200
+    allowed_reads(header(foreign))
+    _exercise_project_linking_permissions(
+        api, db, corpus, empty_corpus, head_sha, admin, foreign, owner
+    )
+    assert (
+        api.get(
+            "/v1/refs/resolve", params={"ref": reference_id}, headers=header(foreign)
+        ).status_code
+        == 200
+    )
+    shared = api.get("/v1/corpora/shared", headers=header(foreign))
+    assert shared.status_code == 200 and corpus in [item["id"] for item in shared.json()["items"]]
+    assert (
+        api.patch(
+            path + "/metadata",
+            headers=header(foreign),
+            json={"expected_revision": 6, "title": "Denied"},
+        ).status_code
+        == 404
+    )
+    assert api.delete(readers + "/" + foreign_id, headers=header(foreign)).status_code == 404
+    revoked_reader = api.delete(readers + "/" + foreign_id, headers=header(admin))
+    assert revoked_reader.status_code == 200 and revoked_reader.json()["present"] is False
+    assert api.delete(readers + "/" + foreign_id, headers=header(admin)).json()["present"] is False
+    denied_reads(header(foreign), 404)
+    assert api.get("/v1/corpora/shared", headers=header(foreign)).json()["items"] == []
+    for role in ("anon", "authenticated", "service_role"):
+        for privilege in ("INSERT", "UPDATE", "DELETE"):
+            assert not db.execute(
+                "SELECT has_table_privilege(%s,%s,%s)",
+                (role, "public.corpora_corpus_readers", privilege),
+            ).fetchone()[0]
     patch = {"expected_revision": 6, "visibility": "public"}
     assert api.patch(path + "/visibility", headers=header(foreign), json=patch).status_code == 404
     published = api.patch(path + "/visibility", headers=header(admin), json=patch)
@@ -1134,6 +1376,12 @@ def _exercise_access_lifecycle(
     assert api.get(path + "/visibility").json() == published.json()
     allowed_reads({})
     allowed_reads(header(foreign))
+    assert (
+        api.get(
+            "/v1/refs/resolve", params={"ref": reference_id}, headers=header(foreign)
+        ).status_code
+        == 200
+    )
     denied_reads(header(owner), 401)  # Logged-out tokens are never anonymous.
     assert api.patch(path + "/visibility", headers=header(admin), json=patch).status_code == 409
     private = api.patch(
@@ -1169,6 +1417,10 @@ def _exercise_access_lifecycle(
         assert api.get(path + "/metadata", headers=user_headers).status_code == 404
         assert api.get(path + "/visibility", headers=user_headers).status_code == 404
         denied_reads(user_headers, 404)
+    assert (
+        api.get("/v1/refs/resolve", params={"ref": reference_id}, headers=header(admin)).status_code
+        == 404
+    )
     assert api.get(path, headers=header(admin)).status_code == 404
     assert (
         api.patch(
@@ -1244,3 +1496,897 @@ def _exercise_access_lifecycle(
             assert db.execute(
                 "SELECT has_function_privilege(%s,%s,'EXECUTE')", (role, signature)
             ).fetchone()[0] == (role == "service_role")
+
+
+def _exercise_project_linking_permissions(
+    api, db, corpus, old_corpus, head_sha, admin, foreign, owner
+):
+    """Verify both project and corpus grants using actual Auth sessions and SQL guards."""
+    from psycopg.types.json import Jsonb
+
+    from corpora_api.project_link_models import LinkSave, draft_reference
+
+    migrations = Path(__file__).resolve().parents[2] / "supabase/migrations"
+    assert db.execute("SELECT to_regclass('public.projects') IS NULL").fetchone()[0]
+    assert db.execute("SELECT to_regclass('public.corpora_project_members') IS NULL").fetchone()[0]
+    project, reference = str(uuid4()), str(uuid4())
+    actor, member = admin[0], foreign[0]
+    try:
+        db.execute("CREATE TABLE public.projects(id uuid PRIMARY KEY,owner_id uuid)")
+        db.execute("CREATE TABLE public.corpora_project_members(project_id uuid,user_id uuid)")
+        db.execute("INSERT INTO public.projects VALUES (%s,%s)", (project, actor["sub"]))
+        db.execute(
+            "INSERT INTO public.corpora_project_members VALUES (%s,%s)", (project, member["sub"])
+        )
+        db.execute(next(migrations.glob("*_project_linking_ledger.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_resolution.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_import_preview.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_import.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_link_publication.sql")).read_text())
+        db.execute(next(migrations.glob("*_project_citation_discoveries.sql")).read_text())
+        db.execute(next(migrations.glob("*_managed_project_corpora.sql")).read_text())
+        for role in ("anon", "authenticated"):
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (role, "public.corpora_set_project_corpus(uuid,uuid,bigint,uuid,uuid,boolean)"),
+            ).fetchone()[0]
+            assert not db.execute(
+                "SELECT has_table_privilege(%s,%s,'SELECT')",
+                (role, "public.corpora_project_managed_corpora"),
+            ).fetchone()[0]
+        corpus_path = f"/v1/projects/{project}/corpora"
+        admin_headers = {"Authorization": "Bearer " + admin[1]}
+        member_headers = {"Authorization": "Bearer " + foreign[1]}
+        for _ in range(30):
+            choices = api.get(corpus_path + "?linked_only=false", headers=admin_headers)
+            if choices.status_code != 503:
+                break
+            time.sleep(0.1)
+        assert choices.status_code == 200, choices.text
+        assert any(item["id"] == corpus and not item["linked"] for item in choices.json()["items"])
+        assert api.get(corpus_path).status_code == 401
+        revoked_headers = {"Authorization": "Bearer " + owner[1]}
+        assert api.get(corpus_path, headers=revoked_headers).status_code == 401
+        assert api.put(corpus_path + "/" + corpus, headers=revoked_headers).status_code == 401
+        unrelated_project = str(uuid4())
+        db.execute("INSERT INTO public.projects VALUES (%s,%s)", (unrelated_project, actor["sub"]))
+        assert (
+            api.get(f"/v1/projects/{unrelated_project}/corpora", headers=member_headers).status_code
+            == 404
+        )
+        assert (
+            api.get(corpus_path + "?linked_only=false", headers=member_headers).status_code == 404
+        )
+        assert api.put(corpus_path + "/" + corpus, headers=member_headers).status_code == 404
+        linked = api.put(corpus_path + "/" + corpus, headers=admin_headers)
+        assert linked.status_code == 200 and linked.json()["linked"] is True, linked.text
+        assert api.put(corpus_path + "/" + corpus, headers=admin_headers).json() == linked.json()
+        visible = api.get(corpus_path, headers=member_headers)
+        assert visible.status_code == 200 and [x["id"] for x in visible.json()["items"]] == [corpus]
+        db.execute(
+            "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
+            (corpus, member["sub"]),
+        )
+        assert api.get(corpus_path, headers=member_headers).json()["items"] == []
+        # A project owner who loses corpus access can still clean up its link.
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (member["sub"], project))
+        invisible_delete = api.delete(corpus_path + "/" + corpus, headers=member_headers)
+        assert invisible_delete.status_code == 200 and invisible_delete.json()["linked"] is False
+        unknown_delete = api.delete(corpus_path + "/" + str(uuid4()), headers=member_headers)
+        assert unknown_delete.status_code == 200 and unknown_delete.json()["linked"] is False
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (actor["sub"], project))
+        db.execute(
+            "INSERT INTO public.corpora_corpus_readers(corpus_id,user_id,added_by) "
+            "VALUES (%s,%s,%s)",
+            (corpus, member["sub"], actor["sub"]),
+        )
+        removed = api.delete(corpus_path + "/" + corpus, headers=admin_headers)
+        assert removed.status_code == 200 and removed.json()["linked"] is False, removed.text
+        assert api.get(corpus_path, headers=member_headers).json()["items"] == []
+        # An ordinary project owner can manage associations too; this is not
+        # limited to the configured superadmin.
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (member["sub"], project))
+        ordinary_owner = api.put(corpus_path + "/" + corpus, headers=member_headers)
+        assert ordinary_owner.status_code == 200 and ordinary_owner.json()["linked"] is True
+        assert api.delete(corpus_path + "/" + corpus, headers=admin_headers).status_code == 200
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (actor["sub"], project))
+        for role in ("anon", "authenticated"):
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (
+                    role,
+                    "public.corpora_register_project_discovery(uuid,uuid,bigint,uuid,uuid,text,jsonb)",
+                ),
+            ).fetchone()[0]
+            assert not db.execute(
+                "SELECT has_table_privilege(%s,%s,'SELECT')",
+                (role, "public.corpora_project_discovery_revisions"),
+            ).fetchone()[0]
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (role, "public.corpora_read_current_project_link(uuid,uuid,bigint,uuid,uuid)"),
+            ).fetchone()[0]
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (role, "public.corpora_export_project_links(uuid,uuid,bigint,uuid,uuid[])"),
+            ).fetchone()[0]
+        assert db.execute(
+            "SELECT has_function_privilege('service_role',%s,'EXECUTE')",
+            ("public.corpora_read_current_project_link(uuid,uuid,bigint,uuid,uuid)",),
+        ).fetchone()[0]
+        endpoint = {
+            "work_id": "work",
+            "edition_id": "edition",
+            "package_id": corpus,
+            "revision": head_sha,
+            "document_id": ".corpora/source.corpus",
+            "locators": [{"kind": "structural", "anchor_id": f"{corpus}@{head_sha}/Mini!word1"}],
+        }
+        body = LinkSave.model_validate(
+            {
+                "reference_id": reference,
+                "source": endpoint,
+                "target": endpoint,
+                "reason": "first revision",
+            }
+        )
+        normalized = draft_reference(body, UUID(actor["sub"])).model_dump(mode="json")
+        value = Jsonb(normalized)
+
+        def save(user, expected=None):
+            return db.execute(
+                "SELECT public.corpora_save_project_link(%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    user["sub"],
+                    user["session_id"],
+                    user["exp"],
+                    project,
+                    reference,
+                    expected,
+                    "test",
+                    value,
+                ),
+            ).fetchone()[0]
+
+        def history(user):
+            return db.execute(
+                "SELECT public.corpora_project_link_history(%s,%s,%s,%s,%s,%s,%s)",
+                (user["sub"], user["session_id"], user["exp"], project, reference, None, 10),
+            ).fetchone()[0]
+
+        def decide(user, expected, action):
+            return db.execute(
+                "SELECT public.corpora_decide_project_link(%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    user["sub"],
+                    user["session_id"],
+                    user["exp"],
+                    project,
+                    reference,
+                    expected,
+                    "test",
+                    action,
+                ),
+            ).fetchone()[0]
+
+        assert save(actor) == {"status": "ok", "version": 1}
+        candidate = {
+            "id": reference,
+            "source": normalized["source"],
+            "target": normalized["target"],
+            "relationship": "core:cites",
+        }
+
+        def preview(user, items):
+            return db.execute(
+                "SELECT public.corpora_preview_project_link_import(%s,%s,%s,%s,%s)",
+                (user["sub"], user["session_id"], user["exp"], project, Jsonb(items)),
+            ).fetchone()[0]
+
+        assert preview(actor, [candidate])["items"] == [
+            {"reference_id": reference, "outcome": "unchanged", "current_version": 1}
+        ]
+        changed = {**candidate, "relationship": "core:quotes"}
+        assert preview(actor, [changed])["items"][0]["outcome"] == "conflict"
+        new = {**candidate, "id": str(uuid4())}
+        assert preview(actor, [new])["items"][0] == {
+            "reference_id": new["id"],
+            "outcome": "new",
+            "current_version": None,
+        }
+        assert preview(member, [candidate]) == {"status": "not_found"}
+        request = {
+            "schema_version": "1",
+            "project_id": str(uuid4()),
+            "revisions": [
+                {
+                    "version": 1,
+                    "actor_id": actor["sub"],
+                    "recorded_at": "2026-01-01T00:00:00Z",
+                    "reason": "source export",
+                    "action": "edit",
+                    "reference": normalized,
+                }
+            ],
+        }
+        preview_path = f"/v1/projects/{project}/references/import-preview"
+        for _ in range(30):
+            response = api.post(preview_path, headers=admin_headers, json=request)
+            if response.status_code != 503:
+                break
+            time.sleep(0.1)
+        assert response.status_code == 200, response.text
+        assert response.json()["items"][0]["outcome"] == "unchanged"
+        assert api.post(preview_path, json=request).status_code == 401
+        assert api.post(preview_path, headers=member_headers, json=request).status_code == 404
+        assert api.post(preview_path, headers=revoked_headers, json=request).status_code == 401
+        import_project = str(uuid4())
+        db.execute("INSERT INTO public.projects VALUES (%s,%s)", (import_project, actor["sub"]))
+        assert db.execute(
+            "SELECT public.corpora_save_project_link(%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                actor["sub"],
+                actor["session_id"],
+                actor["exp"],
+                import_project,
+                reference,
+                None,
+                "existing",
+                value,
+            ),
+        ).fetchone()[0] == {"status": "ok", "version": 1}
+        first, second = str(uuid4()), str(uuid4())
+
+        def revision(ref_id, relationship="core:cites"):
+            return {
+                **request["revisions"][0],
+                "reference": {**normalized, "id": ref_id, "relationship": relationship},
+            }
+
+        import_path = f"/v1/projects/{import_project}/references/import"
+
+        def import_payload(revisions):
+            return {"reason": "source import", "export": {**request, "revisions": revisions}}
+
+        with_conflict = import_payload([revision(first), revision(reference, "core:quotes")])
+        for _ in range(30):
+            response = api.post(import_path, headers=admin_headers, json=with_conflict)
+            if response.status_code != 503:
+                break
+            time.sleep(0.1)
+        assert response.status_code == 409, response.text
+        assert (
+            db.execute(
+                "SELECT count(*) FROM public.corpora_project_link_heads WHERE project_id=%s",
+                (import_project,),
+            ).fetchone()[0]
+            == 1
+        )
+        import_body = import_payload([revision(first), revision(second)])
+        assert api.post(import_path, json=import_body).status_code == 401
+        assert api.post(import_path, headers=member_headers, json=import_body).status_code == 404
+        assert api.post(import_path, headers=revoked_headers, json=import_body).status_code == 401
+        response = api.post(import_path, headers=admin_headers, json=import_body)
+        assert response.status_code == 200, response.text
+        assert {item["outcome"] for item in response.json()["items"]} == {"imported"}
+        stored = db.execute(
+            "SELECT reference FROM public.corpora_project_link_revisions "
+            "WHERE project_id=%s AND reference_id=%s",
+            (import_project, first),
+        ).fetchone()[0]
+        assert stored["review"] == "pending" and stored["publication"] == "draft"
+        assert stored["provenance"]["agent_id"] == actor["sub"]
+        assert stored["provenance"]["method"] == "project-import"
+        assert stored["provenance"]["evidence"][0].startswith("Unverified import claim: ")
+        exported = api.post(
+            f"/v1/projects/{import_project}/references/export",
+            headers=admin_headers,
+            json={"reference_ids": [first]},
+        )
+        assert exported.status_code == 200, exported.text
+        assert exported.json()["revisions"][0]["reference"]["provenance"] == stored["provenance"]
+        retry = api.post(import_path, headers=admin_headers, json=import_body)
+        assert retry.status_code == 200, retry.text
+        assert {item["outcome"] for item in retry.json()["items"]} == {"unchanged"}
+        assert (
+            db.execute(
+                "SELECT count(*) FROM public.corpora_project_link_heads WHERE project_id=%s",
+                (import_project,),
+            ).fetchone()[0]
+            == 3
+        )
+        assert (
+            db.execute(
+                "SELECT count(*) FROM public.corpora_project_link_revisions WHERE project_id=%s",
+                (project,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert save(actor) == {"status": "conflict"}
+        assert save(member, 1) == {"status": "not_found"}
+        assert history(member)["revisions"][0]["version"] == 1
+        assert decide(actor, 1, "approve") == {"status": "invalid_transition"}
+        assert decide(actor, 1, "reject") == {"status": "ok", "version": 2}
+        assert decide(actor, 2, "reject") == {"status": "invalid_transition"}
+        assert save(actor, 2) == {"status": "invalid_transition"}
+        assert decide(actor, 2, "reopen") == {"status": "ok", "version": 3}
+        assert [r["version"] for r in history(member)["revisions"]] == [3, 2, 1]
+        # Current resolution must not require access to a corpus that only
+        # appears in an older ledger revision.
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (member["sub"], project))
+        restricted = {**candidate, "target": {**candidate["target"], "package_id": old_corpus}}
+        assert preview(member, [restricted]) == {"status": "not_found"}
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            (old_corpus, project, reference),
+        )
+        assert preview(member, [candidate]) == {"status": "not_found"}
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            (corpus, project, reference),
+        )
+        # A previously absent head can be created while the preview is waiting
+        # on a corpus lock. The result must use the authorized snapshot, not the
+        # newly created head whose private corpus was never checked.
+        import psycopg
+
+        race_id = str(uuid4())
+        race_candidate = {**candidate, "id": race_id}
+        race_reference = {
+            **normalized,
+            "id": race_id,
+            "source": {**normalized["source"], "package_id": old_corpus},
+            "target": {**normalized["target"], "package_id": old_corpus},
+        }
+        with (
+            psycopg.connect(os.environ["DB_URL"], autocommit=False) as blocker,
+            psycopg.connect(os.environ["DB_URL"], autocommit=True) as reader,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            blocker.execute(
+                "SELECT id FROM public.corpora_corpus_metadata WHERE id=%s FOR UPDATE", (corpus,)
+            )
+            blocker_pid = blocker.execute("SELECT pg_backend_pid()").fetchone()[0]
+            reader_pid = reader.execute("SELECT pg_backend_pid()").fetchone()[0]
+            future = executor.submit(
+                lambda: reader.execute(
+                    "SELECT public.corpora_preview_project_link_import(%s,%s,%s,%s,%s)",
+                    (
+                        member["sub"],
+                        member["session_id"],
+                        member["exp"],
+                        project,
+                        Jsonb([race_candidate]),
+                    ),
+                ).fetchone()[0]
+            )
+            try:
+                for _ in range(100):
+                    if db.execute(
+                        "SELECT %s = ANY(pg_blocking_pids(%s))", (blocker_pid, reader_pid)
+                    ).fetchone()[0]:
+                        break
+                    time.sleep(0.01)
+                else:
+                    pytest.fail("Preview did not reach the blocked corpus access check")
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_heads VALUES (%s,%s,1)",
+                    (project, race_id),
+                )
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_revisions "
+                    "(project_id,reference_id,version,actor_id,reason,action,source_corpus,"
+                    "target_corpus,reference) VALUES (%s,%s,1,%s,'race','edit',%s,%s,%s)",
+                    (project, race_id, actor["sub"], old_corpus, old_corpus, Jsonb(race_reference)),
+                )
+            finally:
+                blocker.rollback()
+            assert future.result(timeout=5)["items"] == [
+                {"reference_id": race_id, "outcome": "new", "current_version": None}
+            ]
+        first_id, second_id = sorted((str(uuid4()), str(uuid4())))
+
+        def import_candidate(ref_id):
+            imported_value = {
+                **normalized,
+                "id": ref_id,
+                "provenance": {
+                    "origin": "manual",
+                    "agent_id": member["sub"],
+                    "method": "project-import",
+                    "evidence": ["Unverified import claim: {}"],
+                },
+            }
+            return {
+                "id": ref_id,
+                "source": imported_value["source"],
+                "target": imported_value["target"],
+                "relationship": imported_value["relationship"],
+                "value": imported_value,
+            }
+
+        first_candidate, second_candidate = import_candidate(first_id), import_candidate(second_id)
+        private_race_reference = {
+            **race_reference,
+            "id": second_id,
+        }
+        with (
+            psycopg.connect(os.environ["DB_URL"], autocommit=False) as blocker,
+            psycopg.connect(os.environ["DB_URL"], autocommit=True) as writer,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            blocker.execute(
+                "SELECT id FROM public.corpora_corpus_metadata WHERE id=%s FOR UPDATE", (corpus,)
+            )
+            blocker_pid = blocker.execute("SELECT pg_backend_pid()").fetchone()[0]
+            writer_pid = writer.execute("SELECT pg_backend_pid()").fetchone()[0]
+            future = executor.submit(
+                lambda: writer.execute(
+                    "SELECT public.corpora_import_project_links(%s,%s,%s,%s,%s,%s)",
+                    (
+                        member["sub"],
+                        member["session_id"],
+                        member["exp"],
+                        project,
+                        "race import",
+                        Jsonb([first_candidate, second_candidate]),
+                    ),
+                ).fetchone()[0]
+            )
+            try:
+                for _ in range(100):
+                    if db.execute(
+                        "SELECT %s = ANY(pg_blocking_pids(%s))", (blocker_pid, writer_pid)
+                    ).fetchone()[0]:
+                        break
+                    time.sleep(0.01)
+                else:
+                    pytest.fail("Import did not reach the blocked corpus access check")
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_heads VALUES (%s,%s,1)",
+                    (project, second_id),
+                )
+                db.execute(
+                    "INSERT INTO public.corpora_project_link_revisions "
+                    "(project_id,reference_id,version,actor_id,reason,action,source_corpus,"
+                    "target_corpus,reference) VALUES (%s,%s,1,%s,'race','edit',%s,%s,%s)",
+                    (
+                        project,
+                        second_id,
+                        actor["sub"],
+                        old_corpus,
+                        old_corpus,
+                        Jsonb(private_race_reference),
+                    ),
+                )
+            finally:
+                blocker.rollback()
+            assert future.result(timeout=5) == {"status": "not_found"}
+        assert not db.execute(
+            "SELECT EXISTS(SELECT 1 FROM public.corpora_project_link_heads "
+            "WHERE project_id=%s AND reference_id=%s)",
+            (project, first_id),
+        ).fetchone()[0]
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=1",
+            (old_corpus, project, reference),
+        )
+        assert history(member) == {"status": "not_found"}
+        # PostgREST reloads the newly installed RPCs asynchronously.
+        for _ in range(20):
+            resolved = api.post(
+                f"/v1/projects/{project}/references/{reference}/resolve",
+                headers={"Authorization": "Bearer " + foreign[1]},
+                json={"expected_version": 3, "reason": "verified"},
+            )
+            if resolved.status_code != 503:
+                break
+            time.sleep(0.1)
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["version"] == 4
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions SET source_corpus=%s "
+            "WHERE project_id=%s AND reference_id=%s AND version=1",
+            (corpus, project, reference),
+        )
+        db.execute("UPDATE public.projects SET owner_id=%s WHERE id=%s", (actor["sub"], project))
+        assert decide(member, 4, "approve") == {"status": "not_found"}
+        assert decide(actor, 4, "approve") == {"status": "ok", "version": 5}
+        assert (
+            db.execute(
+                "SELECT reference->>'review' FROM public.corpora_project_link_revisions "
+                "WHERE project_id=%s AND reference_id=%s AND version=5",
+                (project, reference),
+            ).fetchone()[0]
+            == "approved"
+        )
+        assert history(member)["status"] == "ok"
+        cusx_ref = str(uuid4())
+        cusx_target = {
+            "work_id": "urn:work:test",
+            "edition_id": "urn:edition:test",
+            "package_id": corpus,
+            "revision": head_sha,
+            "document_id": "sources/book.cusx",
+            "locators": [
+                {
+                    "kind": "text",
+                    "stream_id": "cusx-itertext/v1",
+                    "start": 2,
+                    "end": 16,
+                    "exact": "Selected words",
+                }
+            ],
+        }
+        link_path = f"/v1/projects/{project}/references"
+        cusx_saved = api.post(
+            link_path,
+            headers=admin_headers,
+            json={
+                "reference_id": cusx_ref,
+                "source": endpoint,
+                "target": cusx_target,
+                "reason": "C-USX link",
+            },
+        )
+        assert cusx_saved.status_code == 200, cusx_saved.text
+        cusx_resolved = api.post(
+            link_path + f"/{cusx_ref}/resolve",
+            headers=admin_headers,
+            json={"expected_version": 1, "reason": "verified C-USX"},
+        )
+        assert cusx_resolved.status_code == 200, cusx_resolved.text
+        cusx_selected = api.post(
+            link_path + f"/{cusx_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "target"},
+        )
+        assert cusx_selected.status_code == 200, cusx_selected.text
+        assert cusx_selected.json()["fragments"] == ["Selected words"]
+        cusx_discovery = api.post(
+            f"/v1/projects/{project}/discoveries",
+            headers=admin_headers,
+            json={
+                "id": str(uuid4()),
+                "source": cusx_target,
+                "quote": "Selected words",
+                "cited_name": "Example citation",
+                "reason": "Verified C-USX evidence",
+            },
+        )
+        assert cusx_discovery.status_code == 200, cusx_discovery.text
+        assert (
+            api.post(link_path + f"/{cusx_ref}/retrieve", json={"side": "target"}).status_code
+            == 401
+        )
+        assert (
+            api.post(
+                link_path + f"/{cusx_ref}/retrieve",
+                headers=revoked_headers,
+                json={"side": "target"},
+            ).status_code
+            == 401
+        )
+        epub_ref = str(uuid4())
+        epub_target = {
+            "work_id": "book",
+            "edition_id": "edition",
+            "package_id": corpus,
+            "revision": head_sha,
+            "document_id": "sources/book.epub",
+            "locators": [
+                {
+                    "kind": "epub",
+                    "asset_id": "sources/book.epub",
+                    "href": "first.xhtml",
+                    "cfi": "epubcfi(/4/2!/2/2/2,/1:0,/1:4)",
+                    "text": {
+                        "kind": "text",
+                        "stream_id": "epub-cfi-dom",
+                        "start": 6,
+                        "end": 10,
+                        "exact": "John",
+                    },
+                }
+            ],
+        }
+        link_path = f"/v1/projects/{project}/references"
+        admin_headers = {"Authorization": "Bearer " + admin[1]}
+        saved = api.post(
+            link_path,
+            headers=admin_headers,
+            json={
+                "reference_id": epub_ref,
+                "source": endpoint,
+                "target": epub_target,
+                "reason": "EPUB link",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        verified = api.post(
+            link_path + f"/{epub_ref}/resolve",
+            headers=admin_headers,
+            json={"expected_version": 1, "reason": "verified EPUB"},
+        )
+        assert verified.status_code == 200, verified.text
+        approved = api.post(
+            link_path + f"/{epub_ref}/approve",
+            headers=admin_headers,
+            json={"expected_version": 2, "reason": "approved"},
+        )
+        assert approved.status_code == 200, approved.text
+        member_headers = {"Authorization": "Bearer " + foreign[1]}
+        epub_selection = api.post(
+            link_path + f"/{epub_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "target"},
+        )
+        assert epub_selection.status_code == 200, epub_selection.text
+        assert epub_selection.json()["fragments"] == ["John"]
+        corpus_selection = api.post(
+            link_path + f"/{epub_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "source"},
+        )
+        assert corpus_selection.status_code == 200, corpus_selection.text
+        assert corpus_selection.json()["fragments"][0].strip() == "We"
+        discovery = str(uuid4())
+        discovery_path = f"/v1/projects/{project}/discoveries"
+        discovery_body = {
+            "id": discovery,
+            "source": endpoint,
+            "quote": corpus_selection.json()["fragments"][0],
+            "cited_name": "Example work",
+            "reason": "record citation",
+        }
+        assert (
+            api.post(discovery_path, json=discovery_body, headers=member_headers).status_code == 404
+        )
+        bad_quote = {**discovery_body, "quote": "different text"}
+        assert api.post(discovery_path, json=bad_quote, headers=member_headers).status_code == 404
+        assert api.post(discovery_path, json=bad_quote, headers=admin_headers).status_code == 422
+        first = api.post(discovery_path, json=discovery_body, headers=admin_headers)
+        assert first.status_code == 200, first.text
+        assert first.json()["version"] == 1
+        assert (
+            api.post(discovery_path, json=discovery_body, headers=admin_headers).json()
+            == first.json()
+        )
+        changed = {**discovery_body, "cited_name": "Changed"}
+        assert api.post(discovery_path, json=changed, headers=admin_headers).status_code == 409
+        url = discovery_path + "/" + discovery
+        assert (
+            api.get(url, headers=member_headers).json()["revisions"][0]["evidence"]["status"]
+            == "pending"
+        )
+        decision = {"expected_version": 1, "reason": "reviewed"}
+        assert api.post(url + "/accept", json=decision, headers=member_headers).status_code == 404
+        accepted = api.post(url + "/accept", json=decision, headers=admin_headers)
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["version"] == 2
+        assert api.post(url + "/accept", json=decision, headers=admin_headers).status_code == 409
+        history_result = api.get(url, headers=member_headers)
+        assert [entry["action"] for entry in history_result.json()["revisions"]] == [
+            "accept",
+            "register",
+        ]
+        assert history_result.json()["revisions"][0]["evidence"]["status"] == "accepted"
+        first_page = api.get(url + "?limit=1", headers=member_headers).json()
+        assert first_page["next_before"] == 2
+        second_page = api.get(url + "?limit=1&before=2", headers=member_headers).json()
+        assert second_page["revisions"][0]["action"] == "register"
+        assert second_page["next_before"] is None
+        stale_id = str(uuid4())
+        stale_body = {**discovery_body, "id": stale_id}
+        assert api.post(discovery_path, json=stale_body, headers=admin_headers).status_code == 200
+        old_source = {
+            **endpoint,
+            "revision": "a" * 40,
+            "locators": [{"kind": "structural", "anchor_id": f"{corpus}@{'a' * 40}/Mini!word1"}],
+        }
+        db.execute(
+            "UPDATE public.corpora_project_discovery_revisions "
+            "SET evidence=jsonb_set(evidence,'{source}',%s) "
+            "WHERE project_id=%s AND discovery_id=%s AND version=1",
+            (Jsonb(old_source), project, stale_id),
+        )
+        assert (
+            api.post(
+                discovery_path, json={**stale_body, "source": old_source}, headers=admin_headers
+            ).status_code
+            == 200
+        )
+        stale_url = discovery_path + "/" + stale_id
+        assert (
+            api.post(stale_url + "/accept", json=decision, headers=admin_headers).status_code == 409
+        )
+        assert (
+            api.post(stale_url + "/reject", json=decision, headers=admin_headers).status_code == 200
+        )
+        pdf_ref = str(uuid4())
+        _, pdf_target = pdf_case()
+        pdf_target["package_id"] = corpus
+        pdf_target["revision"] = head_sha
+        saved_pdf = api.post(
+            link_path,
+            headers=admin_headers,
+            json={
+                "reference_id": pdf_ref,
+                "source": endpoint,
+                "target": pdf_target,
+                "reason": "PDF link",
+            },
+        )
+        assert saved_pdf.status_code == 200, saved_pdf.text
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=admin_headers,
+                json={"expected_version": 1, "reason": "premature"},
+            ).status_code
+            == 409
+        )
+        verified_pdf = api.post(
+            link_path + f"/{pdf_ref}/resolve",
+            headers=admin_headers,
+            json={"expected_version": 1, "reason": "verified PDF"},
+        )
+        assert verified_pdf.status_code == 200, verified_pdf.text
+        approved_pdf = api.post(
+            link_path + f"/{pdf_ref}/approve",
+            headers=admin_headers,
+            json={"expected_version": 2, "reason": "approved"},
+        )
+        assert approved_pdf.status_code == 200, approved_pdf.text
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            ("a" * 40, project, pdf_ref),
+        )
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=admin_headers,
+                json={"expected_version": 3, "reason": "stale"},
+            ).status_code
+            == 409
+        )
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=3",
+            (head_sha, project, pdf_ref),
+        )
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=member_headers,
+                json={"expected_version": 3, "reason": "not owner"},
+            ).status_code
+            == 404
+        )
+        published = api.post(
+            link_path + f"/{pdf_ref}/publish",
+            headers=admin_headers,
+            json={"expected_version": 3, "reason": "publish in project"},
+        )
+        assert published.status_code == 200 and published.json()["version"] == 4
+        assert api.get(link_path + f"/{pdf_ref}/history").status_code == 401
+        published_history = api.get(link_path + f"/{pdf_ref}/history", headers=member_headers)
+        assert published_history.json()["revisions"][0]["reference"]["publication"] == "published"
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/publish",
+                headers=admin_headers,
+                json={"expected_version": 3, "reason": "stale retry"},
+            ).status_code
+            == 409
+        )
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=4",
+            ("a" * 40, project, pdf_ref),
+        )
+        withdrawn = api.post(
+            link_path + f"/{pdf_ref}/withdraw",
+            headers=admin_headers,
+            json={"expected_version": 4, "reason": "withdraw"},
+        )
+        assert withdrawn.status_code == 200 and withdrawn.json()["version"] == 5
+        db.execute(
+            "UPDATE public.corpora_project_link_revisions "
+            "SET reference=jsonb_set(reference,'{target,revision}',to_jsonb(%s::text)) "
+            "WHERE project_id=%s AND reference_id=%s AND version=5",
+            (head_sha, project, pdf_ref),
+        )
+        republished = api.post(
+            link_path + f"/{pdf_ref}/publish",
+            headers=admin_headers,
+            json={"expected_version": 5, "reason": "republish"},
+        )
+        assert republished.status_code == 200 and republished.json()["version"] == 6
+        actions = api.get(link_path + f"/{pdf_ref}/history", headers=member_headers).json()[
+            "revisions"
+        ]
+        assert [entry["action"] for entry in actions[:3]] == ["publish", "withdraw", "publish"]
+        pdf_selection = api.post(
+            link_path + f"/{pdf_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "target"},
+        )
+        assert pdf_selection.status_code == 200, pdf_selection.text
+        assert pdf_selection.json()["fragments"] == ["Hello"]
+        exported = api.post(
+            link_path + "/export",
+            headers=member_headers,
+            json={"reference_ids": [pdf_ref, epub_ref]},
+        )
+        assert exported.status_code == 200, exported.text
+        entries = exported.json()["revisions"]
+        assert [entry["reference"]["id"] for entry in entries] == sorted([epub_ref, pdf_ref])
+        assert all(
+            entry["reference"]["provenance"]["agent_id"] == actor["sub"] for entry in entries
+        )
+        assert (
+            api.post(
+                link_path + "/export",
+                headers=member_headers,
+                json={"reference_ids": [pdf_ref, str(uuid4())]},
+            ).status_code
+            == 404
+        )
+        db.execute(
+            "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
+            (corpus, member["sub"]),
+        )
+        assert history(member) == {"status": "not_found"}
+        assert api.get(url, headers=member_headers).status_code == 404
+        assert (
+            api.post(
+                link_path + "/export",
+                headers=member_headers,
+                json={"reference_ids": [pdf_ref, epub_ref]},
+            ).status_code
+            == 404
+        )
+        assert (
+            api.post(
+                link_path + f"/{pdf_ref}/retrieve",
+                headers=member_headers,
+                json={"side": "target"},
+            ).status_code
+            == 404
+        )
+        db.execute(
+            "INSERT INTO public.corpora_corpus_readers(corpus_id,user_id,added_by) "
+            "VALUES (%s,%s,%s)",
+            (corpus, member["sub"], actor["sub"]),
+        )
+        db.execute(
+            "DELETE FROM public.corpora_project_members WHERE project_id=%s AND user_id=%s",
+            (project, member["sub"]),
+        )
+        assert history(member) == {"status": "not_found"}
+        assert (
+            api.post(
+                link_path + f"/{epub_ref}/retrieve",
+                headers=member_headers,
+                json={"side": "target"},
+            ).status_code
+            == 404
+        )
+    finally:
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_managed_corpora CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_discovery_revisions CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_discoveries CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_link_revisions CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_link_heads CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.corpora_project_members CASCADE")
+        db.execute("DROP TABLE IF EXISTS public.projects CASCADE")

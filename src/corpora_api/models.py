@@ -166,6 +166,11 @@ class AIUnitRange(BaseModel):
 
 class AINodeScope(BaseModel):
     corpus: str
+    corpus_revision: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{40}$",
+        description="Required current Hugging Face commit SHA when corpus is corpus:<UUID>.",
+    )
     level: Literal["word", "passage", "section", "document", "corpus"]
     node_id: int | None = None
     node_type: str | None = None
@@ -178,6 +183,8 @@ class AINodeScope(BaseModel):
     def require_node(self) -> AINodeScope:
         if self.level != "corpus" and self.node_id is None:
             raise ValueError(f"{self.level}-level scope requires node_id")
+        if self.corpus_revision is not None and not self.corpus.startswith("corpus:"):
+            raise ValueError("corpus_revision applies only to Corpora-managed corpora")
         return self
 
 
@@ -291,7 +298,7 @@ AIChatEvent = (
 
 
 class ReferenceCreate(BaseModel):
-    corpus: str
+    corpus: str = Field(description="UUID of the stored corpus")
     node: int = Field(ge=1)
     end_node: int | None = Field(default=None, ge=1)
     lang: str | None = None

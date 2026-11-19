@@ -185,7 +185,21 @@ def _import_corpus(
     ), 201
 
 
-@router.post("/v1/corpora/{corpus_id}/imports", response_model=CorpusImportInfo)
+@router.post(
+    "/v1/corpora/{corpus_id}/imports",
+    response_model=CorpusImportInfo,
+    responses={
+        200: {"model": CorpusImportInfo, "description": "Existing completed import"},
+        201: {"model": CorpusImportInfo, "description": "Initial import completed"},
+        202: {"model": CorpusImportInfo, "description": "Existing import is not yet completed"},
+        401: {"description": "Missing, invalid, or inactive user session"},
+        404: {"description": "Corpus is missing or not accessible"},
+        409: {"description": "Revision, operation identity, or input conflicts"},
+        413: {"description": "Archive exceeds 3000000 bytes"},
+        415: {"description": "Expected a .corpus archive with shipped cache"},
+        503: {"description": "Unavailable or uncertain; inspect import status"},
+    },
+)
 async def initial_import(
     corpus_id: UUID,
     request: Request,
@@ -226,3 +240,84 @@ async def get_import(
     return await run_in_threadpool(
         import_status, request.state.user_claims, corpus_id, operation_id
     )
+
+
+async def _recover_import(
+    corpus_id: UUID,
+    operation_id: UUID,
+    request: Request,
+    response: Response,
+    *,
+    resume: bool,
+) -> CorpusImportInfo:
+    from corpora_api.corpus_import_worker import (
+        ImportSlot,
+        run_import_resume_worker,
+        run_reconciliation_worker,
+    )
+    from corpora_api.corpus_save_reconcile import SaveReconciliationTarget
+
+    require_creation_config(creating=True)
+    rpc = CreationRPC()
+    identity = {
+        **_session(request.state.user_claims),
+        "p_corpus": str(corpus_id),
+        "p_operation": str(operation_id),
+    }
+    with ImportSlot() as slot:
+        value = await run_in_threadpool(rpc.call, "corpora_get_import_reconciliation", identity)
+        if isinstance(value, dict) and value.get("status") == "ready":
+            try:
+                target = SaveReconciliationTarget.model_validate(value)
+                if (
+                    target.mode != "import"
+                    or target.corpus_id != corpus_id
+                    or target.operation_id != operation_id
+                ):
+                    raise ValueError("Mismatched import reconciliation target")
+            except (TypeError, ValueError):
+                raise CorpusMetadataError("Invalid import reconciliation target") from None
+            try:
+                await run_in_threadpool(
+                    run_import_resume_worker if resume else run_reconciliation_worker,
+                    target.model_dump(mode="json"),
+                    slot=slot,
+                )
+            except Exception:
+                # Missing or changing Hub evidence is not proof of failure.
+                pass
+            value = await run_in_threadpool(rpc.call, "corpora_get_import", identity)
+        elif value == {"status": "unresolved"}:
+            value = await run_in_threadpool(rpc.call, "corpora_get_import", identity)
+        info = _info(value, corpus_id, operation_id)
+    response.status_code = 200 if info.state in ("completed", "failed") else 202
+    response.headers["Cache-Control"] = "no-store"
+    return info
+
+
+@router.post(
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/reconcile", response_model=CorpusImportInfo
+)
+async def reconcile_import(
+    corpus_id: UUID,
+    operation_id: UUID,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> CorpusImportInfo:
+    """Verify an uncertain initial import without issuing another Hub write."""
+    return await _recover_import(corpus_id, operation_id, request, response, resume=False)
+
+
+@router.post(
+    "/v1/corpora/{corpus_id}/imports/{operation_id}/resume", response_model=CorpusImportInfo
+)
+async def resume_import(
+    corpus_id: UUID,
+    operation_id: UUID,
+    request: Request,
+    response: Response,
+    _user: str = Depends(require_user),
+) -> CorpusImportInfo:
+    """Retry the same staged import only if its operation branch still has the original parent."""
+    return await _recover_import(corpus_id, operation_id, request, response, resume=True)
