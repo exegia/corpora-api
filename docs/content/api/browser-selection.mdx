@@ -60,7 +60,11 @@ surrogate pair is rejected. Parser and Python versions are retained in the locat
 
 The capture is limited to 350,000 encoded JSON bytes, 10,000 text nodes and path
 depth 128. The HTML asset is limited to 350,000 bytes and selected text to 32,768
-UTF-8 bytes. Render source HTML in an isolated reader; do not execute untrusted
+UTF-8 bytes. In addition, each mapped endpoint, including source identity, paths,
+quote, context and JSON escaping, must fit in **8,192 encoded JSON bytes**. This
+leaves room for two mapped endpoints and the maximum allowed metadata within the
+reference-save request's 32 KiB budget. Select a smaller range when that bound is
+exceeded. Render source HTML in an isolated reader; do not execute untrusted
 source scripts. Reader wrappers, dynamic DOM changes and browser tree repairs
 that differ from the pinned parser are deliberately rejected. This operation does
 not map arbitrary webpages, rendered Text-Fabric views, PDF layers or EPUB CFIs.

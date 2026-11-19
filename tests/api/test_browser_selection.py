@@ -2,6 +2,7 @@ import copy
 import hashlib
 import importlib
 import io
+import json
 import time
 import zipfile
 from types import SimpleNamespace
@@ -13,6 +14,8 @@ from fastapi.testclient import TestClient
 from corpora_api import project_document, project_link_api
 from corpora_api.browser_selection_models import BrowserSelectionRequest
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
+from corpora_api.project_html_verify import MAX_MAPPED_ENDPOINT_BYTES, map_browser_in_corpus
+from corpora_api.project_link_models import LinkSave
 
 HTML = (
     "<!DOCTYPE html><html><head><title>Excluded</title></head><body>"
@@ -142,6 +145,49 @@ def test_capture_transport_limits():
     capture["captured_nodes"][0][1] = "😀" * 100_000
     with pytest.raises(ValueError, match="size limit"):
         BrowserSelectionRequest.model_validate(capture)
+
+
+@pytest.mark.parametrize("character", ["x", '"', "\\", "😀", "\tx"])
+def test_largest_mapped_endpoints_fit_reference_save_with_maximum_metadata(character):
+    # Derive an actual boundary, including escape expansion and source metadata.
+    def mapped(count):
+        text = character * count
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "sources/book.html", "<html><head></head><body><p>" + text + "</p></body></html>"
+            )
+        _, capture = case()
+        capture.update(
+            captured_nodes=[[[0, 1, 0, 0], text]],
+            start_path=[0, 1, 0, 0],
+            end_path=[0, 1, 0, 0],
+            start_utf16=0,
+            end_utf16=len(text.encode("utf-16-le")) // 2,
+        )
+        return map_browser_in_corpus(output.getvalue(), capture)["endpoint"]
+
+    low, high = 1, 32768
+    while low < high:
+        middle = (low + high + 1) // 2
+        try:
+            mapped(middle)
+            low = middle
+        except ValueError:
+            high = middle - 1
+    endpoint = mapped(low)
+    assert len(json.dumps(endpoint, ensure_ascii=False).encode()) <= MAX_MAPPED_ENDPOINT_BYTES
+    with pytest.raises(ValueError, match="reference-save size budget"):
+        mapped(low + 1)
+    saved = LinkSave(
+        reference_id=uuid4(),
+        source=endpoint,
+        target=endpoint,
+        reason="\u0001" * 2000,
+        relationship="\u0001" * 128,
+        expected_version=2**63 - 2,
+    )
+    assert len(json.dumps(saved.model_dump(mode="json"), ensure_ascii=False).encode()) <= 32768
 
 
 def test_api_checks_project_access_before_loading_and_preserves_identity(monkeypatch):

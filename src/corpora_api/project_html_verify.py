@@ -5,6 +5,7 @@ document root, excludes non-reading subtrees and inserts LF at block boundaries.
 Browser repair or dynamic changes that alter text-node paths reject, never relocate.
 """
 
+import json
 import platform
 
 import bs4
@@ -40,6 +41,10 @@ BLOCK = {
     "pre",
     "hr",
 }
+
+# Two endpoints leave room within LinkSave's 32 KiB JSON limit for the maximum
+# reason (2,000 characters, up to six encoded bytes each), relationship and IDs.
+MAX_MAPPED_ENDPOINT_BYTES = 8192
 
 
 def parser_version() -> str:
@@ -138,6 +143,11 @@ def map_browser_in_corpus(archive_bytes: bytes, raw_capture: dict) -> dict:
         ),
     )
     endpoint = LinkEndpoint.model_validate({**body.original.model_dump(), "locators": [locator]})
+    if (
+        len(json.dumps(endpoint.model_dump(mode="json"), ensure_ascii=False).encode())
+        > MAX_MAPPED_ENDPOINT_BYTES
+    ):
+        raise ValueError("Mapped endpoint exceeds the reference-save size budget")
     return {"endpoint": endpoint.model_dump(mode="json"), "text": selected}
 
 
