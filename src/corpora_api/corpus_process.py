@@ -146,6 +146,19 @@ def _main() -> None:
             from corpora_api.project_cusx_verify import verify_cusx_in_corpus
 
             value = verify_cusx_in_corpus(data, **args)
+        elif operation in ("map_browser", "verify_html", "retrieve_html"):
+            from corpora_api.project_html_verify import (
+                map_browser_in_corpus,
+                retrieve_html_in_corpus,
+                verify_html_in_corpus,
+            )
+
+            handler = {
+                "map_browser": map_browser_in_corpus,
+                "verify_html": verify_html_in_corpus,
+                "retrieve_html": retrieve_html_in_corpus,
+            }[operation]
+            value = handler(data, **args)
         elif operation == "retrieve_epub":
             from corpora_api.project_epub_verify import retrieve_epub_in_corpus
 

@@ -15,7 +15,7 @@ from corpora_api.corpus_hub_read import CorpusHubReadError, _file_path
 from corpora_api.references import _selected_corpus
 
 
-class LinkEndpoint(Endpoint):
+class PinnedAsset(Endpoint):
     """A selected asset in a particular immutable corpus repository revision."""
 
     @model_validator(mode="after")
@@ -29,6 +29,20 @@ class LinkEndpoint(Endpoint):
             if not self.edition_id or not self.document_id:
                 raise ValueError("Edition and asset path are required")
             _file_path(self.document_id)
+        except (ValueError, TypeError, CorpusHubReadError, HTTPException) as error:
+            raise ValueError(
+                "Link endpoint must identify a corpus, revision, asset and selection"
+            ) from error
+        return self
+
+
+class LinkEndpoint(PinnedAsset):
+    """A complete selection within a revision-pinned asset."""
+
+    @model_validator(mode="after")
+    def complete_selection(self) -> Self:
+        try:
+            corpus = UUID(self.package_id or "")
             if not self.locators or len(self.locators) > 8:
                 raise ValueError("One to eight exact locators are required")
             if all(isinstance(locator, CitationLocator) for locator in self.locators):

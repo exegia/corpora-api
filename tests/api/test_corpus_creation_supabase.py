@@ -16,6 +16,8 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from test_browser_selection import HTML
+from test_browser_selection import case as browser_case
 from test_corpus_hub_publish import real_archive
 from test_project_cusx_verify import cusx_package
 from test_project_epub_verify import epub
@@ -296,6 +298,7 @@ def test_creation_sessions_retries_and_privileges(monkeypatch, tmp_path):
                         fixture.writestr("sources/book.epub", epub())
                         fixture.writestr("sources/book.pdf", pdf())
                         fixture.writestr("sources/book.cusx", cusx_package()[0])
+                        fixture.writestr("sources/book.html", HTML)
                     archive = data.getvalue()
                 import_operation = _exercise_import_rpc(
                     api, params, owner, foreign, db, archive, monkeypatch
@@ -1521,6 +1524,7 @@ def _exercise_project_linking_permissions(
         db.execute(next(migrations.glob("*_project_linking_ledger.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_resolution.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_retrieval.sql")).read_text())
+        db.execute(next(migrations.glob("*_browser_selection_admission.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_export.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_import_preview.sql")).read_text())
         db.execute(next(migrations.glob("*_project_link_import.sql")).read_text())
@@ -2006,6 +2010,71 @@ def _exercise_project_linking_permissions(
             == "approved"
         )
         assert history(member)["status"] == "ok"
+        _, capture = browser_case()
+        capture["original"].update(package_id=corpus, revision=head_sha)
+        browser_path = f"/v1/projects/{project}/browser-selection"
+        for role in ("anon", "authenticated"):
+            assert not db.execute(
+                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                (role, "public.corpora_admit_browser_selection(uuid,uuid,bigint,uuid,uuid)"),
+            ).fetchone()[0]
+        assert api.post(browser_path, json=capture).status_code == 401
+        assert api.post(browser_path, json=capture, headers=revoked_headers).status_code == 401
+        assert (
+            api.post(
+                f"/v1/projects/{unrelated_project}/browser-selection",
+                json=capture,
+                headers=member_headers,
+            ).status_code
+            == 404
+        )
+        mapped = api.post(browser_path, json=capture, headers=member_headers)
+        assert mapped.status_code == 200, mapped.text
+        assert mapped.json()["text"] == "See John 3:16.\nNext\nline."
+        html_endpoint = mapped.json()["endpoint"]
+        assert html_endpoint["locators"][0]["start_path"] == capture["start_path"]
+        html_ref = str(uuid4())
+        html_link_path = f"/v1/projects/{project}/references"
+        html_saved = api.post(
+            html_link_path,
+            headers=admin_headers,
+            json={
+                "reference_id": html_ref,
+                "source": endpoint,
+                "target": html_endpoint,
+                "reason": "Browser selection fixture",
+            },
+        )
+        assert html_saved.status_code == 200, html_saved.text
+        for version, action in enumerate(("resolve", "approve", "publish"), start=1):
+            decided = api.post(
+                html_link_path + f"/{html_ref}/{action}",
+                headers=admin_headers,
+                json={"expected_version": version, "reason": "Verified fixture"},
+            )
+            assert decided.status_code == 200, decided.text
+        html_retrieved = api.post(
+            html_link_path + f"/{html_ref}/retrieve",
+            headers=member_headers,
+            json={"side": "target"},
+        )
+        assert html_retrieved.status_code == 200, html_retrieved.text
+        assert html_retrieved.json()["fragments"] == [mapped.json()["text"]]
+        html_export = api.post(
+            html_link_path + "/export", headers=member_headers, json={"reference_ids": [html_ref]}
+        )
+        assert html_export.status_code == 200, html_export.text
+        assert html_export.json()["revisions"][0]["reference"]["target"] == html_endpoint
+        db.execute(
+            "DELETE FROM public.corpora_corpus_readers WHERE corpus_id=%s AND user_id=%s",
+            (corpus, member["sub"]),
+        )
+        assert api.post(browser_path, json=capture, headers=member_headers).status_code == 404
+        db.execute(
+            "INSERT INTO public.corpora_corpus_readers(corpus_id,user_id,added_by) "
+            "VALUES (%s,%s,%s)",
+            (corpus, member["sub"], actor["sub"]),
+        )
         cusx_ref = str(uuid4())
         cusx_target = {
             "work_id": "urn:work:test",
