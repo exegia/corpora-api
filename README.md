@@ -224,6 +224,15 @@ history; members cannot edit or decide.
 Projects with recorded reference history cannot be deleted, preserving the
 ledger and its project identity.
 
+After applying `browser_selection_admission`, project members can map an unchanged
+UTF-8 HTML source selection with `POST /v1/projects/{project_id}/browser-selection`.
+The complete browser text-node capture must match the pinned source tree; UTF-16
+offsets become exact scalar/native ranges. Changed DOM paths, split surrogate pairs
+and stale revisions reject without relocation. The returned HTML range works with
+reference resolution, retrieval, export and publication. See
+[`docs/content/api/browser-selection.mdx`](docs/content/api/browser-selection.mdx)
+and the browser capture helper in `docs/public/examples/browser-selection.js`.
+
 After applying `project_link_retrieval`, a project member with access to both
 corpora can POST `{"side":"source"}` or `{"side":"target"}` to
 `/v1/projects/{project_id}/references/{reference_id}/retrieve`. The response

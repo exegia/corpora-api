@@ -835,6 +835,103 @@
         "title": "Body_validate_corpus_upload_v1_validate_post",
         "type": "object"
       },
+      "BrowserSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "$ref": "#/components/schemas/LinkEndpoint"
+          },
+          "text": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint",
+          "text"
+        ],
+        "title": "BrowserSelection",
+        "type": "object"
+      },
+      "BrowserSelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "captured_nodes": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "items": {
+                    "minimum": 0.0,
+                    "type": "integer"
+                  },
+                  "maxItems": 128,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                {
+                  "maxLength": 350000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 10000,
+            "minItems": 1,
+            "title": "Captured Nodes",
+            "type": "array"
+          },
+          "end_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "title": "End Path",
+            "type": "array"
+          },
+          "end_utf16": {
+            "maximum": 350000.0,
+            "minimum": 0.0,
+            "title": "End Utf16",
+            "type": "integer"
+          },
+          "original": {
+            "$ref": "#/components/schemas/PinnedAsset"
+          },
+          "start_path": {
+            "items": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "title": "Start Path",
+            "type": "array"
+          },
+          "start_utf16": {
+            "maximum": 350000.0,
+            "minimum": 0.0,
+            "title": "Start Utf16",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "original",
+          "captured_nodes",
+          "start_path",
+          "start_utf16",
+          "end_path",
+          "end_utf16"
+        ],
+        "title": "BrowserSelectionRequest",
+        "type": "object"
+      },
       "CitationLocator": {
         "additionalProperties": false,
         "description": "An unresolved address request, never proof of an exact passage.",
@@ -2940,7 +3037,7 @@
       },
       "LinkEndpoint": {
         "additionalProperties": false,
-        "description": "A selected asset in a particular immutable corpus repository revision.",
+        "description": "A complete selection within a revision-pinned asset.",
         "properties": {
           "document_id": {
             "anyOf": [
@@ -3698,6 +3795,116 @@
           "y1"
         ],
         "title": "PdfRectangle",
+        "type": "object"
+      },
+      "PinnedAsset": {
+        "additionalProperties": false,
+        "description": "A selected asset in a particular immutable corpus repository revision.",
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "edition_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edition Id"
+          },
+          "locators": {
+            "default": [],
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "citation": "#/components/schemas/CitationLocator",
+                  "epub": "#/components/schemas/EpubLocator",
+                  "epub-resource": "#/components/schemas/EpubResourceLocator",
+                  "html-range": "#/components/schemas/HtmlRangeLocator",
+                  "html-text": "#/components/schemas/HtmlTextLocator",
+                  "pdf": "#/components/schemas/PdfLocator",
+                  "structural": "#/components/schemas/StructuralLocator",
+                  "text": "#/components/schemas/TextLocator"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/PdfLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/EpubResourceLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlTextLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/HtmlRangeLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/StructuralLocator"
+                },
+                {
+                  "$ref": "#/components/schemas/CitationLocator"
+                }
+              ]
+            },
+            "title": "Locators",
+            "type": "array"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "work_id": {
+            "minLength": 1,
+            "title": "Work Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_id"
+        ],
+        "title": "PinnedAsset",
         "type": "object"
       },
       "ProjectCorpus": {
@@ -9142,6 +9349,68 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/browser-selection": {
+      "post": {
+        "description": "Map an unchanged browser HTML capture to an exact, revision-pinned range.",
+        "operationId": "map_browser_selection_v1_projects__project_id__browser_selection_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserSelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserSelection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "SupabaseUserJWT": []
+          }
+        ],
+        "summary": "Map Browser Selection",
+        "tags": [
+          "Project links"
+        ]
+      }
+    },
     "/v1/projects/{project_id}/corpora": {
       "get": {
         "description": "List accessible linked corpora; project managers can list available choices.",
@@ -10197,7 +10466,7 @@
     },
     "/v1/projects/{project_id}/references/{reference_id}/retrieve": {
       "post": {
-        "description": "Retrieve a verified Text-Fabric, EPUB, PDF or C-USX selection.",
+        "description": "Retrieve a verified Text-Fabric, EPUB, PDF, C-USX or HTML selection.",
         "operationId": "retrieve_selection_v1_projects__project_id__references__reference_id__retrieve_post",
         "parameters": [
           {

@@ -13,10 +13,12 @@ from corpora_api import corpus_detail_api
 from corpora_api.corpus_access_api import read_access
 from corpora_api.corpus_hub_read import CorpusHubReadError
 from corpora_api.corpus_process import CorpusProcessError, run_corpus
-from corpora_api.project_link_models import LinkEndpoint
+from corpora_api.project_link_models import LinkEndpoint, PinnedAsset
 
 
-async def _document(claims: Any, endpoint: LinkEndpoint, operation: str) -> dict[str, Any]:
+async def _document(
+    claims: Any, endpoint: PinnedAsset, operation: str, *, raw_capture: dict | None = None
+) -> dict[str, Any]:
     access = await run_in_threadpool(read_access, claims, UUID(endpoint.package_id or ""))
     if access.row.state != "ready" or access.head is None:
         raise HTTPException(404, "Corpus content is not available")
@@ -42,12 +44,16 @@ async def _document(claims: Any, endpoint: LinkEndpoint, operation: str) -> dict
     if len(data) != head.archive_size or hashlib.sha256(data).hexdigest() != head.archive_sha256:
         raise HTTPException(503, "Corpus integrity verification failed")
     try:
-        result = await run_in_threadpool(
-            run_corpus, bytes(data), operation, raw_endpoint=endpoint.model_dump(mode="json")
-        )
+        args = {"raw_endpoint": endpoint.model_dump(mode="json")}
+        if raw_capture is not None:
+            args = {"raw_capture": raw_capture}
+        result = await run_in_threadpool(run_corpus, bytes(data), operation, **args)
     except CorpusProcessError as error:
         status = 503 if error.kind == "unavailable" else 422
-        raise HTTPException(status, "Document selection could not be verified") from None
+        detail = "Document selection could not be verified"
+        if operation == "map_browser" and status == 422:
+            detail = "Browser selection does not match the pinned HTML source; recapture it"
+        raise HTTPException(status, detail) from None
     return result
 
 
@@ -58,6 +64,10 @@ async def verify_document(claims: Any, endpoint: LinkEndpoint, operation: str) -
 
 async def verify_epub(claims: Any, endpoint: LinkEndpoint) -> None:
     await verify_document(claims, endpoint, "verify_epub")
+
+
+async def verify_html(claims: Any, endpoint: LinkEndpoint) -> None:
+    await verify_document(claims, endpoint, "verify_html")
 
 
 def _check_pdf(endpoint: LinkEndpoint) -> None:
@@ -109,7 +119,7 @@ async def retrieve_document(claims: Any, endpoint: LinkEndpoint, kind: str) -> s
         _check_pdf(endpoint)
     elif kind == "cusx":
         _check_cusx(endpoint)
-    elif kind != "epub":
+    elif kind not in ("epub", "html"):
         raise HTTPException(422, "Unsupported document selection")
     result = await _document(claims, endpoint, "retrieve_" + kind)
     if (
