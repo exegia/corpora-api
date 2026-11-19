@@ -1,44 +1,18 @@
 ---
-title: Corpora API
-description: Source-bound text checks and conversion over HTTP and MCP
+title: Corpora documentation
+description: Learn how to check, store, and read text with Corpora
 ---
 
-The Corpora API exposes `corpora-core` text checks and source-preserving TEI, EPUB, and PDF conversion. It reports findings without changing the input.
+A **corpus** is a collection of texts. Corpora helps apps check those texts, turn documents into structured data, and read stored collections.
 
-## Start locally
+## Choose a starting point
 
-1. Build the `corpora-text-check` binary from `exegia/corpora-core` with its `spellcheck` feature.
-2. Set `CORPORA_TEXT_CHECK_BIN` to its path and run `uv run uvicorn corpora_api.app:app --reload`.
-3. Open the [API reference](/api) for every request and response schema.
+| You want to… | Start here |
+| --- | --- |
+| Send your first request | [API quickstart](/api/getting-started) |
+| Understand what the API can do | [API guide](/api) |
+| Find an endpoint and its fields | [Endpoint directory](/api/endpoints) |
+| Understand the engine behind the API | [Corpora Core](/core) |
+| Test safely and clean up | [QA testing](/core/qa-testing) |
 
-The OpenAPI playground targets `https://api.exegia.co/v1/`. Protected operations require a bearer token; enter it in the playground's authorization control.
-
-## Interfaces
-
-| Interface | Local URL | Purpose |
-| --- | --- | --- |
-| REST | `https://api.exegia.co/v1/` | Typed checks and conversion uploads |
-| OpenAPI | `https://api.exegia.co/v1/openapi.json` | Machine-readable contract |
-| API MCP | `https://api.exegia.co/v1/mcp/` | Tools that execute core checks |
-| Docs MCP | `https://docs.exegia.co/mcp` | Search and read documentation |
-
-The hosted image includes pinned spelling dictionaries and the converter executables. Conversion uploads return ZIP bundles; PDF bundles can contain a review report without TF when the score gate stops export.
-
-## A check
-
-```bash
-curl -s http://localhost:8000/v1/checks/structure \
-  -H 'Content-Type: application/json' \
-  -d '{"source_id":"book.xml","text":"<root/>"}'
-```
-
-```json
-{
-  "schema_version": 1,
-  "source_id": "book.xml",
-  "source_sha256": "6238462c4873df4c50bc1a901ece576b2d166b0156802c88a05a85b1f5d511c7",
-  "diagnostics": []
-}
-```
-
-Source coordinates use UTF-8 byte offsets and Unicode scalar offsets. A report's hash binds its locations and suggestions to the exact input text.
+The API is at `https://api.exegia.co/v1`. This website explains it; it does not store your corpus.

@@ -1,0 +1,25 @@
+---
+title: Corpora Core
+description: The engine that checks, converts, validates, and reads corpus data
+---
+
+**Corpora Core** provides the engine behind Corpora's text and corpus operations. The API supplies the HTTP interface and access checks. A desktop client usually talks to the API; it does not need a storage administrator's credentials.
+
+## Start here
+
+| Goal | Guide |
+| --- | --- |
+| Use the hosted service | [API guide](/api) |
+| Understand the service boundaries | [How the pieces connect](/api/architecture) |
+| Verify behavior and remove test data | [QA testing](/core/qa-testing) |
+| Contribute to the engine | [Core repository](https://github.com/exegia/corpora-core) and [agent instructions](https://github.com/exegia/corpora-core/blob/dev/AGENTS.md) |
+
+## Contributor guidance versus this website
+
+[Core PR #113](https://github.com/exegia/corpora-core/pull/113) proposes repository contributor guidance. Those instructions live with the code in `README.md`, `AGENTS.md`, `CLAUDE.md`, and `.github/`. They are not automatically published as website pages.
+
+These public `/core` pages live in the API repository's `docs/content/core/` folder, which is part of the site serving `docs.exegia.co`.
+
+## Current milestone
+
+The corpus reading milestone shipped with [Core v0.6.3](https://github.com/exegia/corpora-core/releases/tag/v0.6.3) and [API v0.8.0](https://github.com/exegia/corpora-api/releases/tag/v0.8.0). The reader preserves source slots when structural sections do not cover every word. Editing and restoring corpus content are tracked separately from this completed read milestone.

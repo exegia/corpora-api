@@ -54,10 +54,10 @@ or behavior after a route change.
 | 09 | `PATCH` | `/storage/{filename}/nodes/{node}` | `/v1/storage/{filename}/nodes/{node}` | Missing |
 | 09 | `POST` | `/storage/{filename}/restore` | `/v1/storage/{filename}/restore` | Missing |
 | 09 | `GET` | `/storage/{filename}/versions` | `/v1/storage/{filename}/versions` | Present; behavior unverified |
-| 10 | `POST` | `/refs` | `/v1/refs` | Present; behavior unverified |
-| 10 | `GET` | `/refs/resolve` | `/v1/refs/resolve` | Present; behavior unverified |
-| 10 | `GET` | `/refs/shortcode` | `/v1/refs/shortcode` | Present; behavior unverified |
-| 10 | `POST` | `/refs/shortcode` | `/v1/refs/shortcode` | Present; behavior unverified |
+| 10 | `POST` | `/refs` | `/v1/refs` | Corpus UUID and stored revision; hosted verification pending |
+| 10 | `GET` | `/refs/resolve` | `/v1/refs/resolve` | Corpus UUID and stored revision; hosted verification pending |
+| 10 | `GET` | `/refs/shortcode` | `/v1/refs/shortcode` | Corpus UUID and stored revision; hosted verification pending |
+| 10 | `POST` | `/refs/shortcode` | `/v1/refs/shortcode` | Corpus UUID and stored revision; hosted verification pending |
 | 11 | `POST` | `/linking/{space_id}/references` | `/v1/linking/{space_id}/references` | Missing |
 | 11 | `GET` | `/linking/{space_id}/references/{reference_id}` | `/v1/linking/{space_id}/references/{reference_id}` | Missing |
 | 11 | `POST` | `/linking/{space_id}/references/{reference_id}/{action}` | `/v1/linking/{space_id}/references/{reference_id}/{action}` | Missing |

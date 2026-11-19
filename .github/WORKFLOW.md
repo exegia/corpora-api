@@ -138,3 +138,19 @@ Everything is parameterized on `TRUNK` (default `main`).
 `make selftest` runs `tests/template/` (stack detection, SemVer, versions, PR guard, secrets, changelog, agent
 assets). Keep it green when you change `scripts/`. Lint workflows with `actionlint` and scripts with
 `shellcheck -S warning -x scripts/*.sh .github/scripts/*.sh` (both also run as pre-commit hooks).
+
+## API guides and QA cleanup
+
+The public guides live in `docs/content/`: `/api` is the onboarding hub and
+`/core/qa-testing` records the shared QA procedure. Keep examples aligned with
+`docs/openapi.json`; a local dummy service token never replaces a Supabase user
+session. Use dedicated accounts and synthetic corpora for hosted QA. Record exact
+fixture IDs before writes, delete through the product API, verify the receipt,
+retire temporary accounts/sessions, and remove only run-specific credential files.
+Keep sanitized evidence and report incomplete cleanup. Preserve production audit
+history and permanent server configuration. See [QA testing](https://docs.exegia.co/core/qa-testing).
+
+Fresh local Supabase setup uses the [bootstrap guide](https://github.com/exegia/corpora-api/blob/dev/supabase/bootstrap/README.md):
+apply its guarded baseline only to an empty disposable project, use the documented
+ordered sync for later migrations, and explicitly enable RLS in new migrations.
+The baseline must never be applied to the existing hosted database.

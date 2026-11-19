@@ -1,0 +1,85 @@
+---
+title: Testing and troubleshooting
+description: Start with safe requests, then use isolated test data
+---
+
+## Choose a test level
+
+| Level | What it proves | Typical command or action |
+| --- | --- | --- |
+| Public smoke test | The deployed API can answer | `curl https://api.exegia.co/v1/health` |
+| Unit tests | Local behavior under controlled inputs | `uv run pytest tests/api -q` |
+| Real local integration | Auth, database, storage, and reader cooperate | Opt-in Supabase tests; see [QA testing](/core/qa-testing) |
+| Hosted lifecycle | The deployed route works with real services | Dedicated account and disposable corpus |
+| Desktop QA | A real user interface can call and display the API | The `gpui-corpora` QA branch |
+
+A passing health check is a starting point, not full integration evidence.
+
+## Local test token
+
+Clone the API and install its dependencies:
+
+```bash
+git clone https://github.com/exegia/corpora-api.git
+cd corpora-api
+make doctor
+make setup
+```
+
+Build the core executable in a separate checkout (requires Rust):
+
+```bash
+git clone --branch v0.6.3 https://github.com/exegia/corpora-core.git ../corpora-core
+cargo build --manifest-path ../corpora-core/Cargo.toml --locked \
+  -p corpora-core --features spellcheck --bin corpora-text-check
+export CORPORA_TEXT_CHECK_BIN="$(cd ../corpora-core && pwd)/target/debug/corpora-text-check"
+```
+
+This executable handles language detection and checks. Spelling also needs configured dictionaries; converters have their own executable paths. See the [repository setup guide](https://github.com/exegia/corpora-api#development).
+
+Start a loopback-only server with an obviously fake service token:
+
+```bash
+CORPORA_API_TOKEN=example-local-only \
+  uv run uvicorn corpora_api.app:app --host 127.0.0.1 --port 8000
+```
+
+In a second terminal, try language detection:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  http://127.0.0.1:8000/v1/language/detect \
+  -H 'Authorization: Bearer example-local-only' \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Hello world","locale":"en-US"}'
+```
+
+Check the [operation schema](/api/detect_language_v1_language_detect_post) for the fields and result. This fake credential is only the local service-token gate. It does not create a Supabase session, unlock corpus routes, or work in production. Checks and converters also need their configured core executables; missing tools return **503**.
+
+For a local user-owned lifecycle, use a disposable Supabase stack and the opt-in integration tests. Do not weaken production authentication to make examples work.
+
+## Understand an error
+
+Many errors have this form:
+
+```json
+{"detail":"Corpus not found"}
+```
+
+Validation errors may instead have an array of field errors in `detail`. Use the status code first, then the operation's documented schema.
+
+| Status | Plain meaning | Next action |
+| --- | --- | --- |
+| 200 / 201 / 202 | Read or retry succeeded / created / still pending | Read the response state; poll the documented status route if pending |
+| 401 | Missing, invalid, expired, or revoked credential | Use the right credential; sign in again if needed |
+| 404 | Missing or not visible to this caller | Check the ID and access; private data is not revealed |
+| 409 | Stale revision, reused identity with changed input, or conflicting state | Read current state; preserve the same operation ID for an exact retry |
+| 413 | Input or output exceeds a limit | Reduce the upload or request size |
+| 422 | Input or corpus data is not accepted | Inspect field errors or validation findings |
+| 502 / 503 | A backing service failed or is unavailable | Check configuration and status; inspect operation receipts before retrying a write |
+
+A timeout does not prove a write failed. Query its status and retain the original operation ID. Do not create a fresh corpus or operation ID just to hide an uncertain result.
+
+## Keep a useful QA receipt
+
+Record the code revision, environment, synthetic corpus ID, request names, HTTP statuses, assertions, and cleanup results. Exclude tokens, passwords, full authorization headers, and private corpus text. The [cleanup checklist](/core/qa-testing#cleanup) describes the finish line.

@@ -129,6 +129,60 @@ def test_five_views_read_exact_private_archive_with_real_worker(fixture):
     assert [first["items"][0]["ref"], second["items"][0]["ref"]] == ["Mini A", "Mini B"]
 
 
+def test_ai_scope_reads_only_authorized_pinned_corpus_with_real_worker(fixture):
+    client, path, state = fixture
+    scope = {
+        "corpus": "corpus:" + path.rsplit("/", 1)[1],
+        "corpus_revision": SHA,
+        "level": "word",
+        "node_id": 3,
+        "label": "word",
+        "version": "1.0",
+    }
+    headers = {"Authorization": "Bearer valid"}
+    assert client.post("/v1/ai/validate", json={"scope": scope}).status_code == 401
+    missing = client.post(
+        "/v1/ai/validate", json={"scope": {**scope, "corpus_revision": None}}, headers=headers
+    )
+    assert missing.status_code == 422
+    stale = client.post(
+        "/v1/ai/validate", json={"scope": {**scope, "corpus_revision": "a" * 40}}, headers=headers
+    )
+    assert stale.status_code == 409 and stale.json()["current_version"] == SHA
+    assert stale.headers["cache-control"] == "no-store"
+    assert not state["requests"]
+    result = client.post("/v1/ai/validate", json={"scope": scope}, headers=headers)
+    assert result.status_code == 200, result.text
+    assert result.headers["cache-control"] == "no-store"
+    assert result.json()["corpus"] == scope["corpus"]
+    assert result.json()["checked_nodes"] == 1
+    assert state["requests"]
+    state["requests"].clear()
+    state["access"] = {"status": "not_found"}
+    assert client.post("/v1/ai/validate", json={"scope": scope}, headers=headers).status_code == 404
+    assert not state["requests"]
+    state["revoked"] = True
+    assert client.post("/v1/ai/validate", json={"scope": scope}, headers=headers).status_code == 401
+
+
+def test_ai_scope_rejects_tampered_hub_archive(fixture):
+    client, path, state = fixture
+    state["data"] = b"x" * len(state["data"])
+    scope = {
+        "corpus": "corpus:" + path.rsplit("/", 1)[1],
+        "corpus_revision": SHA,
+        "level": "word",
+        "node_id": 3,
+        "label": "word",
+        "version": "1.0",
+    }
+    result = client.post(
+        "/v1/ai/validate", json={"scope": scope}, headers={"Authorization": "Bearer valid"}
+    )
+    assert result.status_code == 503
+    assert result.json() == {"detail": "Corpus integrity verification failed"}
+
+
 @pytest.mark.parametrize("view", VIEWS)
 def test_denied_or_revoked_admission_never_contacts_hub(fixture, view):
     client, path, state = fixture
@@ -222,3 +276,112 @@ def test_invalid_view_shape_returns_documented_error(fixture, monkeypatch):
     response = client.get(path + "/nodes/3")
     assert response.status_code == 422
     assert response.json() == {"detail": "Corpus detail is unavailable"}
+
+
+def test_references_round_trip_the_authorized_corpus_uuid(fixture):
+    client, path, state = fixture
+    corpus = path.rsplit("/", 1)[-1]
+    headers = {"Authorization": "Bearer valid"}
+    made = client.post(
+        "/v1/refs", json={"corpus": corpus, "node": 1, "end_node": 2}, headers=headers
+    )
+    assert made.status_code == 200, made.text
+    assert made.headers["cache-control"] == "no-store"
+    ref = made.json()
+    assert ref["nodes"] == [1, 2]
+    assert corpus in ref["ref"] and corpus in ref["urn"] and corpus in ref["token"]
+    assert SHA in ref["ref"] and SHA in ref["urn"] and SHA in ref["token"]
+    for key in ("ref", "urn", "token"):
+        resolved = client.get("/v1/refs/resolve", params={"ref": ref[key]}, headers=headers)
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["ref"] == ref["ref"]
+    got = client.get("/v1/refs/shortcode", params={"ref": ref["ref"]}, headers=headers)
+    made_shortcode = client.post(
+        "/v1/refs/shortcode", json={"corpus": corpus, "node": 1}, headers=headers
+    )
+    assert got.status_code == made_shortcode.status_code == 200
+    assert got.json()["ref"] == ref["ref"]
+    assert state["admissions"] and all(p["p_actor"] for p in state["admissions"])
+    assert (
+        client.get(
+            "/v1/refs/resolve", params={"ref": ref["token"].rsplit("@", 1)[0]}, headers=headers
+        ).status_code
+        == 400
+    )
+    for key in ("ref", "urn", "token"):
+        stale = ref[key].replace(SHA, "b" * 40)
+        assert (
+            client.get("/v1/refs/resolve", params={"ref": stale}, headers=headers).status_code
+            == 409
+        )
+    assert (
+        client.get(
+            "/v1/refs/resolve", params={"ref": ref["ref"], "corpus": str(uuid4())}, headers=headers
+        ).status_code
+        == 400
+    )
+    assert (
+        client.get(
+            "/v1/refs/resolve",
+            params={"ref": f"@{SHA}/Mini!word1", "corpus": corpus},
+            headers=headers,
+        ).status_code
+        == 400
+    )
+    state["access"]["head"]["commit_sha"] = "b" * 40
+    before = len(state["requests"])
+    assert (
+        client.get("/v1/refs/resolve", params={"ref": ref["token"]}, headers=headers).status_code
+        == 409
+    )
+    assert len(state["requests"]) == before
+
+
+def test_references_reject_missing_stale_foreign_and_corrupted_data(fixture):
+    client, path, state = fixture
+    corpus = path.rsplit("/", 1)[-1]
+    headers = {"Authorization": "Bearer valid"}
+    assert client.post("/v1/refs", json={"corpus": corpus, "node": 1}).status_code == 401
+    assert (
+        client.get(
+            "/v1/refs/resolve", params={"ref": "coambiguous_bk001"}, headers=headers
+        ).status_code
+        == 400
+    )
+    assert (
+        client.get(
+            "/v1/refs/resolve", params={"ref": f"{corpus}@{'b' * 40}/Mini!word1"}, headers=headers
+        ).status_code
+        == 409
+    )
+    assert (
+        client.get(
+            "/v1/refs/resolve", params={"ref": f"{corpus}@{SHA}/missing!word1"}, headers=headers
+        ).status_code
+        == 404
+    )
+    state["access"] = {"status": "not_found"}
+    before = len(state["requests"])
+    assert (
+        client.post("/v1/refs", json={"corpus": corpus, "node": 1}, headers=headers).status_code
+        == 404
+    )
+    assert len(state["requests"]) == before
+
+
+def test_reference_rejects_revoked_sessions_and_changed_archive(fixture):
+    client, path, state = fixture
+    corpus = path.rsplit("/", 1)[-1]
+    headers = {"Authorization": "Bearer valid"}
+    state["revoked"] = True
+    assert (
+        client.post("/v1/refs", json={"corpus": corpus, "node": 1}, headers=headers).status_code
+        == 401
+    )
+    assert not state["requests"]
+    state["revoked"] = False
+    state["data"] = b"x" * len(state["data"])
+    assert (
+        client.post("/v1/refs", json={"corpus": corpus, "node": 1}, headers=headers).status_code
+        == 503
+    )

@@ -144,3 +144,19 @@ this file.
 3. Run `make dependabot` once the first stack manifest exists.
 4. Delete skills and `.env.example` sections for stacks you do not use.
 5. Replace the "template" wording in this file with the real product description.
+
+## API guides and QA cleanup
+
+The public guides live in `docs/content/`: `/api` is the onboarding hub and
+`/core/qa-testing` records the shared QA procedure. Keep examples aligned with
+`docs/openapi.json`; a local dummy service token never replaces a Supabase user
+session. Use dedicated accounts and synthetic corpora for hosted QA. Record exact
+fixture IDs before writes, delete through the product API, verify the receipt,
+retire temporary accounts/sessions, and remove only run-specific credential files.
+Keep sanitized evidence and report incomplete cleanup. Preserve production audit
+history and permanent server configuration. See [QA testing](https://docs.exegia.co/core/qa-testing).
+
+Fresh local Supabase setup uses the [bootstrap guide](https://github.com/exegia/corpora-api/blob/dev/supabase/bootstrap/README.md):
+apply its guarded baseline only to an empty disposable project, use the documented
+ordered sync for later migrations, and explicitly enable RLS in new migrations.
+The baseline must never be applied to the existing hosted database.

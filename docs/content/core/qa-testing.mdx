@@ -1,0 +1,60 @@
+---
+title: QA testing and cleanup
+description: Test with disposable data, prove the result, and remove temporary access
+---
+
+**QA means checking that the product does what it promises.** A good test records what happened and leaves no reusable test password or forgotten private repository behind.
+
+## Before a test
+
+1. Record the exact API/core or desktop commit, environment URL, and scenario.
+2. Prefer a disposable local Supabase stack. For hosted checks, use dedicated temporary users and synthetic text only.
+3. Give every fixture a unique corpus ID and operation IDs. Save those identities in a private run record so cleanup can target exactly what the run created.
+4. Load credentials from protected local files or a credential store. Keep admin credentials out of the desktop app and out of screenshots and logs.
+5. Define the expected result and cleanup path before sending a write. Never use a real user's corpus as a test fixture.
+
+## What to verify
+
+| Scenario | Evidence to collect |
+| --- | --- |
+| Create and import | Private repository creation, real archive validation, ready state, durable receipt |
+| Retry | Same operation and input return the original result; changed input conflicts |
+| Read | Manifest, index, sections, content, and nodes preserve the expected synthetic text |
+| Access | Owner works; foreign/private and anonymous/private reads fail; public reads work while the Hub stays private |
+| Revoke and delete | New requests after logout fail; deletion and exact retry work; deleted views disappear; UUID reuse is rejected |
+
+Use the real reader for archive acceptance. Mocked Hub tests prove local handling, not a successful hosted write. A native build proves compilation; click the controls in the running app to prove desktop behavior.
+
+## Local verification
+
+In `corpora-api`, run `make doctor` and `make setup` before the first test. Run `make fmt` and `make ci` before submitting changes. The normal suite skips tests that require opt-in infrastructure.
+
+Find the exact opt-in prerequisites in the test files:
+
+```bash
+rg -n 'CORPORA_TEST_|skipif|Supabase' tests
+```
+
+Use a separate local stack and only the migrations/configuration required by that scenario. Set the relevant core executable paths when testing real converters or validation. Stop the dedicated stack after the run. Do not shut down another person's development stack.
+
+## Cleanup
+
+1. **Delete the synthetic corpus through the product API.** Keep the operation ID, verify the deletion receipt, and confirm subsequent reads are denied. An administrator may separately verify that the private Hub repository is gone.
+2. **Retire temporary access.** Sign out test sessions and delete dedicated temporary Auth accounts with the environment administrator's tools. Never delete an existing user's account.
+3. **Remove local secrets.** Remove only the run's credential files, unset exported tokens, and remove temporary branch-specific hosted variables. Keep required production configuration in place.
+4. **Check what remains.** Confirm repository/account absence where applicable, stop the dedicated local stack, and remove disposable worktrees only after preserving the intended source changes.
+5. **Keep a sanitized receipt.** Record pass/fail assertions and cleanup outcomes. Name anything that could not be cleaned up so it can be investigated.
+
+Corpus deletion retains audit history and a tombstone. **Do not disable audit triggers or erase production history as a routine cleanup step.** If a test requires database teardown, prefer destroying its disposable local database. Any exceptional hosted fixture erasure needs a separately reviewed, exact-ID administrative procedure; it is not an API client instruction.
+
+If a create or import times out, the remote effect may still exist. Keep its IDs and receipt, inspect the recorded state, and reconcile it. Do not blindly retry under a new identity or remove a repository whose ownership has not been established.
+
+## What “credentials cleaned up” means
+
+It means the run's temporary sessions/accounts and local secret files were retired. The permanent server credentials that keep production running remain configured. Never include their values in a report.
+
+For the API v0.8.0 / Core v0.6.3 milestone, hosted tests used disposable users and synthetic corpora, verified private/public reads and deletion, and removed their temporary accounts and credential files. That historical result does not prove a later deployment; record fresh evidence for each new test.
+
+## Desktop QA
+
+The `gpui-corpora` `qa` branch exercises the API through a basic native screen. Use a dedicated test-user session, record the desktop commit and target URL, and distinguish public smoke results from authenticated lifecycle results. Keep the app's credentials in memory and close it after retiring the test session.

@@ -64,6 +64,7 @@ from corpora_api.corpus_metadata import (
     CorpusMetadataNotFound,
 )
 from corpora_api.corpus_metadata_api import router as corpus_metadata_router
+from corpora_api.corpus_readers_api import router as corpus_readers_router
 from corpora_api.corpus_version_history_api import router as corpus_version_history_router
 from corpora_api.drafts import DraftStore
 from corpora_api.ingest import (
@@ -122,6 +123,10 @@ from corpora_api.models import (
     TFCheckReport,
     ValidationResponse,
 )
+from corpora_api.project_corpora_api import router as project_corpora_router
+from corpora_api.project_discovery_api import router as project_discovery_router
+from corpora_api.project_link_api import router as project_link_router
+from corpora_api.project_members_api import router as project_members_router
 from corpora_api.references import reference
 from corpora_api.storage import (
     CorpusStorage,
@@ -169,6 +174,7 @@ def user_auth_path(path: str) -> bool:
         or path.startswith("/v1/refs/")
         or path == "/v1/ingest"
         or path.startswith("/v1/ingest/")
+        or path.startswith("/v1/projects/")
         or path == "/v1/corpora"
         or path.startswith("/v1/corpora/")
     )
@@ -193,6 +199,11 @@ app = FastAPI(
         {"url": "http://localhost:8000", "description": "Local API"},
     ],
 )
+app.include_router(project_corpora_router)
+app.include_router(project_members_router)
+app.include_router(project_link_router)
+app.include_router(project_discovery_router)
+app.include_router(corpus_readers_router)
 app.include_router(corpus_metadata_router)
 app.include_router(corpus_import_router)
 app.include_router(corpus_edit_router)
@@ -201,8 +212,14 @@ app.include_router(corpus_detail_router)
 app.include_router(corpus_version_history_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://docs.exegia.co", "http://localhost:4321"],
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_origins=[
+        "https://docs.exegia.co",
+        "http://localhost:4321",
+        "https://corpora.exegia.co",
+        "https://staging.corpora-apps.vercel.app",
+        "http://localhost:5173",
+    ],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=[
         "Authorization",
         "Content-Type",
@@ -248,7 +265,12 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     except UserAuthError:
         return JSONResponse(status_code=401, content={"detail": "Invalid bearer token"})
 
-    if request.url.path == "/v1/ingest" or request.url.path.startswith("/v1/ingest/"):
+    if (
+        request.url.path == "/v1/ingest"
+        or request.url.path.startswith("/v1/ingest/")
+        or request.url.path == "/v1/ai/drafts"
+        or request.url.path.startswith("/v1/ai/drafts/")
+    ):
         try:
             active = await run_in_threadpool(ingest_session_active, credential)
         except SessionCheckUnavailable:
@@ -1088,13 +1110,29 @@ async def ai_chat(
     responses={**_STORAGE_DETAIL_RESPONSES, 409: {"description": "Scope is stale"}},
 )
 async def ai_validate(
-    request: AIScopeRequest, user_id: Annotated[str, Depends(require_user)]
+    request: AIScopeRequest,
+    http_request: Request,
+    response: Response,
+    user_id: Annotated[str, Depends(require_user)],
 ) -> Any:
-    from corpora_api.ai_validation import validate_scope
+    """Validate a scope in an authorized corpus or a validated conversion."""
+    from corpora_api.ai_validation import validate_hub_scope, validate_scope
 
-    return await run_in_threadpool(
-        validate_scope, corpus_storage, conversion_artifact_store, user_id, request.scope, validator
-    )
+    response.headers["Cache-Control"] = "no-store"
+    if request.scope.corpus.startswith("corpus:"):
+        result = await validate_hub_scope(http_request.state.user_claims, request.scope)
+    else:
+        result = await run_in_threadpool(
+            validate_scope,
+            corpus_storage,
+            conversion_artifact_store,
+            user_id,
+            request.scope,
+            validator,
+        )
+    if isinstance(result, JSONResponse):
+        result.headers["Cache-Control"] = "no-store"
+    return result
 
 
 _REFERENCE_RESPONSES = {
@@ -1106,48 +1144,59 @@ _REFERENCE_RESPONSES = {
 
 @app.post("/v1/refs", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def create_reference(
-    body: ReferenceCreate, user_id: Annotated[str, Depends(require_user)]
+    body: ReferenceCreate,
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
 ) -> dict[str, Any]:
-    return await run_in_threadpool(reference, corpus_storage, user_id, **body.model_dump())
+    """Create a corpus reference pinned to its current stored revision."""
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(request.state.user_claims, **body.model_dump())
 
 
 @app.get("/v1/refs/resolve", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def resolve_reference(
-    user_id: Annotated[str, Depends(require_user)],
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
     ref: str,
     corpus: str | None = None,
     lang: str | None = None,
 ) -> dict[str, Any]:
-    return await run_in_threadpool(
-        reference, corpus_storage, user_id, ref=ref, corpus=corpus, lang=lang
-    )
+    """Resolve a UUID-and-revision reference against the current corpus snapshot.
+
+    The revision is the stored 40-character commit ID. A previous revision returns 409.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(request.state.user_claims, ref=ref, corpus=corpus, lang=lang)
 
 
 @app.get("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def get_reference_shortcode(
-    user_id: Annotated[str, Depends(require_user)],
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
     ref: str,
     corpus: str | None = None,
     url_template: str | None = None,
 ) -> dict[str, Any]:
-    return await run_in_threadpool(
-        reference,
-        corpus_storage,
-        user_id,
-        ref=ref,
-        corpus=corpus,
-        shortcode=True,
-        url_template=url_template,
+    """Render a UUID-and-revision reference as a shortcode."""
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(
+        request.state.user_claims, ref=ref, corpus=corpus, shortcode=True, url_template=url_template
     )
 
 
 @app.post("/v1/refs/shortcode", tags=["references"], responses=_REFERENCE_RESPONSES)
 async def create_reference_shortcode(
-    body: ShortcodeCreate, user_id: Annotated[str, Depends(require_user)]
+    body: ShortcodeCreate,
+    request: Request,
+    response: Response,
+    _user: Annotated[str, Depends(require_user)],
 ) -> dict[str, Any]:
-    return await run_in_threadpool(
-        reference, corpus_storage, user_id, **body.model_dump(), shortcode=True
-    )
+    """Create a shortcode that identifies the corpus and stored revision."""
+    response.headers["Cache-Control"] = "no-store"
+    return await reference(request.state.user_claims, **body.model_dump(), shortcode=True)
 
 
 async def _read_stored_corpus_view(

@@ -358,7 +358,11 @@ async def reconcile_edit(
     response: Response,
     _user: str = Depends(require_user),
 ) -> CorpusEditInfo:
-    """Verify an uncertain published result without redispatching a Hub write."""
+    """Resolve an uncertain save, without sending another Hub write.
+
+    An unstaged save can be marked failed and retried with a new operation ID.
+    A staged save remains uncertain unless its published result can be verified.
+    """
     from corpora_api.corpus_import_worker import run_reconciliation_worker
     from corpora_api.corpus_save_reconcile import SaveReconciliationTarget
 
@@ -389,6 +393,6 @@ async def reconcile_edit(
         elif value == {"status": "unresolved"}:
             value = await run_in_threadpool(rpc.call, "corpora_get_version_save", identity)
         info = _info(value, corpus_id, operation_id)
-    response.status_code = 200 if info.state == "completed" else 202
+    response.status_code = 200 if info.state in ("completed", "failed") else 202
     response.headers["Cache-Control"] = "no-store"
     return info
