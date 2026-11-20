@@ -1,0 +1,182 @@
+---
+title: Corpora CLI
+description: Convert, check and explore texts from your terminal
+---
+
+`corpora` runs Corpora's conversion and checks on your own machine.
+
+## Install
+
+**1. Install.** With Homebrew (macOS and Linux):
+
+```bash
+brew install exegia/corpora/cli
+```
+
+Or without Homebrew (needs `python3.13`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/exegia/homebrew-corpora/main/install.sh | bash
+```
+
+Add `-s -- --version vX.Y.Z` to pin a release, or `-s -- --uninstall` to remove it.
+
+**2. Check it works:**
+
+```bash
+corpora --help
+```
+
+![corpora --help output](/images/cli/corpora-help.svg)
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| [`convert`](#convert) | Turn a document into a `.corpus` archive |
+| [`convert-epub`](#convert-epub) | Turn an EPUB into a validated Text-Fabric bundle · *next release* |
+| [`validate`](#validate) | Check a `.corpus` archive's integrity |
+| [`schema`](#schema-and-reconcile) / [`reconcile`](#schema-and-reconcile) | Find what a conversion lost compared with its source |
+| [`library`](#library) | Browse stored archives |
+| [`references`](#references) | Select, link and retrieve exact passages offline |
+| [`sidecar`](#sidecar) | Run EPUB jobs for the desktop app · *next release* |
+
+Every command takes `-h` / `--help`. *Next release* means the command is on the `dev` branch but not yet in the latest Homebrew release.
+
+## convert
+
+```bash
+corpora convert book.epub --name "My Book" -o book.corpus
+corpora convert dataset.zip --format tf_zip
+```
+
+| Option | What it does |
+| --- | --- |
+| `SOURCE` | The document to convert |
+| `-f`, `--format` | `epub` `html` `xml` `tei` `pdf` `plain` `tf_zip` `tei_zip`. Guessed from the extension; **required for `.zip`** |
+| `-n`, `--name` | Corpus name, used when the source has no title |
+| `-d`, `--description` | Corpus description |
+| `-c`, `--category` | `document`, `book` or `religious`. Detected when omitted |
+| `-o`, `--output` | Output path. Default: `./<title>.corpus` |
+| `--force` | Overwrite an existing output file |
+
+## convert-epub
+
+Converts an EPUB to Text-Fabric through `corpora-core`'s checker and exporter. Install those tools first and put them on `PATH`, or point to them:
+
+```bash
+export CORPORA_EPUB_CHECK_BIN=/path/to/corpora-epub-check
+export CORPORA_EPUB_TO_TF_BIN=/path/to/epub-to-tf
+```
+
+```console
+$ corpora convert-epub field-guide.epub --output field-guide-tf
+validating: Checking the EPUB
+converting: Writing Text-Fabric
+finalizing: Publishing the bundle
+/Users/you/field-guide-tf
+```
+
+| Option | What it does |
+| --- | --- |
+| `SOURCE` | The EPUB file |
+| `--output` | **Required.** A new folder for the bundle; an existing one is never overwritten |
+| `--repair` | Apply the core's audited fixes, such as HTML entities like `&nbsp;`. Every fix is logged in the bundle |
+| `--max-slots` | Character limit. Default `8000000`; there is no upper ceiling |
+
+![corpora convert-epub --help output](/images/cli/corpora-convert-epub-help.svg)
+
+**Limits.** An EPUB can be up to 500 MiB (500 MiB unpacked, 128 MiB per file, 1,024 files). A book longer than `--max-slots` characters stops early:
+
+```console
+$ corpora convert-epub field-guide.epub --output tiny-tf --max-slots 100
+validating: Checking the EPUB
+❌ error: EPUB_LIMIT: Reading and note projection exceeds 100 character slots (<archive>)
+❌ error: EPUB validation found blocking issues.
+```
+
+Raise the limit and run it again, for example `--max-slots 20000000`. Covers and other pages marked outside the reading order are kept, but separately from the main text.
+
+## validate
+
+```bash
+corpora validate book.corpus
+```
+
+![corpora validate output](/images/cli/corpora-validate.svg)
+
+## schema and reconcile
+
+`validate` asks whether an archive is sound. These two ask whether it still matches its source.
+
+```bash
+corpora schema book.epub -o book.schema.json
+corpora reconcile book.corpus --schema book.schema.json --yes --report report.md
+```
+
+| `schema` option | What it does |
+| --- | --- |
+| `DOCUMENT` | Source: EPUB, TEI/XML, Markdown or text |
+| `-f`, `--format` | `auto` `epub` `xml` `markdown`. Default `auto` |
+| `--levels` | Level names, outermost first, such as `book,chapter` |
+| `-o`, `--output` | Default `./<stem>.schema.json` |
+| `--force` | Overwrite an existing file |
+
+| `reconcile` option | What it does |
+| --- | --- |
+| `CORPUS` | A `.corpus`, a Text-Fabric `.zip` or a folder of `.tf` files |
+| `--schema` | **Required.** The JSON from `corpora schema` |
+| `--map REF=CORPUS` | Pair a schema level with a corpus section type. Repeatable |
+| `--map-file` | Read and save the confirmed mapping as JSON |
+| `-y`, `--yes` | Accept the guessed mapping without asking (for CI) |
+| `--level` / `--ref-level` | Compare a single level pair |
+| `--label-feature` | Feature holding section labels |
+| `--tolerance` | Slots a boundary may drift. Default `3` |
+| `--report` / `--json` | Write a Markdown or JSON report |
+| `--patch-dir` | Write append-only `.tf` patches for missing units |
+| `-q`, `--quiet` | No report on screen |
+
+## library
+
+Reads archives from the configured storage backend. Without storage settings it exits with `storage not configured`.
+
+```bash
+corpora library list
+corpora library show moby-dick.corpus --ref "Moby Dick 1"
+```
+
+`show` takes the stored `FILENAME`, plus an optional `--ref` to print the passages of one section.
+
+## references
+
+Works offline from text snapshots. A stale or ambiguous anchor fails instead of guessing.
+
+```bash
+corpora references check reference.json
+corpora references retrieve target.json --snapshot target-snapshot.json
+```
+
+| Subcommand | Options |
+| --- | --- |
+| `check REFERENCE` | Validate a reference JSON file and print it unchanged |
+| `retrieve ENDPOINT` | `--snapshot` (required). Print the exact selected text |
+| `select` · *next release* | `--snapshot` (required), then `--quote` **or** `--start`/`--end`, and `-o` |
+| `create` · *next release* | `--source`, `--target`, `--source-snapshot`, `--creator` (required); `--target-snapshot`, `--relationship` (default `core:related`), `-o` |
+
+## sidecar
+
+For the desktop app, not for typing by hand. It serves EPUB jobs as newline-delimited JSON on stdin/stdout.
+
+```bash
+corpora sidecar --protocol 1
+```
+
+Job options are `repair` and `max_slots`, with the same meaning and defaults as `convert-epub`. See the [protocol](https://github.com/exegia/homebrew-corpora/blob/dev/docs/sidecar-protocol-v1.md).
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | The work ran and failed, for example blocking EPUB issues or a failed check |
+| `2` | The request was wrong, for example a missing file, a bad option or an existing output |
