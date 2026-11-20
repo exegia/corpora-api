@@ -35,6 +35,10 @@ caps body size, message count, and requests per hour. `/llms.txt` and
 
 - `content/api/index.mdx`: beginner API overview.
 - `content/api/`: quickstart, authentication, corpus lifecycle, architecture, testing, endpoint directory.
+- `content/cli/`: the `corpora` command line: install, every command and option, exit codes.
+  Owned by `exegia/homebrew-corpora` changes; its agents update this page when a CLI change
+  merges to `dev`. Terminal previews in `public/images/cli/` come from that repository's
+  `docs/record.py`.
 - `content/core/`: core introduction and shared QA cleanup instructions.
 
 The API repository owns these public pages. Core repository contributor markdown
