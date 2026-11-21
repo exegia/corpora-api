@@ -159,4 +159,6 @@ history and permanent server configuration. See [QA testing](https://docs.exegia
 Fresh local Supabase setup uses the [bootstrap guide](https://github.com/exegia/corpora-api/blob/dev/supabase/bootstrap/README.md):
 apply its guarded baseline only to an empty disposable project, use the documented
 ordered sync for later migrations, and explicitly enable RLS in new migrations.
-The baseline must never be applied to the existing hosted database.
+The baseline must never be applied to the existing hosted database. Upgrade that
+database one reviewed migration at a time as the guide describes, never with
+`supabase db push --include-all`.
