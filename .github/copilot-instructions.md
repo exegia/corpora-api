@@ -73,3 +73,6 @@ ordered sync for later migrations, and explicitly enable RLS in new migrations.
 The baseline must never be applied to the existing hosted database. Upgrade that
 database one reviewed migration at a time as the guide describes, never with
 `supabase db push --include-all`.
+AI working drafts need `20261120090000_working_draft_registry.sql` and a private
+`corpus-ai-drafts` bucket (the local initializer creates it); never replay the
+legacy `20261115042900` draft registry.
