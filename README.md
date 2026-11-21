@@ -366,17 +366,17 @@ Authenticated `/v1/ai/drafts` endpoints create, list, inspect and export private
 working drafts from a caller-owned completed conversion. Each new request also
 checks that its Supabase session remains active using `SUPABASE_INGEST_API_KEY`;
 an unavailable session check fails closed. A request admitted before sign-out may
-finish afterwards. These routes currently require the
-`corpora_ai_storage` Supabase RPC and private `corpus-ai-drafts` bucket from
-the legacy `corpora-py` draft migrations. Archives are staged under immutable
+finish afterwards. These routes require the server-only
+`corpora_ai_storage` RPC and `public.corpus_ai_drafts` registry from
+`supabase/migrations/20261120090000_working_draft_registry.sql`, and a private
+`corpus-ai-drafts` Storage bucket. Each draft records its owner, source
+conversion job and source digest; another caller's draft and an unknown draft
+return the same 404. Archives are staged under immutable
 owner/document/revision keys and checked against their SHA-256 digest before
 publication and download. The API requires the server-side Supabase service key;
-no caller-supplied storage path is accepted.
-The source-pinned legacy database setup is in `supabase/migrations/`; apply it
-only after reviewing it against the target database and verifying its existing
-tables and policies. The API does not apply migrations automatically.
-The current hosted project does not contain this registry, so the draft lifecycle
-is unavailable until its replacement is implemented and verified.
+no caller-supplied storage path is accepted. The API does not apply migrations
+or create buckets; until both exist the draft routes return 503. Do not replay
+the historical `20261115042900_legacy_ai_draft_registry.sql`.
 
 
 Authenticated `/v1/ai/providers` lists the legacy provider guidance without

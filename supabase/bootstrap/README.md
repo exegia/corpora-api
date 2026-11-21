@@ -23,7 +23,7 @@ supabase init --workdir /tmp/corpora-fresh
 uv run python scripts/prepare_fresh_supabase.py --workdir /tmp/corpora-fresh --native
 supabase start --workdir /tmp/corpora-fresh
 uv run --with 'psycopg[binary]' python scripts/initialize_fresh_supabase.py --workdir /tmp/corpora-fresh
-CORPORA_TEST_FRESH_BOOTSTRAP=1 CORPORA_TEST_FRESH_WORKDIR=/tmp/corpora-fresh uv run --with 'psycopg[binary]' pytest tests/api/test_fresh_bootstrap_supabase.py -q
+CORPORA_TEST_FRESH_BOOTSTRAP=1 CORPORA_TEST_FRESH_WORKDIR=/tmp/corpora-fresh uv run --with 'psycopg[binary]' python -m pytest tests/api/test_fresh_bootstrap_supabase.py -q
 ```
 
 Run the integration test before creating users: it requires an empty Auth directory.
@@ -40,11 +40,24 @@ To remove only a disposable stack and its local data, run `supabase stop --workd
 /tmp/corpora-fresh` followed by `supabase stack destroy --workdir /tmp/corpora-fresh
 --yes`. Do not use these cleanup commands on a project whose data you need.
 
-## AI draft limitation
+## AI working drafts
 
-The current hosted schema does not contain the legacy AI draft registry. This
-baseline mirrors that schema and does not provision `corpora_ai_storage` or the
-`corpus-ai-drafts` bucket. Existing draft API routes that depend on that registry
-will return 503 until the active AI migration work supplies and verifies its
-persistence. Do not replay the historical legacy registry migration blindly: it
-changes existing policies and writes directly to Supabase-managed Storage tables.
+The baseline mirrors the hosted schema of 2026-11-18, which has no AI draft
+registry. Migration `20261120090000_working_draft_registry.sql`, applied by the
+ordered sync after the baseline, adds the server-only `public.corpus_ai_drafts`
+table, the `corpora_ai_storage(text,uuid,jsonb)` RPC and a restrictive Storage
+policy that keeps browser roles out of the `corpus-ai-drafts` bucket. The
+initializer creates that bucket as private through the Storage API. The RPC
+reports no draft capability, and the draft API returns 503, until the bucket
+exists and is private.
+
+The historical `20261115042900_legacy_ai_draft_registry.sql` predates the
+baseline and is never copied. Do not replay it: it changes existing policies and
+writes directly to Supabase-managed Storage tables. The new migration refuses to
+run if any draft registry is already present.
+
+To verify the draft lifecycle on a fresh stack, after initialization:
+
+```sh
+CORPORA_TEST_DRAFT_REGISTRY=1 CORPORA_TEST_DRAFT_REGISTRY_WORKDIR=/tmp/corpora-fresh uv run --with 'psycopg[binary]' python -m pytest tests/api/test_draft_registry_supabase.py -q
+```

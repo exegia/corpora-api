@@ -14,11 +14,11 @@ import httpx
 import psycopg
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
-BUCKETS = ("conversion-jobs", "project-corpora")
+BUCKETS = ("conversion-jobs", "project-corpora", "corpus-ai-drafts")
 
 
 def initialize(workdir: Path, superadmin: UUID | None = None) -> None:
-    """Create the two private buckets and optionally grant one confirmed local user."""
+    """Create the private buckets and optionally grant one confirmed local user."""
     result = subprocess.run(
         ["supabase", "status", "--workdir", str(workdir), "--output-format", "json"],
         check=True,
