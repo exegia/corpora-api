@@ -210,24 +210,6 @@ app.include_router(corpus_edit_router)
 app.include_router(corpus_access_router)
 app.include_router(corpus_detail_router)
 app.include_router(corpus_version_history_router)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://docs.exegia.co",
-        "http://localhost:4321",
-        "https://corpora.exegia.co",
-        "https://staging.corpora-apps.vercel.app",
-        "http://localhost:5173",
-    ],
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "X-AI-Provider",
-        "X-AI-Api-Key",
-        "X-AI-Model",
-    ],
-)
 
 
 @app.middleware("http")
@@ -287,6 +269,32 @@ async def bearer_auth(request: Request, call_next: Any) -> Any:
     finally:
         current_user_token.reset(credential_context)
         current_user_id.reset(context_token)
+
+
+# Registered after `bearer_auth` so it wraps it: Starlette runs the middleware
+# added last outermost. Auth rejections (401, and 503 when the session check is
+# unavailable) then carry the same CORS headers as successful responses, so an
+# allowed browser origin can read them instead of seeing an opaque CORS error.
+# Preflights are answered here before auth runs; untrusted origins get no
+# Access-Control-Allow-Origin either way.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://docs.exegia.co",
+        "http://localhost:4321",
+        "https://corpora.exegia.co",
+        "https://staging.corpora-apps.vercel.app",
+        "http://localhost:5173",
+    ],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-AI-Provider",
+        "X-AI-Api-Key",
+        "X-AI-Model",
+    ],
+)
 
 
 @app.exception_handler(CoreUnavailable)

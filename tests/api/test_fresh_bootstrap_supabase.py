@@ -274,3 +274,217 @@ def test_fresh_bootstrap_auth_and_private_storage():
             db.execute("DELETE FROM public.licences WHERE id='BOOTSTRAP-TEST'")
             for user_id, _ in users:
                 client.delete(url + "/auth/v1/admin/users/" + user_id, headers=admin_headers)
+
+
+def _sign_in(client: httpx.Client, url: str, anon: str, email: str, password: str):
+    response = client.post(
+        url + "/auth/v1/token?grant_type=password",
+        headers={"apikey": anon},
+        json={"email": email, "password": password},
+    )
+    assert response.status_code == 200, response.text
+    return {
+        "apikey": anon,
+        "Authorization": "Bearer " + response.json()["access_token"],
+        "Prefer": "return=representation",
+    }
+
+
+def test_fresh_bootstrap_web_role_and_licence_authorization():
+    """Exercise the Web's role check and licence writes for every kind of caller.
+
+    The requests mirror corpora-web's Supabase calls: the corpora_project_superadmin
+    RPC, licence catalogue create/update/text save, and project licence attach,
+    agree and detach. Signed out means a revoked session token; anonymous means
+    the publishable key alone, which is what the Web sends after sign-out.
+    """
+    psycopg = pytest.importorskip("psycopg")
+    workdir = Path(os.environ["CORPORA_TEST_FRESH_WORKDIR"]).resolve(strict=True)
+    result = subprocess.run(
+        ["supabase", "status", "--workdir", str(workdir), "--output-format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    env = json.loads(result.stdout)["env"]
+    url, dsn = env["API_URL"].rstrip("/"), env["DB_URL"]
+    assert urlparse(url).hostname in {"localhost", "127.0.0.1", "::1"}
+    assert urlparse(dsn).hostname in {"localhost", "127.0.0.1", "::1"}
+    initialize = run_path(
+        str(Path(__file__).resolve().parents[2] / "scripts/initialize_fresh_supabase.py")
+    )["initialize"]
+    anon, service = env["ANON_KEY"], env["SERVICE_ROLE_KEY"]
+    admin_headers = {"apikey": service, "Authorization": "Bearer " + service}
+    anonymous = {"apikey": anon, "Prefer": "return=representation"}
+    suffix = uuid4().hex[:12].upper()
+    licence, created = "BOOTSTRAP-ROLE-" + suffix, "BOOTSTRAP-NEW-" + suffix
+    owner_project, admin_project, directory_id = (str(uuid4()) for _ in range(3))
+    users: list[str] = []
+    with (
+        psycopg.connect(dsn, autocommit=True) as db,
+        httpx.Client(timeout=20, trust_env=False) as client,
+    ):
+        try:
+            sessions = {}
+            for name in ("superadmin", "user"):
+                email = f"{name}-{uuid4()}@example.invalid"
+                password = str(uuid4()) + "Aa9!"
+                response = client.post(
+                    url + "/auth/v1/admin/users",
+                    headers=admin_headers,
+                    json={"email": email, "password": password, "email_confirm": True},
+                )
+                assert response.status_code in (200, 201), response.text
+                users.append(response.json()["id"])
+                sessions[name] = _sign_in(client, url, anon, email, password)
+                if name == "superadmin":
+                    stale = _sign_in(client, url, anon, email, password)
+            superadmin, user = sessions["superadmin"], sessions["user"]
+            rpc = url + "/rest/v1/rpc/corpora_project_superadmin"
+            # No role exists until it is assigned explicitly.
+            assert client.post(rpc, headers=superadmin, json={}).json() is False
+            initialize(workdir, UUID(users[0]))
+            assert (
+                client.post(url + "/auth/v1/logout?scope=local", headers=stale).status_code == 204
+            )
+            signed_out = {**stale, "Prefer": "return=representation"}
+            db.execute(
+                "INSERT INTO public.user_directory(id,username,email) VALUES (%s,%s,%s)",
+                (directory_id, "test-" + str(uuid4()), f"{uuid4()}@example.invalid"),
+            )
+            db.execute(
+                "INSERT INTO public.licences(id,title) VALUES (%s,'Temporary licence')",
+                (licence,),
+            )
+
+            # Role check, as read by the Web's isCurrentSuperadmin().
+            assert client.post(rpc, headers=superadmin, json={}).json() is True
+            assert client.post(rpc, headers=user, json={}).json() is False
+            for headers in (anonymous, signed_out):
+                assert client.post(rpc, headers=headers, json={}).status_code >= 400
+
+            # Catalogue reads.
+            catalogue = url + "/rest/v1/licences"
+            for headers in (superadmin, user, anonymous):
+                response = client.get(
+                    catalogue, headers=headers, params={"id": "eq." + licence, "select": "id"}
+                )
+                assert response.status_code == 200, response.text
+                assert response.json() == [{"id": licence}]
+            assert client.get(catalogue, headers=signed_out).status_code >= 400
+
+            # Catalogue creation is superadmin-only.
+            for headers in (user, anonymous, signed_out):
+                response = client.post(
+                    catalogue, headers=headers, json={"id": created, "title": "Denied"}
+                )
+                assert response.status_code >= 400, response.text
+            response = client.post(
+                catalogue,
+                headers=superadmin,
+                params={"select": "id"},
+                json={"id": created, "title": "Created by the superadmin"},
+            )
+            assert response.status_code == 201, response.text
+
+            # Catalogue edits and licence text saves are superadmin-only.
+            item = {"id": "eq." + licence, "select": "id"}
+            for change in ({"title": "Changed"}, {"full_text": "Changed text"}):
+                response = client.patch(catalogue, headers=user, params=item, json=change)
+                assert response.status_code == 200 and response.json() == [], response.text
+                for headers in (anonymous, signed_out):
+                    assert (
+                        client.patch(
+                            catalogue, headers=headers, params=item, json=change
+                        ).status_code
+                        >= 400
+                    )
+                assert db.execute(
+                    "SELECT title='Temporary licence' AND full_text IS NULL "
+                    "FROM public.licences WHERE id=%s",
+                    (licence,),
+                ).fetchone()[0]
+            for change in ({"title": "Edited"}, {"full_text": "Edited text"}):
+                response = client.patch(catalogue, headers=superadmin, params=item, json=change)
+                assert response.status_code == 200 and response.json() == [{"id": licence}]
+
+            # Project licences: the owner and the superadmin may attach, agree and detach.
+            projects = url + "/rest/v1/projects"
+            for project, headers in ((owner_project, user), (admin_project, superadmin)):
+                response = client.post(
+                    projects,
+                    headers=headers,
+                    params={"select": "id"},
+                    json={"id": project, "name": "Temporary project", "user_id": directory_id},
+                )
+                assert response.status_code == 201, response.text
+            attachments = url + "/rest/v1/project_licences"
+            attach = {"licence_id": licence, "agreed_by_user_id": directory_id}
+            for headers in (user, anonymous, signed_out):
+                response = client.post(
+                    attachments, headers=headers, json={"project_id": admin_project, **attach}
+                )
+                assert response.status_code >= 400, response.text
+            for project in (owner_project, admin_project):
+                headers = user if project == owner_project else superadmin
+                response = client.post(
+                    attachments, headers=headers, json={"project_id": project, **attach}
+                )
+                assert response.status_code == 201, response.text
+            response = client.post(
+                attachments, headers=superadmin, json={"project_id": owner_project, **attach}
+            )
+            assert response.status_code == 409  # The Web reports "already attached".
+            pair = {
+                "project_id": "eq." + admin_project,
+                "licence_id": "eq." + licence,
+                "select": "licence_id",
+            }
+            agreement = {"agreed_by_user_id": directory_id, "agreed_at": "2026-01-01T00:00:00Z"}
+            response = client.patch(attachments, headers=user, params=pair, json=agreement)
+            assert response.status_code == 200 and response.json() == []
+            response = client.delete(attachments, headers=user, params=pair)
+            assert response.status_code == 200 and response.json() == []
+            for headers in (anonymous, signed_out):
+                assert (
+                    client.patch(
+                        attachments, headers=headers, params=pair, json=agreement
+                    ).status_code
+                    >= 400
+                )
+                assert client.delete(attachments, headers=headers, params=pair).status_code >= 400
+            response = client.patch(attachments, headers=superadmin, params=pair, json=agreement)
+            assert response.json() == [{"licence_id": licence}]
+            own = {**pair, "project_id": "eq." + owner_project}
+            response = client.patch(attachments, headers=user, params=own, json=agreement)
+            assert response.json() == [{"licence_id": licence}]
+            # Anonymous readers see the attachment but not the agreeing directory user.
+            response = client.get(
+                projects,
+                headers=anonymous,
+                params={
+                    "id": "eq." + owner_project,
+                    "select": "id,project_licences(licences(id),user_directory(id))",
+                },
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()[0]["project_licences"] == [
+                {"licences": {"id": licence}, "user_directory": None}
+            ]
+            response = client.delete(attachments, headers=user, params=own)
+            assert response.json() == [{"licence_id": licence}]
+            response = client.delete(attachments, headers=superadmin, params=pair)
+            assert response.json() == [{"licence_id": licence}]
+        finally:
+            db.execute(
+                "DELETE FROM public.projects WHERE id = ANY(%s)",
+                ([owner_project, admin_project],),
+            )
+            db.execute("DELETE FROM public.licences WHERE id = ANY(%s)", ([licence, created],))
+            db.execute("DELETE FROM public.user_directory WHERE id=%s", (directory_id,))
+            if users:
+                db.execute(
+                    "DELETE FROM corpora_session_guard.superadmins WHERE user_id=%s", (users[0],)
+                )
+            for user_id in users:
+                client.delete(url + "/auth/v1/admin/users/" + user_id, headers=admin_headers)
